@@ -154,8 +154,8 @@ Detailed to do:
 Status:
 
 - support-state ownership descriptors now exist and can report `PlatformManaged` ownership independently from capability support
-- the disk provider now uses that model for historical version/delete-marker metadata when an object-state store is registered
-- current-object metadata and some other auxiliary state still retain transitional sidecar behavior and should continue moving toward platform-managed persistence
+- the disk provider now uses that model for historical version/delete-marker metadata plus current-object metadata, tags, and checksums when an object-state store is registered
+- disk sidecars now remain as the compatibility fallback only when no platform-managed object-state store is available, while broader checksum/header fidelity and some advanced versioning/tagging edge cases are still pending
 
 - **define provider modes explicitly**
 
@@ -475,8 +475,8 @@ The project now has enough implemented surface area that the capability slices c
 | SigV4 presigned-query validation | implemented | n/a | implemented | yes | request validation exists even though first-party presign generation does not |
 | first-party presign generation | not started | unsupported | not exposed | no | next step belongs in client/core surface design, not only protocol helpers |
 | multipart upload lifecycle | implemented | emulated | implemented | yes | initiate/upload-part/complete/abort flows are implemented; current orchestration remains primary-backend-only and rejects write-through replication |
-| object tags | partially implemented | emulated | implemented | yes | direct contracts and S3-compatible `GET` / `PUT` / `DELETE ?tagging` now cover current and archived object versions on the currently supported surface, including version-id-aware delete-tagging parity; broader tagging edge cases and continued persistence cleanup are still pending |
-| versioning | implemented for the current vertical slice | emulated with platform-managed historical catalogs | implemented for the current supported surface | yes | current object versions receive persisted opaque version IDs, overwrites archive historical versions, `versionId` read/head/delete/tagging/copy-source flows can target archived versions, `GET` / `PUT ?versioning` round-trip through Core/disk/HTTP, `GET ?versions` now lists historical versions and delete markers, and version-enabled deletes now create S3-compatible delete markers while historical metadata can be platform-managed |
+| object tags | partially implemented | emulated | implemented | yes | direct contracts and S3-compatible `GET` / `PUT` / `DELETE ?tagging` now cover current and archived object versions on the currently supported surface, including version-id-aware delete-tagging parity; current and archived tag persistence can now default to platform-managed object state when available, while broader tagging edge cases are still pending |
+| versioning | implemented for the current vertical slice | emulated with platform-managed historical catalogs | implemented for the current supported surface | yes | current object versions receive persisted opaque version IDs, overwrites archive historical versions, `versionId` read/head/delete/tagging/copy-source flows can target archived versions, `GET` / `PUT ?versioning` round-trip through Core/disk/HTTP, `GET ?versions` now lists historical versions and delete markers, and version-enabled deletes now create S3-compatible delete markers while historical and current auxiliary object state can be platform-managed when an object-state store is registered |
 | checksums | partially implemented | emulated | partially implemented | yes | disk now computes and persists checksums for the current put/copy/multipart flows, preserves them through platform-managed object state, validates direct put-object SHA-256 plus CRC32 request headers, and supports checksum-enabled multipart SHA-256 initiate/upload-part/complete parity including per-part checksum echoes plus composite completion checksum/type exposure; broader algorithm coverage and deeper header edge cases are still pending |
 | ACL / policy behavior | not started | unsupported | not implemented | no | authorization is `ClaimsPrincipal`-driven rather than S3 ACL compatible today |
 | CORS | not started | unsupported | not implemented | no | expected to land later as explicit HTTP integration work |
@@ -772,7 +772,7 @@ Status:
 
 - this milestone is still in progress, but the current versioning slice is substantially broader
 - current disk backend validates the basic abstraction shape, streaming CRUD, metadata sidecars, local orchestration/catalog persistence, paginated listing, range reads, conditional requests, copy-object behavior, multipart upload lifecycle handling, bucket versioning controls, historical object version access/tagging/deletion, list-object-versions behavior, delete-marker creation/promotion, and direct put-object checksum request validation
-- historical version and delete-marker metadata can now be composed through platform-managed object-state/catalog persistence, while some current-object metadata paths still remain transitional sidecar-backed behavior
+- historical version/delete-marker metadata plus current-object metadata, tags, and checksums can now be composed through platform-managed object-state/catalog persistence when an object-state store is registered, with sidecars retained only for standalone fallback deployments
 - retention, broader indexing, and remaining checksum parity work are still pending
 
 ### 2. Native S3 provider second
@@ -1005,10 +1005,10 @@ Status: **in progress / partially complete**
 
 Status: **in progress / partially complete**
 
-- object tagging is implemented across abstractions, Core orchestration, HTTP `?tagging` routes, and automated tests for current and archived versions on the supported surface, including explicit delete-tagging flows and version-id-aware response parity, while the disk path still uses sidecars and the target direction remains platform-managed tag persistence
+- object tagging is implemented across abstractions, Core orchestration, HTTP `?tagging` routes, and automated tests for current and archived versions on the supported surface, including explicit delete-tagging flows, version-id-aware response parity, and platform-managed tag persistence by default when an object-state store is registered
 - persisted checksum metadata is now implemented for the current disk/Core/HTTP object lifecycle paths, including platform-managed object-state composition, SHA-256 response header exposure, direct put-object request-side SHA-256 plus CRC32 validation, and checksum-enabled multipart SHA-256 initiate/upload-part/complete parity with composite completion checksums
 - AWS SDK and S3-compatible HTTP coverage now round-trip the current supported multipart checksum slice, including per-part checksum echoes plus `ChecksumType` / `x-amz-checksum-type` exposure for composite completions
-- version-id scaffolding is now in place for current object versions across disk/Core/catalog/HTTP, bucket-level versioning controls round-trip through Core/disk/HTTP, the disk/HTTP surface supports archived-version access, tagging, delete-tagging, deletion, copy-source reads, list-object-versions, and S3-compatible delete markers, and historical version/delete-marker metadata can now flow through platform-managed catalog/object-state persistence; continued movement of current-object auxiliary metadata off sidecars, broader checksum algorithm coverage, and remaining advanced versioning/tagging edge cases are still pending
+- version-id scaffolding is now in place for current object versions across disk/Core/catalog/HTTP, bucket-level versioning controls round-trip through Core/disk/HTTP, the disk/HTTP surface supports archived-version access, tagging, delete-tagging, deletion, copy-source reads, list-object-versions, and S3-compatible delete markers, and both historical plus current auxiliary object state can now flow through platform-managed catalog/object-state persistence when configured; broader checksum algorithm coverage and remaining advanced versioning/tagging edge cases are still pending
 
 ### M7 — Advanced S3-compatible features
 
@@ -1121,29 +1121,27 @@ Status: **not started**
 
 ## Recommended Next Execution Slice
 
-The most pragmatic next step is now to build on the newly landed **multipart checksum parity, delete-tagging, and platform-managed historical catalog** slice by continuing the migration of auxiliary metadata away from provider-local sidecars and hardening the remaining versioning/tagging edge cases on the current supported surface.
+The most pragmatic next step is now to build on the newly landed **platform-managed current-object auxiliary state plus version-pagination/delete-marker tagging conformance** slice by broadening checksum/header fidelity coverage and closing the remaining advanced versioning/tagging gaps on the current supported surface.
 
 Why this should come next:
 
-- the supported multipart checksum slice is now coherent across Core, disk, HTTP, XML, and AWS SDK compatibility tests, so the biggest remaining fidelity gaps have shifted toward persistence cleanup and the rest of the tagging/version lifecycle
-- historical version/delete-marker state and multipart checksum state now have provider-agnostic platform-managed seams, which makes this a good moment to keep moving current-object metadata, tags, and checksums in the same architectural direction
-- remaining non-current-version/tagging edge cases plus auxiliary-state persistence cleanup are now the clearest user-visible and architectural gaps on the supported surface
-- after the auxiliary-state path is less sidecar-centric, reconciliation/health work and advanced subresources can build on a more even provider model
+- the supported multipart checksum slice is now coherent across Core, disk, HTTP, XML, and AWS SDK compatibility tests, and the latest pagination-marker plus delete-marker tagging coverage removed another set of user-visible gaps, so the biggest remaining fidelity work has shifted toward broader checksum/header fidelity and the last advanced versioning/tagging cases
+- historical version/delete-marker state and current-object metadata, tags, and checksums now have provider-agnostic platform-managed seams when an object-state store is registered, which makes conformance-style hardening the clearest next proof point
+- the remaining non-current-version/tagging edge cases are narrower and more advanced now, which makes the next tranche of checksum/header parity work a better high-signal proof point
+- with the auxiliary-state path less sidecar-centric, reconciliation/health work and advanced subresources can build on a more even provider model
 
 Recommended implementation sequence:
 
-1. continue moving disk-provider current-object metadata, tags, and checksum persistence from sidecars toward platform-managed support-state services by default
-2. add more conformance-style tests around version pagination markers, remaining non-current-version/tagging edge cases, and checksum/header fidelity
-3. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples for metadata/tag/checksum state evolution
-4. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less sidecar-centric
-5. after that slice lands, choose between reconciliation semantics for divergent replicas or the next set of advanced S3-compatible bucket and object subresources
+1. add more conformance-style tests around broader checksum/header fidelity, the remaining advanced non-current-version/tagging cases, and any still-missing AWS parity on the current supported surface
+2. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples for metadata/tag/checksum state evolution
+3. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less sidecar-centric
+4. after that slice lands, choose between reconciliation semantics for divergent replicas or the next set of advanced S3-compatible bucket and object subresources
 
 ## Suggested Next Step
 
 Given the current implementation state, the next recommended step should be:
 
-1. continue moving the disk-provider metadata path toward platform-managed database persistence for current-object metadata, tags, checksums, and other auxiliary support state
-2. add more conformance-style coverage for version pagination markers, remaining non-current-version/tagging cases, and checksum/header fidelity
-3. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less sidecar-centric
-4. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples, including metadata/tag/version/checksum state evolution
-5. introduce reconciliation semantics for stale or divergent replicas after the auxiliary-state migration is clearer
+1. add broader checksum/header fidelity coverage plus the remaining advanced non-current-version/tagging and AWS parity cases
+2. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less sidecar-centric
+3. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples, including metadata/tag/version/checksum state evolution
+4. introduce reconciliation semantics for stale or divergent replicas after the auxiliary-state migration is clearer

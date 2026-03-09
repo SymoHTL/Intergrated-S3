@@ -824,6 +824,115 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
+    public async Task AmazonS3Client_ListVersions_WithMarkers_ContinuesWithinSameKey()
+    {
+        const string accessKeyId = "aws-sdk-version-markers-access";
+        const string secretAccessKey = "aws-sdk-version-markers-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-version-markers-bucket";
+        const string primaryKey = "docs/history.txt";
+        const string secondaryKey = "docs/zeta.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        var v1Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = primaryKey,
+            ContentBody = "version one",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+
+        var v2Put = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = primaryKey,
+            ContentBody = "version two",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+
+        var deleteCurrent = await s3Client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = primaryKey
+        });
+
+        var secondaryPut = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = secondaryKey,
+            ContentBody = "version zeta",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+
+        var firstPage = await s3Client.ListVersionsAsync(new ListVersionsRequest
+        {
+            BucketName = bucketName,
+            Prefix = "docs/",
+            MaxKeys = 1
+        });
+
+        Assert.Equal(HttpStatusCode.OK, firstPage.HttpStatusCode);
+        Assert.True(firstPage.IsTruncated);
+        var firstDeleteMarker = Assert.Single(firstPage.Versions);
+        Assert.Equal(primaryKey, firstDeleteMarker.Key);
+        Assert.Equal(deleteCurrent.VersionId, firstDeleteMarker.VersionId);
+        Assert.True(firstDeleteMarker.IsDeleteMarker);
+        Assert.True(firstDeleteMarker.IsLatest);
+        Assert.Equal(primaryKey, firstPage.NextKeyMarker);
+        Assert.Equal(deleteCurrent.VersionId, firstPage.NextVersionIdMarker);
+
+        var secondPage = await s3Client.ListVersionsAsync(new ListVersionsRequest
+        {
+            BucketName = bucketName,
+            Prefix = "docs/",
+            MaxKeys = 10,
+            KeyMarker = firstPage.NextKeyMarker,
+            VersionIdMarker = firstPage.NextVersionIdMarker
+        });
+
+        Assert.Equal(HttpStatusCode.OK, secondPage.HttpStatusCode);
+        Assert.Equal(firstPage.NextKeyMarker, secondPage.KeyMarker);
+        Assert.Equal(firstPage.NextVersionIdMarker, secondPage.VersionIdMarker);
+        Assert.False(secondPage.IsTruncated);
+        Assert.Collection(
+            secondPage.Versions,
+            version => {
+                Assert.Equal(primaryKey, version.Key);
+                Assert.Equal(v2Put.VersionId, version.VersionId);
+                Assert.False(version.IsLatest);
+            },
+            version => {
+                Assert.Equal(primaryKey, version.Key);
+                Assert.Equal(v1Put.VersionId, version.VersionId);
+                Assert.False(version.IsLatest);
+            },
+            version => {
+                Assert.Equal(secondaryKey, version.Key);
+                Assert.Equal(secondaryPut.VersionId, version.VersionId);
+                Assert.True(version.IsLatest);
+            });
+    }
+
+    [Fact]
     public async Task AmazonS3Client_DeleteObjectTagging_WorksAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-tagging-access";

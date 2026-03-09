@@ -328,6 +328,59 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleDeleteMarker_TaggingOperationsReturnNoSuchKey()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/delete-marker-tagging-bucket", content: null)).StatusCode);
+
+        using var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/delete-marker-tagging-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+
+        var putObjectResponse = await client.PutAsync(
+            "/integrated-s3/delete-marker-tagging-bucket/docs/tagged.txt",
+            new StringContent("delete marker tags", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.StatusCode);
+
+        var deleteCurrent = await client.DeleteAsync("/integrated-s3/delete-marker-tagging-bucket/docs/tagged.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteCurrent.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteCurrent.Headers.GetValues("x-amz-version-id"));
+
+        using var putTaggingRequest = new HttpRequestMessage(
+            HttpMethod.Put,
+            $"/integrated-s3/delete-marker-tagging-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(deleteMarkerVersionId)}")
+        {
+            Content = new StringContent("""
+<Tagging>
+  <TagSet>
+    <Tag><Key>generation</Key><Value>delete-marker</Value></Tag>
+  </TagSet>
+</Tagging>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        await AssertNoSuchKeyResponseAsync(await client.SendAsync(putTaggingRequest));
+        await AssertNoSuchKeyResponseAsync(await client.GetAsync($"/integrated-s3/delete-marker-tagging-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(deleteMarkerVersionId)}"));
+        await AssertNoSuchKeyResponseAsync(await client.DeleteAsync($"/integrated-s3/delete-marker-tagging-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(deleteMarkerVersionId)}"));
+
+        static async Task AssertNoSuchKeyResponseAsync(HttpResponseMessage response)
+        {
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+            var errorDocument = XDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal("NoSuchKey", GetRequiredElementValue(errorDocument, "Code"));
+        }
+    }
+
+    [Fact]
     public async Task S3CompatibleListObjectVersions_ReportsDeleteMarkersAndHistoricalVersions()
     {
         using var client = await _factory.CreateClientAsync();
@@ -392,6 +445,94 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, restoredGet.StatusCode);
         Assert.Equal(v2VersionId, Assert.Single(restoredGet.Headers.GetValues("x-amz-version-id")));
         Assert.Equal("http version two", await restoredGet.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleListObjectVersions_WithKeyAndVersionMarkers_PaginatesWithinSameKey()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/history-version-markers-bucket", content: null)).StatusCode);
+
+        using var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/history-version-markers-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+
+        const string primaryKey = "docs/history.txt";
+        const string secondaryKey = "docs/zeta.txt";
+
+        var v1Response = await client.PutAsync(
+            $"/integrated-s3/history-version-markers-bucket/{primaryKey}",
+            new StringContent("http version one", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v1Response.StatusCode);
+        var v1VersionId = Assert.Single(v1Response.Headers.GetValues("x-amz-version-id"));
+
+        var v2Response = await client.PutAsync(
+            $"/integrated-s3/history-version-markers-bucket/{primaryKey}",
+            new StringContent("http version two", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v2Response.StatusCode);
+        var v2VersionId = Assert.Single(v2Response.Headers.GetValues("x-amz-version-id"));
+
+        var deleteCurrent = await client.DeleteAsync($"/integrated-s3/history-version-markers-bucket/{primaryKey}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteCurrent.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteCurrent.Headers.GetValues("x-amz-version-id"));
+
+        var secondaryObjectResponse = await client.PutAsync(
+            $"/integrated-s3/history-version-markers-bucket/{secondaryKey}",
+            new StringContent("http version zeta", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, secondaryObjectResponse.StatusCode);
+        var secondaryVersionId = Assert.Single(secondaryObjectResponse.Headers.GetValues("x-amz-version-id"));
+
+        var firstPageResponse = await client.GetAsync("/integrated-s3/history-version-markers-bucket?versions&prefix=docs/&max-keys=1");
+        Assert.Equal(HttpStatusCode.OK, firstPageResponse.StatusCode);
+        Assert.Equal("application/xml", firstPageResponse.Content.Headers.ContentType?.MediaType);
+
+        var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListVersionsResult", firstPageDocument.Root?.Name.LocalName);
+        Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
+        Assert.Equal(primaryKey, GetRequiredElementValue(firstPageDocument, "NextKeyMarker"));
+        Assert.Equal(deleteMarkerVersionId, GetRequiredElementValue(firstPageDocument, "NextVersionIdMarker"));
+        Assert.Empty(firstPageDocument.Root!.Elements("Version"));
+        var firstPageDeleteMarker = Assert.Single(firstPageDocument.Root!.Elements("DeleteMarker"));
+        Assert.Equal(primaryKey, firstPageDeleteMarker.Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, firstPageDeleteMarker.Element("VersionId")?.Value);
+
+        var secondPageResponse = await client.GetAsync(
+            $"/integrated-s3/history-version-markers-bucket?versions&prefix=docs/&max-keys=10&key-marker={Uri.EscapeDataString(primaryKey)}&version-id-marker={Uri.EscapeDataString(deleteMarkerVersionId)}");
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+        Assert.Equal("application/xml", secondPageResponse.Content.Headers.ContentType?.MediaType);
+
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal(primaryKey, GetRequiredElementValue(secondPageDocument, "KeyMarker"));
+        Assert.Equal(deleteMarkerVersionId, GetRequiredElementValue(secondPageDocument, "VersionIdMarker"));
+        Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
+        Assert.Empty(secondPageDocument.Root!.Elements("DeleteMarker"));
+
+        var secondPageVersions = secondPageDocument.Root!.Elements("Version").ToArray();
+        Assert.Collection(
+            secondPageVersions,
+            version => {
+                Assert.Equal(primaryKey, version.Element("Key")?.Value);
+                Assert.Equal(v2VersionId, version.Element("VersionId")?.Value);
+                Assert.Equal("false", version.Element("IsLatest")?.Value);
+            },
+            version => {
+                Assert.Equal(primaryKey, version.Element("Key")?.Value);
+                Assert.Equal(v1VersionId, version.Element("VersionId")?.Value);
+                Assert.Equal("false", version.Element("IsLatest")?.Value);
+            },
+            version => {
+                Assert.Equal(secondaryKey, version.Element("Key")?.Value);
+                Assert.Equal(secondaryVersionId, version.Element("VersionId")?.Value);
+                Assert.Equal("true", version.Element("IsLatest")?.Value);
+            });
     }
 
     [Fact]

@@ -1194,6 +1194,305 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MigratesLegacyCurrentObjectStateIntoRegisteredStoreAcrossRestarts()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "legacy-current-state"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("legacy current payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "legacy-current-state",
+            Key = "docs/current.txt",
+            Content = uploadStream,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>
+            {
+                ["owner"] = "legacy"
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var putTagsResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "legacy-current-state",
+            Key = "docs/current.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "migration"
+            }
+        });
+
+        Assert.True(putTagsResult.IsSuccess);
+
+        var versionId = putResult.Value!.VersionId;
+        var checksum = putResult.Value.Checksums!["sha256"];
+        var metadataSidecarPath = Path.Combine(fixture.RootPath, "legacy-current-state", "docs", "current.txt.integrateds3.json");
+        Assert.True(File.Exists(metadataSidecarPath));
+
+        var stateStore = new InMemoryObjectStateStore();
+        await fixture.RestartAsync(services => {
+            services.AddSingleton<IStorageObjectStateStore>(stateStore);
+        });
+
+        storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var migratedHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "legacy-current-state",
+            Key = "docs/current.txt"
+        });
+
+        Assert.True(migratedHead.IsSuccess);
+        Assert.Equal(versionId, migratedHead.Value!.VersionId);
+        Assert.Equal("legacy", migratedHead.Value.Metadata!["owner"]);
+        Assert.Equal("migration", migratedHead.Value.Tags!["environment"]);
+        Assert.Equal(checksum, migratedHead.Value.Checksums!["sha256"]);
+        Assert.False(File.Exists(metadataSidecarPath));
+
+        var migratedState = await stateStore.GetObjectInfoAsync("test-disk", "legacy-current-state", "docs/current.txt", versionId);
+        Assert.NotNull(migratedState);
+        Assert.Equal(versionId, migratedState!.VersionId);
+        Assert.True(migratedState.IsLatest);
+        Assert.False(migratedState.IsDeleteMarker);
+        Assert.Equal("legacy", migratedState.Metadata!["owner"]);
+        Assert.Equal("migration", migratedState.Tags!["environment"]);
+        Assert.Equal(checksum, migratedState.Checksums!["sha256"]);
+
+        await fixture.RestartAsync(services => {
+            services.AddSingleton<IStorageObjectStateStore>(stateStore);
+        });
+
+        storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var updatedTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "legacy-current-state",
+            Key = "docs/current.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "platform-managed",
+                ["phase"] = "after-restart"
+            }
+        });
+
+        Assert.True(updatedTags.IsSuccess);
+        Assert.Equal(versionId, updatedTags.Value!.VersionId);
+
+        var rereadHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "legacy-current-state",
+            Key = "docs/current.txt"
+        });
+
+        Assert.True(rereadHead.IsSuccess);
+        Assert.Equal(versionId, rereadHead.Value!.VersionId);
+        Assert.Equal("legacy", rereadHead.Value.Metadata!["owner"]);
+        Assert.Equal("platform-managed", rereadHead.Value.Tags!["environment"]);
+        Assert.Equal("after-restart", rereadHead.Value.Tags["phase"]);
+        Assert.Equal(checksum, rereadHead.Value.Checksums!["sha256"]);
+        Assert.False(File.Exists(metadataSidecarPath));
+    }
+
+    [Fact]
+    public async Task DiskStorage_MigratesLegacyVersionHistoryAndDeleteMarkerStateIntoRegisteredStoreAcrossRestarts()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "legacy-version-state",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("legacy version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            Content = v1Stream,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>
+            {
+                ["generation"] = "one"
+            }
+        });
+
+        Assert.True(v1Put.IsSuccess);
+
+        var v1Tags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value!.VersionId,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["release"] = "one"
+            }
+        });
+
+        Assert.True(v1Tags.IsSuccess);
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("legacy version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            Content = v2Stream,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>
+            {
+                ["generation"] = "two"
+            }
+        });
+
+        Assert.True(v2Put.IsSuccess);
+
+        var v2Tags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["release"] = "two"
+            }
+        });
+
+        Assert.True(v2Tags.IsSuccess);
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(deleteCurrent.IsSuccess);
+        Assert.True(deleteCurrent.Value!.IsDeleteMarker);
+
+        var deleteMarkerVersionId = deleteCurrent.Value.VersionId;
+        var currentDeleteMarkerSidecar = Path.Combine(fixture.RootPath, "legacy-version-state", "docs", "history.txt.integrateds3.json");
+        var archivedV1Sidecar = Path.Combine(fixture.RootPath, "legacy-version-state", ".integrateds3-versions", "docs", "history.txt", v1Put.Value.VersionId!, "content.integrateds3.json");
+        var archivedV2Sidecar = Path.Combine(fixture.RootPath, "legacy-version-state", ".integrateds3-versions", "docs", "history.txt", v2Put.Value!.VersionId!, "content.integrateds3.json");
+
+        Assert.True(File.Exists(currentDeleteMarkerSidecar));
+        Assert.True(File.Exists(archivedV1Sidecar));
+        Assert.True(File.Exists(archivedV2Sidecar));
+
+        var stateStore = new InMemoryObjectStateStore();
+        await fixture.RestartAsync(services => {
+            services.AddSingleton<IStorageObjectStateStore>(stateStore);
+        });
+
+        storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "legacy-version-state",
+            Prefix = "docs/history.txt"
+        }).ToArrayAsync();
+
+        Assert.Equal(3, versions.Length);
+
+        var deleteMarkerVersion = Assert.Single(versions, version => version.VersionId == deleteMarkerVersionId);
+        Assert.True(deleteMarkerVersion.IsDeleteMarker);
+        Assert.True(deleteMarkerVersion.IsLatest);
+
+        var migratedV1 = Assert.Single(versions, version => version.VersionId == v1Put.Value.VersionId);
+        Assert.False(migratedV1.IsDeleteMarker);
+        Assert.False(migratedV1.IsLatest);
+        Assert.Equal("one", migratedV1.Metadata!["generation"]);
+        Assert.Equal("one", migratedV1.Tags!["release"]);
+        Assert.Equal(v1Put.Value.Checksums!["sha256"], migratedV1.Checksums!["sha256"]);
+
+        var migratedV2 = Assert.Single(versions, version => version.VersionId == v2Put.Value.VersionId);
+        Assert.False(migratedV2.IsDeleteMarker);
+        Assert.False(migratedV2.IsLatest);
+        Assert.Equal("two", migratedV2.Metadata!["generation"]);
+        Assert.Equal("two", migratedV2.Tags!["release"]);
+        Assert.Equal(v2Put.Value.Checksums!["sha256"], migratedV2.Checksums!["sha256"]);
+
+        Assert.False(File.Exists(currentDeleteMarkerSidecar));
+        Assert.False(File.Exists(archivedV1Sidecar));
+        Assert.False(File.Exists(archivedV2Sidecar));
+
+        var updatedHistoricalTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value.VersionId,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["release"] = "one-migrated",
+                ["migration"] = "complete"
+            }
+        });
+
+        Assert.True(updatedHistoricalTags.IsSuccess);
+        Assert.Equal(v1Put.Value.VersionId, updatedHistoricalTags.Value!.VersionId);
+
+        var historicalHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+
+        Assert.True(historicalHead.IsSuccess);
+        Assert.Equal(v1Put.Value.VersionId, historicalHead.Value!.VersionId);
+        Assert.Equal("one", historicalHead.Value.Metadata!["generation"]);
+        Assert.Equal("one-migrated", historicalHead.Value.Tags!["release"]);
+        Assert.Equal("complete", historicalHead.Value.Tags["migration"]);
+        Assert.Equal(v1Put.Value.Checksums!["sha256"], historicalHead.Value.Checksums!["sha256"]);
+
+        await fixture.RestartAsync(services => {
+            services.AddSingleton<IStorageObjectStateStore>(stateStore);
+        });
+
+        storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var deleteMarkerDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt",
+            VersionId = deleteMarkerVersionId
+        });
+
+        Assert.True(deleteMarkerDelete.IsSuccess);
+        Assert.True(deleteMarkerDelete.Value!.IsDeleteMarker);
+        Assert.NotNull(deleteMarkerDelete.Value.CurrentObject);
+        Assert.Equal(v2Put.Value.VersionId, deleteMarkerDelete.Value.CurrentObject!.VersionId);
+
+        var currentHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "legacy-version-state",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(currentHead.IsSuccess);
+        Assert.Equal(v2Put.Value.VersionId, currentHead.Value!.VersionId);
+        Assert.Equal("two", currentHead.Value.Metadata!["generation"]);
+        Assert.Equal("two", currentHead.Value.Tags!["release"]);
+        Assert.Equal(v2Put.Value.Checksums!["sha256"], currentHead.Value.Checksums!["sha256"]);
+        Assert.False(File.Exists(currentDeleteMarkerSidecar));
+        Assert.False(File.Exists(archivedV2Sidecar));
+
+        var currentStoreState = await stateStore.GetObjectInfoAsync("test-disk", "legacy-version-state", "docs/history.txt");
+        Assert.NotNull(currentStoreState);
+        Assert.Equal(v2Put.Value.VersionId, currentStoreState!.VersionId);
+        Assert.True(currentStoreState.IsLatest);
+        Assert.False(currentStoreState.IsDeleteMarker);
+        Assert.Equal("two", currentStoreState.Tags!["release"]);
+        Assert.Equal(v2Put.Value.Checksums!["sha256"], currentStoreState.Checksums!["sha256"]);
+    }
+
+    [Fact]
     public async Task DiskStorage_UsesRegisteredPlatformMultipartStateStoreForUploadState()
     {
         await using var fixture = new DiskStorageFixture(services => {
@@ -1274,22 +1573,32 @@ public sealed class DiskStorageServiceTests
         public DiskStorageFixture(Action<IServiceCollection>? configureServices = null)
         {
             RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Tests", Guid.NewGuid().ToString("N"));
+            Services = CreateServiceProvider(RootPath, configureServices);
+        }
 
+        public string RootPath { get; }
+
+        public ServiceProvider Services { get; private set; }
+
+        public async Task RestartAsync(Action<IServiceCollection>? configureServices = null)
+        {
+            await Services.DisposeAsync();
+            Services = CreateServiceProvider(RootPath, configureServices);
+        }
+
+        private static ServiceProvider CreateServiceProvider(string rootPath, Action<IServiceCollection>? configureServices)
+        {
             var services = new ServiceCollection();
             configureServices?.Invoke(services);
             services.AddDiskStorage(new DiskStorageOptions
             {
                 ProviderName = "test-disk",
-                RootPath = RootPath,
+                RootPath = rootPath,
                 CreateRootDirectory = true
             });
 
-            Services = services.BuildServiceProvider();
+            return services.BuildServiceProvider();
         }
-
-        public string RootPath { get; }
-
-        public ServiceProvider Services { get; }
 
         public async ValueTask DisposeAsync()
         {
