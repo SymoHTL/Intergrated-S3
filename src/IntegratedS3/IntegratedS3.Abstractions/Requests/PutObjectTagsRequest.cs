@@ -1,6 +1,6 @@
 namespace IntegratedS3.Abstractions.Requests;
 
-public sealed class DeleteObjectRequest
+public sealed class PutObjectTagsRequest
 {
     public required string BucketName { get; init; }
 
@@ -8,5 +8,5 @@ public sealed class DeleteObjectRequest
 
     public string? VersionId { get; init; }
 
-    public bool BypassDeleteMarkerCreation { get; init; }
+    public IReadOnlyDictionary<string, string> Tags { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 }

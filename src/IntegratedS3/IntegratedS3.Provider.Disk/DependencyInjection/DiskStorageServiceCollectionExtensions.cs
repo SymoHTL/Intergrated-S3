@@ -12,7 +12,10 @@ public static class DiskStorageServiceCollectionExtensions
 
         Normalize(options);
 
-        services.AddSingleton<IStorageBackend>(_ => new DiskStorageService(options));
+        services.AddSingleton<IStorageBackend>(serviceProvider => new DiskStorageService(
+            options,
+            serviceProvider.GetService<IStorageObjectStateStore>(),
+            serviceProvider.GetService<IStorageMultipartStateStore>()));
 
         return services;
     }

@@ -9,4 +9,6 @@ public sealed class MultipartUploadPart
     public long ContentLength { get; init; }
 
     public DateTimeOffset LastModifiedUtc { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 }

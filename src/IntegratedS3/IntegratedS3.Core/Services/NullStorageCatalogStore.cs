@@ -25,7 +25,7 @@ internal sealed class NullStorageCatalogStore : IStorageCatalogStore
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, CancellationToken cancellationToken = default)
+    public ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         return ValueTask.CompletedTask;
     }

@@ -10,4 +10,6 @@ public sealed class S3CompleteMultipartUploadPart
     public required int PartNumber { get; init; }
 
     public required string ETag { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 }

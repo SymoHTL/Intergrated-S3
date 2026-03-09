@@ -83,6 +83,36 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task EntityFrameworkRegistration_ProvidesPlatformManagedMultipartStateStore()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var multipartStateStore = fixture.Services.GetRequiredService<IStorageMultipartStateStore>();
+
+        var state = new MultipartUploadState
+        {
+            BucketName = "catalog-bucket",
+            Key = "docs/multipart.txt",
+            UploadId = "upload-123",
+            InitiatedAtUtc = DateTimeOffset.UtcNow,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>
+            {
+                ["source"] = "ef"
+            }
+        };
+
+        await multipartStateStore.UpsertMultipartUploadStateAsync("catalog-disk", state);
+
+        var storedState = await multipartStateStore.GetMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123");
+        Assert.NotNull(storedState);
+        Assert.Equal("text/plain", storedState!.ContentType);
+        Assert.Equal("ef", storedState.Metadata!["source"]);
+
+        await multipartStateStore.RemoveMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123");
+        Assert.Null(await multipartStateStore.GetMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123"));
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_CopyObject_UpdatesCatalog()
     {
         await using var fixture = new CoreStorageFixture();
@@ -342,6 +372,133 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
+    public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesObjectTags()
+    {
+        await using var fixture = new CoreStorageFixture(configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteThroughAll;
+            });
+            services.AddDiskStorage(new DiskStorageOptions
+            {
+                ProviderName = "replica-disk",
+                RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Core.Tests", Guid.NewGuid().ToString("N")),
+                CreateRootDirectory = true,
+                IsPrimary = false
+            });
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = fixture.Services.GetRequiredService<IStorageCatalogStore>();
+        var backends = fixture.Services.GetServices<IStorageBackend>().OrderBy(static backend => backend.Name, StringComparer.Ordinal).ToArray();
+
+        Assert.Equal(2, backends.Length);
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "tagged-bucket"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("tagged payload"));
+        Assert.True((await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        })).IsSuccess);
+
+        var tagResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "tagged-bucket",
+            Key = "docs/tagged.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["owner"] = "copilot"
+            }
+        });
+
+        Assert.True(tagResult.IsSuccess);
+
+        foreach (var backend in backends) {
+            var headObject = await backend.HeadObjectAsync(new HeadObjectRequest
+            {
+                BucketName = "tagged-bucket",
+                Key = "docs/tagged.txt"
+            });
+
+            Assert.True(headObject.IsSuccess);
+            Assert.Equal("test", headObject.Value!.Tags!["environment"]);
+            Assert.Equal("copilot", headObject.Value.Tags["owner"]);
+        }
+
+        var primaryCatalogObject = Assert.Single(await catalogStore.ListObjectsAsync("catalog-disk", "tagged-bucket"));
+        Assert.Equal("test", primaryCatalogObject.Tags!["environment"]);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_VersionSpecificTagDeletes_RefreshCatalogForHistoricalEntries()
+    {
+        await using var fixture = new CoreStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var catalogStore = fixture.Services.GetRequiredService<IStorageCatalogStore>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "catalog-version-tags",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("catalog version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "catalog-version-tags",
+            Key = "docs/history.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v1Put.IsSuccess);
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("catalog version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "catalog-version-tags",
+            Key = "docs/history.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v2Put.IsSuccess);
+
+        var putHistoricalTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "catalog-version-tags",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value!.VersionId,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["generation"] = "one"
+            }
+        });
+        Assert.True(putHistoricalTags.IsSuccess);
+
+        var deleteHistoricalTags = await storageService.DeleteObjectTagsAsync(new DeleteObjectTagsRequest
+        {
+            BucketName = "catalog-version-tags",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+        Assert.True(deleteHistoricalTags.IsSuccess);
+        Assert.Equal(v1Put.Value.VersionId, deleteHistoricalTags.Value!.VersionId);
+
+        var catalogObjects = await catalogStore.ListObjectsAsync("catalog-disk", "catalog-version-tags");
+        var historicalCatalogObject = Assert.Single(catalogObjects, entry => entry.VersionId == v1Put.Value.VersionId);
+        var currentCatalogObject = Assert.Single(catalogObjects, entry => entry.VersionId == v2Put.Value!.VersionId);
+
+        Assert.True(historicalCatalogObject.Tags is null || historicalCatalogObject.Tags.Count == 0);
+        Assert.Null(currentCatalogObject.Tags);
+    }
+
+    [Fact]
     public async Task OrchestratedStorageService_WriteThroughAll_ReturnsFailureWhenReplicaWriteFails()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
@@ -422,6 +579,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Core.Tests", Guid.NewGuid().ToString("N"));
             DatabasePath = Path.Combine(RootPath, "catalog.db");
+            Directory.CreateDirectory(RootPath);
 
             var services = new ServiceCollection();
             if (overrideCatalogStore) {
@@ -515,6 +673,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
+                StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
                 _ => "storage.write"
             };
@@ -566,7 +725,19 @@ public sealed class IntegratedS3CoreOrchestrationTests
             });
         }
 
+        public ValueTask<IntegratedS3.Abstractions.Capabilities.StorageSupportStateDescriptor> GetSupportStateDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new IntegratedS3.Abstractions.Capabilities.StorageSupportStateDescriptor());
+        }
+
         public async IAsyncEnumerable<BucketInfo> ListBucketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await Task.CompletedTask;
             yield break;
@@ -596,6 +767,32 @@ public sealed class IntegratedS3CoreOrchestrationTests
             }));
         }
 
+        public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketVersioningInfo>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.BucketNotFound,
+                Message = $"Bucket '{bucketName}' was not found.",
+                BucketName = bucketName,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 404
+            }));
+        }
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<BucketVersioningInfo>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.ProviderUnavailable,
+                Message = "Replica bucket versioning write failed.",
+                BucketName = request.BucketName,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 503
+            }));
+        }
+
         public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -612,6 +809,20 @@ public sealed class IntegratedS3CoreOrchestrationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(StorageResult<GetObjectResponse>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.ObjectNotFound,
+                Message = $"Object '{request.Key}' was not found.",
+                BucketName = request.BucketName,
+                ObjectKey = request.Key,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 404
+            }));
+        }
+
+        public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(new StorageError
             {
                 Code = StorageErrorCode.ObjectNotFound,
                 Message = $"Object '{request.Key}' was not found.",
@@ -643,6 +854,34 @@ public sealed class IntegratedS3CoreOrchestrationTests
             {
                 Code = StorageErrorCode.ProviderUnavailable,
                 Message = "Replica write failed.",
+                BucketName = request.BucketName,
+                ObjectKey = request.Key,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 503
+            }));
+        }
+
+        public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.ProviderUnavailable,
+                Message = "Replica tag write failed.",
+                BucketName = request.BucketName,
+                ObjectKey = request.Key,
+                ProviderName = Name,
+                SuggestedHttpStatusCode = 503
+            }));
+        }
+
+        public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(new StorageError
+            {
+                Code = StorageErrorCode.ProviderUnavailable,
+                Message = "Replica tag delete failed.",
                 BucketName = request.BucketName,
                 ObjectKey = request.Key,
                 ProviderName = Name,
@@ -688,10 +927,15 @@ public sealed class IntegratedS3CoreOrchestrationTests
             }));
         }
 
-        public ValueTask<StorageResult> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
+        public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(StorageResult.Success());
+            return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+            {
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId
+            }));
         }
     }
 
@@ -724,6 +968,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
             }
 
             var bytes = Encoding.UTF8.GetBytes(content);
+            var checksum = Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(bytes));
             _objects[(bucketName, key)] = new StoredObject
             {
                 Content = bytes,
@@ -731,11 +976,17 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 {
                     BucketName = bucketName,
                     Key = key,
+                    VersionId = Guid.CreateVersion7().ToString("N"),
                     ContentLength = bytes.Length,
                     ContentType = contentType,
                     ETag = $"{bucketName}:{key}:{bytes.Length}",
                     LastModifiedUtc = DateTimeOffset.UtcNow,
-                    Metadata = metadata
+                    Metadata = metadata,
+                    Tags = null,
+                    Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["sha256"] = checksum
+                    }
                 }
             };
         }
@@ -749,6 +1000,12 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 ObjectCrud = IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Native,
                 CopyOperations = IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Native
             });
+        }
+
+        public ValueTask<IntegratedS3.Abstractions.Capabilities.StorageSupportStateDescriptor> GetSupportStateDescriptorAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(new IntegratedS3.Abstractions.Capabilities.StorageSupportStateDescriptor());
         }
 
         public async IAsyncEnumerable<BucketInfo> ListBucketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -801,6 +1058,57 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 }));
         }
 
+        public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(_buckets.TryGetValue(bucketName, out var bucket)
+                ? StorageResult<BucketVersioningInfo>.Success(new BucketVersioningInfo
+                {
+                    BucketName = bucketName,
+                    Status = bucket.VersioningEnabled ? BucketVersioningStatus.Enabled : BucketVersioningStatus.Disabled
+                })
+                : StorageResult<BucketVersioningInfo>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{bucketName}' was not found.",
+                    BucketName = bucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+        }
+
+        public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_buckets.TryGetValue(request.BucketName, out var bucket)) {
+                return ValueTask.FromResult(StorageResult<BucketVersioningInfo>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.BucketNotFound,
+                    Message = $"Bucket '{request.BucketName}' was not found.",
+                    BucketName = request.BucketName,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            var updatedBucket = new BucketInfo
+            {
+                Name = bucket.Name,
+                CreatedAtUtc = bucket.CreatedAtUtc,
+                VersioningEnabled = request.Status == BucketVersioningStatus.Enabled
+            };
+
+            _buckets[request.BucketName] = updatedBucket;
+
+            return ValueTask.FromResult(StorageResult<BucketVersioningInfo>.Success(new BucketVersioningInfo
+            {
+                BucketName = request.BucketName,
+                Status = request.Status
+            }));
+        }
+
         public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -824,6 +1132,15 @@ public sealed class IntegratedS3CoreOrchestrationTests
         }
 
         public async IAsyncEnumerable<ObjectInfo> ListObjectsAsync(ListObjectsRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var entry in _objects.Where(entry => string.Equals(entry.Key.BucketName, request.BucketName, StringComparison.Ordinal)).OrderBy(entry => entry.Key.Key, StringComparer.Ordinal)) {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry.Value.Info;
+                await Task.Yield();
+            }
+        }
+
+        public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             foreach (var entry in _objects.Where(entry => string.Equals(entry.Key.BucketName, request.BucketName, StringComparison.Ordinal)).OrderBy(entry => entry.Key.Key, StringComparer.Ordinal)) {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -861,12 +1178,47 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 }));
             }
 
+            if (!MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)) {
+                return ValueTask.FromResult(StorageResult<GetObjectResponse>.Failure(StorageError.Unsupported(
+                    $"Object '{request.Key}' was requested with version '{request.VersionId}', but only current-version access is currently supported.",
+                    request.BucketName,
+                    request.Key)));
+            }
+
             return ValueTask.FromResult(StorageResult<GetObjectResponse>.Success(new GetObjectResponse
             {
                 Object = storedObject.Info,
                 Content = new MemoryStream(storedObject.Content, writable: false),
                 TotalContentLength = storedObject.Info.ContentLength
             }));
+        }
+
+        public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)
+                ? MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)
+                    ? StorageResult<ObjectTagSet>.Success(new ObjectTagSet
+                    {
+                        BucketName = request.BucketName,
+                        Key = request.Key,
+                        VersionId = storedObject.Info.VersionId,
+                        Tags = storedObject.Info.Tags ?? new Dictionary<string, string>(StringComparer.Ordinal)
+                    })
+                    : StorageResult<ObjectTagSet>.Failure(StorageError.Unsupported(
+                        $"Object '{request.Key}' was requested with version '{request.VersionId}', but only current-version access is currently supported.",
+                        request.BucketName,
+                        request.Key))
+                : StorageResult<ObjectTagSet>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.ObjectNotFound,
+                    Message = $"Object '{request.Key}' was not found in bucket '{request.BucketName}'.",
+                    BucketName = request.BucketName,
+                    ObjectKey = request.Key,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
         }
 
         public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
@@ -910,11 +1262,15 @@ public sealed class IntegratedS3CoreOrchestrationTests
             {
                 BucketName = request.BucketName,
                 Key = request.Key,
+                VersionId = Guid.CreateVersion7().ToString("N"),
+                IsLatest = true,
                 ContentLength = bytes.Length,
                 ContentType = request.ContentType,
                 ETag = $"{request.BucketName}:{request.Key}:{bytes.Length}",
                 LastModifiedUtc = DateTimeOffset.UtcNow,
-                Metadata = request.Metadata
+                Metadata = request.Metadata,
+                Tags = null,
+                Checksums = request.Checksums
             };
             _objects[(request.BucketName, request.Key)] = new StoredObject
             {
@@ -923,6 +1279,74 @@ public sealed class IntegratedS3CoreOrchestrationTests
             };
 
             return StorageResult<ObjectInfo>.Success(objectInfo);
+        }
+
+        public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)) {
+                return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(new StorageError
+                {
+                    Code = StorageErrorCode.ObjectNotFound,
+                    Message = $"Object '{request.Key}' was not found in bucket '{request.BucketName}'.",
+                    BucketName = request.BucketName,
+                    ObjectKey = request.Key,
+                    ProviderName = Name,
+                    SuggestedHttpStatusCode = 404
+                }));
+            }
+
+            if (!MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)) {
+                return ValueTask.FromResult(StorageResult<ObjectTagSet>.Failure(StorageError.Unsupported(
+                    $"Object '{request.Key}' was requested with version '{request.VersionId}', but only current-version access is currently supported.",
+                    request.BucketName,
+                    request.Key)));
+            }
+
+            var normalizedTags = request.Tags.Count == 0
+                ? null
+                : new Dictionary<string, string>(request.Tags, StringComparer.Ordinal);
+            var updatedInfo = new ObjectInfo
+            {
+                BucketName = storedObject.Info.BucketName,
+                Key = storedObject.Info.Key,
+                VersionId = storedObject.Info.VersionId,
+                ContentLength = storedObject.Info.ContentLength,
+                ContentType = storedObject.Info.ContentType,
+                ETag = storedObject.Info.ETag,
+                LastModifiedUtc = DateTimeOffset.UtcNow,
+                Metadata = storedObject.Info.Metadata,
+                Tags = normalizedTags,
+                Checksums = storedObject.Info.Checksums
+            };
+
+            _objects[(request.BucketName, request.Key)] = new StoredObject
+            {
+                Content = storedObject.Content,
+                Info = updatedInfo
+            };
+
+            return ValueTask.FromResult(StorageResult<ObjectTagSet>.Success(new ObjectTagSet
+            {
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = updatedInfo.VersionId,
+                Tags = normalizedTags ?? new Dictionary<string, string>(StringComparer.Ordinal)
+            }));
+        }
+
+        public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return PutObjectTagsAsync(new PutObjectTagsRequest
+            {
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId,
+                Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            }, cancellationToken);
         }
 
         public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
@@ -954,7 +1378,12 @@ public sealed class IntegratedS3CoreOrchestrationTests
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)
-                ? StorageResult<ObjectInfo>.Success(storedObject.Info)
+                ? MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)
+                    ? StorageResult<ObjectInfo>.Success(storedObject.Info)
+                    : StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
+                        $"Object '{request.Key}' was requested with version '{request.VersionId}', but only current-version access is currently supported.",
+                        request.BucketName,
+                        request.Key))
                 : StorageResult<ObjectInfo>.Failure(new StorageError
                 {
                     Code = StorageErrorCode.ObjectNotFound,
@@ -966,12 +1395,20 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 }));
         }
 
-        public ValueTask<StorageResult> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
+        public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)
+                && !MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)) {
+                return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Failure(StorageError.Unsupported(
+                    $"Object '{request.Key}' was requested with version '{request.VersionId}', but only current-version access is currently supported.",
+                    request.BucketName,
+                    request.Key)));
+            }
+
             if (!_objects.Remove((request.BucketName, request.Key))) {
-                return ValueTask.FromResult(StorageResult.Failure(new StorageError
+                return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Failure(new StorageError
                 {
                     Code = StorageErrorCode.ObjectNotFound,
                     Message = $"Object '{request.Key}' was not found in bucket '{request.BucketName}'.",
@@ -982,7 +1419,12 @@ public sealed class IntegratedS3CoreOrchestrationTests
                 }));
             }
 
-            return ValueTask.FromResult(StorageResult.Success());
+            return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+            {
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = storedObject.Info.VersionId
+            }));
         }
 
         private sealed class StoredObject
@@ -990,6 +1432,12 @@ public sealed class IntegratedS3CoreOrchestrationTests
             public required byte[] Content { get; init; }
 
             public required ObjectInfo Info { get; init; }
+        }
+
+        private static bool MatchesRequestedVersion(string? requestedVersionId, string? currentVersionId)
+        {
+            return string.IsNullOrWhiteSpace(requestedVersionId)
+                   || string.Equals(requestedVersionId, currentVersionId, StringComparison.Ordinal);
         }
     }
 
@@ -1038,25 +1486,41 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
         public ValueTask UpsertObjectAsync(string providerName, Abstractions.Models.ObjectInfo @object, CancellationToken cancellationToken = default)
         {
-            Objects.RemoveAll(existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName && existing.Key == @object.Key);
+            if (@object.IsLatest) {
+                Objects.RemoveAll(existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName && existing.Key == @object.Key && existing.IsLatest);
+            }
+
+            Objects.RemoveAll(existing => existing.ProviderName == providerName
+                && existing.BucketName == @object.BucketName
+                && existing.Key == @object.Key
+                && string.Equals(existing.VersionId, @object.VersionId, StringComparison.Ordinal));
+
             Objects.Add(new StoredObjectEntry
             {
                 ProviderName = providerName,
                 BucketName = @object.BucketName,
                 Key = @object.Key,
+                VersionId = @object.VersionId,
+                IsLatest = @object.IsLatest,
+                IsDeleteMarker = @object.IsDeleteMarker,
                 ContentLength = @object.ContentLength,
                 ContentType = @object.ContentType,
                 ETag = @object.ETag,
                 LastModifiedUtc = @object.LastModifiedUtc,
                 Metadata = @object.Metadata,
+                Tags = @object.Tags,
+                Checksums = @object.Checksums,
                 LastSyncedAtUtc = DateTimeOffset.UtcNow
             });
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, CancellationToken cancellationToken = default)
+        public ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
         {
-            Objects.RemoveAll(existing => existing.ProviderName == providerName && existing.BucketName == bucketName && existing.Key == key);
+            Objects.RemoveAll(existing => existing.ProviderName == providerName
+                && existing.BucketName == bucketName
+                && existing.Key == key
+                && (string.IsNullOrWhiteSpace(versionId) || string.Equals(existing.VersionId, versionId, StringComparison.Ordinal)));
             return ValueTask.CompletedTask;
         }
 

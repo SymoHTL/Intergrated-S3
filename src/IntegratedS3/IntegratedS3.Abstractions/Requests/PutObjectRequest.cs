@@ -14,5 +14,7 @@ public sealed class PutObjectRequest
 
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
     public bool OverwriteIfExists { get; init; } = true;
 }

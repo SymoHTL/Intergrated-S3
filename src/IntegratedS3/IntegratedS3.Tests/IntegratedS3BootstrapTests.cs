@@ -100,7 +100,12 @@ public sealed class IntegratedS3BootstrapTests
         Assert.Equal("disk", provider.Kind);
         Assert.True(provider.IsPrimary);
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.ObjectCrud);
+        Assert.Equal(StorageCapabilitySupport.Emulated, provider.Capabilities.Checksums);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.ObjectMetadata);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.ObjectTags);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.Checksums);
         Assert.Equal(StorageCapabilitySupport.Native, capabilities.ObjectCrud);
+        Assert.Equal(StorageCapabilitySupport.Emulated, capabilities.Checksums);
     }
 
     [Fact]

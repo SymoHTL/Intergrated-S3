@@ -44,6 +44,33 @@ internal sealed class OrchestratedStorageService(
         return result;
     }
 
+    public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            (backend, ct) => backend.GetBucketVersioningAsync(bucketName, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = _primaryBackend.Value;
+        var result = await backend.PutBucketVersioningAsync(request, cancellationToken);
+        if (result.IsSuccess) {
+            var refreshedBucket = await backend.HeadBucketAsync(request.BucketName, cancellationToken);
+            if (refreshedBucket.IsSuccess && refreshedBucket.Value is not null) {
+                await catalogStore.UpsertBucketAsync(backend.Name, refreshedBucket.Value, cancellationToken);
+            }
+
+            var replicationError = await ReplicateBucketVersioningAsync(request, backend, cancellationToken);
+            if (replicationError is not null) {
+                return StorageResult<BucketVersioningInfo>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
@@ -81,10 +108,27 @@ internal sealed class OrchestratedStorageService(
         }
     }
 
+    public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var backend = await SelectReadBackendAsync(cancellationToken);
+        await foreach (var @object in backend.ListObjectVersionsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
+            await catalogStore.UpsertObjectAsync(backend.Name, @object, cancellationToken);
+            yield return @object;
+        }
+    }
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return await ExecuteReadAsync(
             (backend, ct) => backend.GetObjectAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            (backend, ct) => backend.GetObjectTagsAsync(request, ct),
             onSuccess: null,
             cancellationToken);
     }
@@ -140,6 +184,38 @@ internal sealed class OrchestratedStorageService(
         result = await backend.PutObjectAsync(request, cancellationToken);
         if (result.IsSuccess && result.Value is not null) {
             await catalogStore.UpsertObjectAsync(backend.Name, result.Value, cancellationToken);
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = _primaryBackend.Value;
+        var result = await backend.PutObjectTagsAsync(request, cancellationToken);
+        if (result.IsSuccess && result.Value is not null) {
+            await RefreshCatalogObjectAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+
+            var replicationError = await ReplicateObjectTagsAsync(request, backend, cancellationToken);
+            if (replicationError is not null) {
+                return StorageResult<ObjectTagSet>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = _primaryBackend.Value;
+        var result = await backend.DeleteObjectTagsAsync(request, cancellationToken);
+        if (result.IsSuccess && result.Value is not null) {
+            await RefreshCatalogObjectAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+
+            var replicationError = await ReplicateObjectTagDeletionAsync(request, backend, cancellationToken);
+            if (replicationError is not null) {
+                return StorageResult<ObjectTagSet>.Failure(replicationError);
+            }
         }
 
         return result;
@@ -206,16 +282,24 @@ internal sealed class OrchestratedStorageService(
             cancellationToken);
     }
 
-    public async ValueTask<StorageResult> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
     {
         var backend = _primaryBackend.Value;
         var result = await backend.DeleteObjectAsync(request, cancellationToken);
-        if (result.IsSuccess) {
-            await catalogStore.RemoveObjectAsync(backend.Name, request.BucketName, request.Key, cancellationToken);
+        if (result.IsSuccess && result.Value is not null) {
+            if (result.Value.CurrentObject is not null) {
+                await catalogStore.UpsertObjectAsync(backend.Name, result.Value.CurrentObject, cancellationToken);
+            }
+            else if (!string.IsNullOrWhiteSpace(request.VersionId)) {
+                await catalogStore.RemoveObjectAsync(backend.Name, request.BucketName, request.Key, request.VersionId, cancellationToken);
+            }
+            else {
+                await catalogStore.RemoveObjectAsync(backend.Name, request.BucketName, request.Key, versionId: null, cancellationToken);
+            }
 
             var replicationError = await ReplicateObjectDeleteAsync(request, backend, cancellationToken);
             if (replicationError is not null) {
-                return StorageResult.Failure(replicationError);
+                return StorageResult<DeleteObjectResult>.Failure(replicationError);
             }
         }
 
@@ -340,6 +424,23 @@ internal sealed class OrchestratedStorageService(
         return null;
     }
 
+    private async ValueTask<StorageError?> ReplicateBucketVersioningAsync(PutBucketVersioningRequest request, IStorageBackend primaryBackend, CancellationToken cancellationToken)
+    {
+        foreach (var replicaBackend in GetReplicaBackends(primaryBackend)) {
+            var replicaResult = await replicaBackend.PutBucketVersioningAsync(request, cancellationToken);
+            if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+                return CreateReplicationError(replicaBackend, replicaResult.Error, request.BucketName);
+            }
+
+            var refreshedBucket = await replicaBackend.HeadBucketAsync(request.BucketName, cancellationToken);
+            if (refreshedBucket.IsSuccess && refreshedBucket.Value is not null) {
+                await catalogStore.UpsertBucketAsync(replicaBackend.Name, refreshedBucket.Value, cancellationToken);
+            }
+        }
+
+        return null;
+    }
+
     private async ValueTask<StorageError?> ReplicateBufferedObjectWriteAsync(PutObjectRequest request, string tempFilePath, IStorageBackend primaryBackend, CancellationToken cancellationToken)
     {
         foreach (var replicaBackend in GetReplicaBackends(primaryBackend)) {
@@ -380,6 +481,7 @@ internal sealed class OrchestratedStorageService(
                     ContentLength = sourceResponse.Object.ContentLength,
                     ContentType = sourceResponse.Object.ContentType,
                     Metadata = CloneMetadata(sourceResponse.Object.Metadata),
+                    Checksums = CloneChecksums(sourceResponse.Object.Checksums),
                     OverwriteIfExists = request.OverwriteIfExists
                 }, cancellationToken);
 
@@ -405,7 +507,35 @@ internal sealed class OrchestratedStorageService(
                 return CreateReplicationError(replicaBackend, replicaResult.Error, request.BucketName, request.Key);
             }
 
-            await catalogStore.RemoveObjectAsync(replicaBackend.Name, request.BucketName, request.Key, cancellationToken);
+            await catalogStore.RemoveObjectAsync(replicaBackend.Name, request.BucketName, request.Key, request.VersionId, cancellationToken);
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> ReplicateObjectTagsAsync(PutObjectTagsRequest request, IStorageBackend primaryBackend, CancellationToken cancellationToken)
+    {
+        foreach (var replicaBackend in GetReplicaBackends(primaryBackend)) {
+            var replicaResult = await replicaBackend.PutObjectTagsAsync(request, cancellationToken);
+            if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+                return CreateReplicationError(replicaBackend, replicaResult.Error, request.BucketName, request.Key);
+            }
+
+            await RefreshCatalogObjectAsync(replicaBackend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> ReplicateObjectTagDeletionAsync(DeleteObjectTagsRequest request, IStorageBackend primaryBackend, CancellationToken cancellationToken)
+    {
+        foreach (var replicaBackend in GetReplicaBackends(primaryBackend)) {
+            var replicaResult = await replicaBackend.DeleteObjectTagsAsync(request, cancellationToken);
+            if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+                return CreateReplicationError(replicaBackend, replicaResult.Error, request.BucketName, request.Key);
+            }
+
+            await RefreshCatalogObjectAsync(replicaBackend, request.BucketName, request.Key, request.VersionId, cancellationToken);
         }
 
         return null;
@@ -422,6 +552,7 @@ internal sealed class OrchestratedStorageService(
             ContentLength = request.ContentLength,
             ContentType = request.ContentType,
             Metadata = CloneMetadata(request.Metadata),
+            Checksums = CloneChecksums(request.Checksums),
             OverwriteIfExists = request.OverwriteIfExists
         }, cancellationToken);
     }
@@ -447,6 +578,32 @@ internal sealed class OrchestratedStorageService(
         return metadata is null
             ? null
             : new Dictionary<string, string>(metadata, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyDictionary<string, string>? CloneChecksums(IReadOnlyDictionary<string, string>? checksums)
+    {
+        return checksums is null
+            ? null
+            : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async ValueTask RefreshCatalogObjectAsync(IStorageBackend backend, string bucketName, string key, CancellationToken cancellationToken)
+    {
+        await RefreshCatalogObjectAsync(backend, bucketName, key, versionId: null, cancellationToken);
+    }
+
+    private async ValueTask RefreshCatalogObjectAsync(IStorageBackend backend, string bucketName, string key, string? versionId, CancellationToken cancellationToken)
+    {
+        var headResult = await backend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        }, cancellationToken);
+
+        if (headResult.IsSuccess && headResult.Value is not null) {
+            await catalogStore.UpsertObjectAsync(backend.Name, headResult.Value, cancellationToken);
+        }
     }
 
     private static void DeleteTempFileIfPresent(string tempFilePath)

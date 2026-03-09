@@ -9,4 +9,6 @@ public sealed class MultipartUploadInfo
     public required string UploadId { get; init; }
 
     public DateTimeOffset InitiatedAtUtc { get; init; }
+
+    public string? ChecksumAlgorithm { get; init; }
 }

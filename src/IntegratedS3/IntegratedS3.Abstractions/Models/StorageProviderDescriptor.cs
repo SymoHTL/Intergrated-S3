@@ -13,4 +13,6 @@ public sealed class StorageProviderDescriptor
     public string? Description { get; set; }
 
     public StorageCapabilities Capabilities { get; set; } = new();
+
+    public StorageSupportStateDescriptor SupportState { get; set; } = new();
 }

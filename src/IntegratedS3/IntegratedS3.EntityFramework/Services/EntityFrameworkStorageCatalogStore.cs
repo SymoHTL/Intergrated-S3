@@ -120,8 +120,21 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             bucketRecord.LastSyncedAtUtc = DateTimeOffset.UtcNow;
         }
 
+        if (@object.IsLatest) {
+            await objects
+                .Where(existing => existing.ProviderName == providerName
+                    && existing.BucketName == @object.BucketName
+                    && existing.Key == @object.Key
+                    && existing.IsLatest)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(static existing => existing.IsLatest, false), cancellationToken);
+        }
+
         var record = await objects.SingleOrDefaultAsync(
-            existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName && existing.Key == @object.Key,
+            existing => existing.ProviderName == providerName
+                && existing.BucketName == @object.BucketName
+                && existing.Key == @object.Key
+                && existing.VersionId == @object.VersionId,
             cancellationToken);
 
         if (record is null) {
@@ -134,17 +147,22 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             objects.Add(record);
         }
 
+        record.VersionId = @object.VersionId;
+    record.IsLatest = @object.IsLatest;
+    record.IsDeleteMarker = @object.IsDeleteMarker;
         record.ContentLength = @object.ContentLength;
         record.ContentType = @object.ContentType;
         record.ETag = @object.ETag;
         record.LastModifiedUtc = @object.LastModifiedUtc;
         record.MetadataJson = @object.Metadata is null ? null : JsonSerializer.Serialize(@object.Metadata);
+        record.TagsJson = @object.Tags is null ? null : JsonSerializer.Serialize(@object.Tags);
+        record.ChecksumsJson = @object.Checksums is null ? null : JsonSerializer.Serialize(@object.Checksums);
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    public async ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, CancellationToken cancellationToken = default)
+    public async ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
 
@@ -152,9 +170,14 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
         ValidateModel(dbContext);
 
-        await dbContext.Set<ObjectCatalogRecord>()
-            .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName && existing.Key == key)
-            .ExecuteDeleteAsync(cancellationToken);
+        var query = dbContext.Set<ObjectCatalogRecord>()
+            .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName && existing.Key == key);
+
+        if (!string.IsNullOrWhiteSpace(versionId)) {
+            query = query.Where(existing => existing.VersionId == versionId);
+        }
+
+        await query.ExecuteDeleteAsync(cancellationToken);
     }
 
     public async ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, CancellationToken cancellationToken = default)
@@ -183,6 +206,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 ProviderName = @object.ProviderName,
                 BucketName = @object.BucketName,
                 Key = @object.Key,
+                VersionId = @object.VersionId,
+                IsLatest = @object.IsLatest,
+                IsDeleteMarker = @object.IsDeleteMarker,
                 ContentLength = @object.ContentLength,
                 ContentType = @object.ContentType,
                 ETag = @object.ETag,
@@ -190,6 +216,12 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 Metadata = string.IsNullOrWhiteSpace(@object.MetadataJson)
                     ? null
                     : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.MetadataJson),
+                Tags = string.IsNullOrWhiteSpace(@object.TagsJson)
+                    ? null
+                    : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.TagsJson),
+                Checksums = string.IsNullOrWhiteSpace(@object.ChecksumsJson)
+                    ? null
+                    : JsonSerializer.Deserialize<Dictionary<string, string>>(@object.ChecksumsJson),
                 LastSyncedAtUtc = @object.LastSyncedAtUtc
             })
             .ToArrayAsync(cancellationToken);

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using IntegratedS3.Abstractions.Capabilities;
@@ -11,13 +12,22 @@ using IntegratedS3.Provider.Disk.Internal;
 
 namespace IntegratedS3.Provider.Disk;
 
-internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageBackend
+internal sealed class DiskStorageService(
+    DiskStorageOptions options,
+    IStorageObjectStateStore? objectStateStore = null,
+    IStorageMultipartStateStore? multipartStateStore = null) : IStorageBackend
 {
     private const string MetadataSuffix = ".integrateds3.json";
+    private const string BucketMetadataFileName = ".integrateds3.bucket.json";
+    private const string VersionStoreDirectoryName = ".integrateds3-versions";
     private const string MultipartUploadsDirectoryName = ".integrateds3-multipart";
     private const string MultipartStateFileName = "upload.json";
+    private const string Sha256ChecksumAlgorithm = "sha256";
+    private const string Crc32ChecksumAlgorithm = "crc32";
 
     private readonly string _rootPath = InitializeRootPath(options);
+    private readonly IStorageObjectStateStore? _objectStateStore = objectStateStore;
+    private readonly IStorageMultipartStateStore? _multipartStateStore = multipartStateStore;
 
     public string Name => options.ProviderName;
 
@@ -31,6 +41,24 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
     {
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(DiskStorageCapabilities.CreateDefault());
+    }
+
+    public ValueTask<StorageSupportStateDescriptor> GetSupportStateDescriptorAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var objectStateOwnership = _objectStateStore?.Ownership ?? StorageSupportStateOwnership.BackendOwned;
+        var multipartStateOwnership = _multipartStateStore?.Ownership ?? StorageSupportStateOwnership.BackendOwned;
+        return ValueTask.FromResult(new StorageSupportStateDescriptor
+        {
+            ObjectMetadata = objectStateOwnership,
+            ObjectTags = objectStateOwnership,
+            MultipartState = multipartStateOwnership,
+            Versioning = objectStateOwnership,
+            Checksums = objectStateOwnership,
+            Retention = StorageSupportStateOwnership.NotApplicable,
+            RedirectLocations = StorageSupportStateOwnership.NotApplicable
+        });
     }
 
     public async IAsyncEnumerable<BucketInfo> ListBucketsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -47,59 +75,111 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
                 continue;
             }
 
+            var bucketMetadata = await ReadBucketMetadataAsync(directoryPath, cancellationToken);
+
             yield return new BucketInfo
             {
                 Name = directoryInfo.Name,
                 CreatedAtUtc = directoryInfo.CreationTimeUtc,
-                VersioningEnabled = false
+                VersioningEnabled = bucketMetadata.VersioningStatus == BucketVersioningStatus.Enabled
             };
 
             await Task.Yield();
         }
     }
 
-    public ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<StorageResult<BucketInfo>> CreateBucketAsync(CreateBucketRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var bucketPath = GetBucketPath(request.BucketName);
         if (Directory.Exists(bucketPath)) {
-            return ValueTask.FromResult(StorageResult<BucketInfo>.Failure(new StorageError
+            return StorageResult<BucketInfo>.Failure(new StorageError
             {
                 Code = StorageErrorCode.BucketAlreadyExists,
                 Message = $"Bucket '{request.BucketName}' already exists.",
                 BucketName = request.BucketName,
                 ProviderName = options.ProviderName
-            }));
+            });
         }
 
         Directory.CreateDirectory(bucketPath);
         var directoryInfo = new DirectoryInfo(bucketPath);
+        var versioningStatus = request.EnableVersioning
+            ? BucketVersioningStatus.Enabled
+            : BucketVersioningStatus.Disabled;
 
-        return ValueTask.FromResult(StorageResult<BucketInfo>.Success(new BucketInfo
+        if (versioningStatus != BucketVersioningStatus.Disabled) {
+            await WriteBucketMetadataAsync(bucketPath, new DiskBucketMetadata
+            {
+                VersioningStatus = versioningStatus
+            }, cancellationToken);
+        }
+
+        return StorageResult<BucketInfo>.Success(new BucketInfo
         {
             Name = request.BucketName,
             CreatedAtUtc = directoryInfo.CreationTimeUtc,
-            VersioningEnabled = false
-        }));
+            VersioningEnabled = versioningStatus == BucketVersioningStatus.Enabled
+        });
     }
 
-    public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
+    public async ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var bucketPath = GetBucketPath(bucketName);
         if (!Directory.Exists(bucketPath)) {
-            return ValueTask.FromResult(StorageResult<BucketInfo>.Failure(BucketNotFound(bucketName)));
+            return StorageResult<BucketVersioningInfo>.Failure(BucketNotFound(bucketName));
         }
 
-        var directoryInfo = new DirectoryInfo(bucketPath);
-        return ValueTask.FromResult(StorageResult<BucketInfo>.Success(new BucketInfo
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        return StorageResult<BucketVersioningInfo>.Success(new BucketVersioningInfo
         {
-            Name = bucketName,
-            CreatedAtUtc = directoryInfo.CreationTimeUtc,
-            VersioningEnabled = false
-        }));
+            BucketName = bucketName,
+            Status = metadata.VersioningStatus
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketVersioningInfo>.Failure(BucketNotFound(request.BucketName));
+        }
+
+        var metadata = new DiskBucketMetadata
+        {
+            VersioningStatus = request.Status
+        };
+
+        if (request.Status == BucketVersioningStatus.Disabled) {
+            DeleteBucketMetadata(bucketPath);
+        }
+        else {
+            await WriteBucketMetadataAsync(bucketPath, metadata, cancellationToken);
+        }
+
+        return StorageResult<BucketVersioningInfo>.Success(new BucketVersioningInfo
+        {
+            BucketName = request.BucketName,
+            Status = request.Status
+        });
+    }
+
+    public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return StorageResult<BucketInfo>.Failure(BucketNotFound(bucketName));
+        }
+
+        return await HeadBucketCoreAsync(bucketName, bucketPath, cancellationToken);
     }
 
     public ValueTask<StorageResult> DeleteBucketAsync(DeleteBucketRequest request, CancellationToken cancellationToken = default)
@@ -111,7 +191,7 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
             return ValueTask.FromResult(StorageResult.Failure(BucketNotFound(request.BucketName)));
         }
 
-        if (Directory.EnumerateFileSystemEntries(bucketPath).Any()) {
+        if (Directory.EnumerateFileSystemEntries(bucketPath).Any(static path => !IsBucketMetadataFile(path))) {
             return ValueTask.FromResult(StorageResult.Failure(new StorageError
             {
                 Code = StorageErrorCode.PreconditionFailed,
@@ -122,6 +202,7 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
             }));
         }
 
+        DeleteBucketMetadata(bucketPath);
         Directory.Delete(bucketPath, recursive: false);
         return ValueTask.FromResult(StorageResult.Success());
     }
@@ -143,7 +224,7 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         }
 
         var files = Directory.EnumerateFiles(bucketPath, "*", SearchOption.AllDirectories)
-            .Where(static filePath => !IsMetadataFile(filePath))
+            .Where(filePath => !IsSystemFile(bucketPath, filePath))
             .Select(filePath => new
             {
                 FilePath = filePath,
@@ -162,10 +243,61 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
                 continue;
             }
 
-            yield return await CreateObjectInfoAsync(request.BucketName, entry.FilePath, cancellationToken);
+            yield return await CreateObjectInfoAsync(request.BucketName, entry.FilePath, isLatest: true, cancellationToken);
 
             yielded++;
             if (pageSize is not null && yielded >= pageSize.Value) {
+                yield break;
+            }
+        }
+
+        if (request.IncludeVersions) {
+            await foreach (var version in ListObjectVersionsAsync(new ListObjectVersionsRequest
+            {
+                BucketName = request.BucketName,
+                Prefix = request.Prefix,
+                PageSize = request.PageSize,
+                KeyMarker = request.ContinuationToken
+            }, cancellationToken).WithCancellation(cancellationToken)) {
+                if (version.IsLatest && !version.IsDeleteMarker) {
+                    continue;
+                }
+
+                yielded++;
+                if (pageSize is not null && yielded > pageSize.Value) {
+                    yield break;
+                }
+
+                yield return version;
+            }
+        }
+    }
+
+    public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var bucketPath = GetBucketPath(request.BucketName);
+        if (!Directory.Exists(bucketPath)) {
+            yield break;
+        }
+
+        if (request.PageSize is <= 0) {
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+        }
+
+        var versions = await GetOrderedObjectVersionsAsync(request.BucketName, request.Prefix, cancellationToken);
+        var yielded = 0;
+        foreach (var version in versions) {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsVersionAfterMarker(version, request.KeyMarker, request.VersionIdMarker)) {
+                continue;
+            }
+
+            yield return version;
+            yielded++;
+            if (request.PageSize is not null && yielded >= request.PageSize.Value) {
                 yield break;
             }
         }
@@ -173,12 +305,18 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
-        var filePath = GetObjectPath(request.BucketName, request.Key);
-        if (!File.Exists(filePath)) {
-            return StorageResult<GetObjectResponse>.Failure(ObjectNotFound(request.BucketName, request.Key));
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<GetObjectResponse>.Failure(storedObjectResult.Error!);
         }
 
-        var objectInfo = await CreateObjectInfoAsync(request.BucketName, filePath, cancellationToken);
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker || string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
+            return StorageResult<GetObjectResponse>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
+        }
+
+        var objectInfo = await CreateObjectInfoAsync(request.BucketName, request.Key, storedObject.ContentPath, storedObject.Metadata, cancellationToken);
+
         var preconditionFailure = EvaluatePreconditions(request, objectInfo);
         if (preconditionFailure is not null) {
             return StorageResult<GetObjectResponse>.Failure(preconditionFailure);
@@ -199,7 +337,7 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
             return StorageResult<GetObjectResponse>.Failure(rangeError);
         }
 
-        var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var stream = new FileStream(storedObject.ContentPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         Stream responseStream = stream;
         ObjectInfo responseObject = objectInfo;
@@ -216,7 +354,9 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
                 ContentType = objectInfo.ContentType,
                 ETag = objectInfo.ETag,
                 LastModifiedUtc = objectInfo.LastModifiedUtc,
-                Metadata = objectInfo.Metadata
+                Metadata = objectInfo.Metadata,
+                Tags = objectInfo.Tags,
+                Checksums = objectInfo.Checksums
             };
         }
 
@@ -229,21 +369,56 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         });
     }
 
+    public async ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectTagSet>.Failure(storedObjectResult.Error!);
+        }
+
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectTagSet>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
+        }
+
+        var metadata = storedObject.Metadata;
+
+        return StorageResult<ObjectTagSet>.Success(new ObjectTagSet
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = metadata.VersionId,
+            Tags = metadata.Tags is null
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                : new Dictionary<string, string>(metadata.Tags, StringComparer.Ordinal)
+        });
+    }
+
     public async ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var sourcePath = GetObjectPath(request.SourceBucketName, request.SourceKey);
-        if (!File.Exists(sourcePath)) {
-            return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey));
+        var sourceObjectResult = await ResolveStoredObjectAsync(request.SourceBucketName, request.SourceKey, request.SourceVersionId, cancellationToken);
+        if (!sourceObjectResult.IsSuccess) {
+            return StorageResult<ObjectInfo>.Failure(sourceObjectResult.Error!);
         }
+
+        var sourceObject = sourceObjectResult.Value!;
+        if (sourceObject.IsDeleteMarker || string.IsNullOrWhiteSpace(sourceObject.ContentPath)) {
+            return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
+        }
+
+        var sourcePath = sourceObject.ContentPath;
 
         var destinationBucketPath = GetBucketPath(request.DestinationBucketName);
         if (!Directory.Exists(destinationBucketPath)) {
             return StorageResult<ObjectInfo>.Failure(BucketNotFound(request.DestinationBucketName));
         }
 
-        var sourceInfo = await CreateObjectInfoAsync(request.SourceBucketName, sourcePath, cancellationToken);
+        var sourceInfo = await CreateObjectInfoAsync(request.SourceBucketName, request.SourceKey, sourcePath, sourceObject.Metadata, cancellationToken);
+
         var preconditionFailure = EvaluateCopyPreconditions(request, sourceInfo);
         if (preconditionFailure is not null) {
             return StorageResult<ObjectInfo>.Failure(preconditionFailure);
@@ -276,14 +451,29 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
                 await sourceStream.CopyToAsync(destinationStream, cancellationToken);
             }
 
+            if (await HasCurrentVersionStateAsync(request.DestinationBucketName, request.DestinationKey, cancellationToken)
+                && await IsVersioningEnabledAsync(request.DestinationBucketName, cancellationToken)) {
+                await ArchiveCurrentObjectVersionAsync(request.DestinationBucketName, request.DestinationKey, destinationPath, cancellationToken);
+            }
+
             File.Move(tempDestinationPath, destinationPath, overwrite: true);
 
-            var sourceMetadata = await ReadMetadataAsync(sourcePath, cancellationToken);
-            await WriteMetadataAsync(destinationPath, new DiskObjectMetadata
-            {
-                ContentType = sourceMetadata.ContentType,
-                Metadata = sourceMetadata.Metadata is null ? null : new Dictionary<string, string>(sourceMetadata.Metadata)
-            }, cancellationToken);
+            var sourceMetadata = sourceObject.Metadata;
+            var checksums = sourceMetadata.Checksums ?? await ComputeChecksumsAsync(destinationPath, cancellationToken);
+            var versionId = CreateVersionId();
+            await WriteStoredObjectStateAsync(
+                request.DestinationBucketName,
+                request.DestinationKey,
+                destinationPath,
+                versionId,
+                sourceMetadata.ContentType,
+                sourceMetadata.Metadata,
+                sourceMetadata.Tags,
+                checksums,
+                isDeleteMarker: false,
+                isLatest: true,
+                lastModifiedUtc: null,
+                cancellationToken);
         }
         finally {
             if (File.Exists(tempDestinationPath)) {
@@ -326,12 +516,32 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
                 await request.Content.CopyToAsync(tempStream, cancellationToken);
             }
 
+            var actualChecksums = await ComputeChecksumsAsync(tempFilePath, cancellationToken);
+            var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
+            if (checksumValidationError is not null) {
+                return StorageResult<ObjectInfo>.Failure(checksumValidationError);
+            }
+
+            if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
+                && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
+                await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
+            }
+
             File.Move(tempFilePath, objectPath, overwrite: true);
-            await WriteMetadataAsync(objectPath, new DiskObjectMetadata
-            {
-                ContentType = string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
-                Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata)
-            }, cancellationToken);
+            var versionId = CreateVersionId();
+            await WriteStoredObjectStateAsync(
+                request.BucketName,
+                request.Key,
+                objectPath,
+                versionId,
+                string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
+                request.Metadata,
+                tags: null,
+                actualChecksums,
+                isDeleteMarker: false,
+                isLatest: true,
+                lastModifiedUtc: null,
+                cancellationToken);
         }
         finally {
             if (File.Exists(tempFilePath)) {
@@ -342,6 +552,83 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         return StorageResult<ObjectInfo>.Success(await CreateObjectInfoAsync(request.BucketName, objectPath, cancellationToken));
     }
 
+    public async ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return await UpdateObjectTagsAsync(request.BucketName, request.Key, request.VersionId, request.Tags, cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return await UpdateObjectTagsAsync(request.BucketName, request.Key, request.VersionId, tags: null, cancellationToken);
+    }
+
+    private async ValueTask<StorageResult<ObjectTagSet>> UpdateObjectTagsAsync(
+        string bucketName,
+        string key,
+        string? versionId,
+        IReadOnlyDictionary<string, string>? tags,
+        CancellationToken cancellationToken)
+    {
+        var storedObjectResult = await ResolveStoredObjectAsync(bucketName, key, versionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectTagSet>.Failure(storedObjectResult.Error!);
+        }
+
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectTagSet>.Failure(ObjectNotFound(bucketName, key, versionId));
+        }
+
+        var metadata = storedObject.Metadata;
+
+        var normalizedTags = tags is null || tags.Count == 0
+            ? null
+            : new Dictionary<string, string>(tags, StringComparer.Ordinal);
+
+        if (storedObject.IsCurrent) {
+            await WriteStoredObjectStateAsync(
+                bucketName,
+                key,
+                storedObject.ContentPath!,
+                metadata.VersionId,
+                metadata.ContentType,
+                metadata.Metadata,
+                normalizedTags,
+                metadata.Checksums,
+                isDeleteMarker: false,
+                isLatest: true,
+                lastModifiedUtc: metadata.LastModifiedUtc,
+                cancellationToken);
+        }
+        else {
+            await WriteStoredObjectStateAsync(
+                bucketName,
+                key,
+                GetArchivedVersionContentPath(bucketName, key, metadata.VersionId!),
+                metadata.VersionId,
+                metadata.ContentType,
+                metadata.Metadata,
+                normalizedTags,
+                metadata.Checksums,
+                isDeleteMarker: false,
+                isLatest: false,
+                lastModifiedUtc: metadata.LastModifiedUtc,
+                cancellationToken);
+        }
+
+        return StorageResult<ObjectTagSet>.Success(new ObjectTagSet
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = metadata.VersionId,
+            Tags = normalizedTags ?? new Dictionary<string, string>(StringComparer.Ordinal)
+        });
+    }
+
     public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -349,6 +636,21 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
 
         if (!Directory.Exists(GetBucketPath(request.BucketName))) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(BucketNotFound(request.BucketName)));
+        }
+
+        if (!TryNormalizeChecksumAlgorithm(request.ChecksumAlgorithm, out var checksumAlgorithm)) {
+            return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
+            && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key)));
         }
 
         _ = GetObjectPath(request.BucketName, request.Key);
@@ -362,7 +664,8 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
             BucketName = request.BucketName,
             Key = request.Key,
             UploadId = uploadId,
-            InitiatedAtUtc = DateTimeOffset.UtcNow
+            InitiatedAtUtc = DateTimeOffset.UtcNow,
+            ChecksumAlgorithm = checksumAlgorithm
         };
 
         return WriteMultipartStateAndReturnAsync(uploadDirectoryPath, uploadInfo, request, cancellationToken);
@@ -390,6 +693,39 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         }
 
         var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
+        var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (!TryNormalizeChecksumAlgorithm(request.ChecksumAlgorithm, out var requestChecksumAlgorithm)) {
+            return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && requestChecksumAlgorithm is not null
+            && !string.Equals(uploadChecksumAlgorithm, requestChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                $"Multipart upload '{request.UploadId}' requires checksum algorithm '{uploadChecksumAlgorithm.ToUpperInvariant()}'.",
+                request.BucketName,
+                request.Key));
+        }
+
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && !TryGetChecksumValue(request.Checksums, uploadChecksumAlgorithm, out _)) {
+            return StorageResult<MultipartUploadPart>.Failure(MultipartInvalidRequest(
+                $"The supplied part is missing the '{uploadChecksumAlgorithm.ToUpperInvariant()}' checksum required by multipart upload '{request.UploadId}'.",
+                request.BucketName,
+                request.Key));
+        }
+
         Directory.CreateDirectory(GetMultipartPartsDirectoryPath(uploadDirectoryPath));
 
         var partPath = GetMultipartPartPath(uploadDirectoryPath, request.PartNumber);
@@ -408,12 +744,19 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         }
 
         var partInfo = new FileInfo(partPath);
+        var actualChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
+        var checksumValidationError = ValidateRequestedChecksums(request.Checksums, actualChecksums, request.BucketName, request.Key);
+        if (checksumValidationError is not null) {
+            return StorageResult<MultipartUploadPart>.Failure(checksumValidationError);
+        }
+
         return StorageResult<MultipartUploadPart>.Success(new MultipartUploadPart
         {
             PartNumber = request.PartNumber,
             ETag = BuildETag(partInfo),
             ContentLength = partInfo.Length,
-            LastModifiedUtc = partInfo.LastWriteTimeUtc
+            LastModifiedUtc = partInfo.LastWriteTimeUtc,
+            Checksums = CreateMultipartPartResponseChecksums(actualChecksums, uploadChecksumAlgorithm, request.Checksums)
         });
     }
 
@@ -438,11 +781,23 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         }
 
         var uploadState = uploadStateResult.Value!;
+        var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
+                $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
+                request.BucketName,
+                request.Key));
+        }
+
         var objectPath = GetObjectPath(request.BucketName, request.Key);
         var objectDirectoryPath = Path.GetDirectoryName(objectPath)!;
         Directory.CreateDirectory(objectDirectoryPath);
 
         var tempObjectPath = $"{objectPath}.{Guid.NewGuid():N}.tmp";
+        List<string>? compositePartChecksums = string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            ? new List<string>(request.Parts.Count)
+            : null;
         try {
             await using (var destinationStream = new FileStream(tempObjectPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
                 foreach (var requestedPart in request.Parts.OrderBy(static part => part.PartNumber)) {
@@ -469,18 +824,61 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
                             request.Key));
                     }
 
+                    IReadOnlyDictionary<string, string>? actualPartChecksums = null;
+                    if (compositePartChecksums is not null
+                        || (requestedPart.Checksums is not null && requestedPart.Checksums.Count > 0)) {
+                        actualPartChecksums = await ComputeChecksumsAsync(partPath, cancellationToken);
+                    }
+
+                    var partChecksumValidationError = ValidateRequestedChecksums(requestedPart.Checksums, actualPartChecksums, request.BucketName, request.Key);
+                    if (partChecksumValidationError is not null) {
+                        return StorageResult<ObjectInfo>.Failure(partChecksumValidationError);
+                    }
+
+                    if (compositePartChecksums is not null) {
+                        if (!TryGetChecksumValue(actualPartChecksums, Sha256ChecksumAlgorithm, out var actualPartChecksum)) {
+                            return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
+                                "Multipart SHA256 checksum synthesis requires per-part SHA256 digests.",
+                                request.BucketName,
+                                request.Key));
+                        }
+
+                        compositePartChecksums.Add(actualPartChecksum);
+                    }
+
                     await using var sourceStream = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await sourceStream.CopyToAsync(destinationStream, cancellationToken);
                 }
             }
 
-            File.Move(tempObjectPath, objectPath, overwrite: true);
-            await WriteMetadataAsync(objectPath, new DiskObjectMetadata
-            {
-                ContentType = string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? "application/octet-stream" : uploadState.State.ContentType,
-                Metadata = uploadState.State.Metadata is null ? null : new Dictionary<string, string>(uploadState.State.Metadata)
-            }, cancellationToken);
+            if (await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)
+                && await IsVersioningEnabledAsync(request.BucketName, cancellationToken)) {
+                await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, objectPath, cancellationToken);
+            }
 
+            File.Move(tempObjectPath, objectPath, overwrite: true);
+            IReadOnlyDictionary<string, string> checksums = compositePartChecksums is not null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Sha256ChecksumAlgorithm] = BuildCompositeSha256Checksum(compositePartChecksums)
+                }
+                : await ComputeChecksumsAsync(objectPath, cancellationToken);
+            var versionId = CreateVersionId();
+            await WriteStoredObjectStateAsync(
+                request.BucketName,
+                request.Key,
+                objectPath,
+                versionId,
+                string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? "application/octet-stream" : uploadState.State.ContentType,
+                uploadState.State.Metadata,
+                tags: null,
+                checksums,
+                isDeleteMarker: false,
+                isLatest: true,
+                lastModifiedUtc: null,
+                cancellationToken);
+
+            await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
             Directory.Delete(uploadState.UploadDirectoryPath, recursive: true);
         }
         finally {
@@ -507,38 +905,111 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         }
 
         Directory.Delete(uploadStateResult.Value!.UploadDirectoryPath, recursive: true);
+        await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadStateResult.Value.UploadDirectoryPath, cancellationToken);
         DeleteEmptyParentDirectories(Path.GetDirectoryName(uploadStateResult.Value.UploadDirectoryPath), GetMultipartRootPath());
         return StorageResult.Success();
     }
 
     public async ValueTask<StorageResult<ObjectInfo>> HeadObjectAsync(HeadObjectRequest request, CancellationToken cancellationToken = default)
     {
-        var filePath = GetObjectPath(request.BucketName, request.Key);
-        if (!File.Exists(filePath)) {
-            return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.BucketName, request.Key));
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectInfo>.Failure(storedObjectResult.Error!);
         }
 
-        return StorageResult<ObjectInfo>.Success(await CreateObjectInfoAsync(request.BucketName, filePath, cancellationToken));
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker || string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
+            return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
+        }
+
+        var objectInfo = await CreateObjectInfoAsync(request.BucketName, request.Key, storedObject.ContentPath, storedObject.Metadata, cancellationToken);
+
+        return StorageResult<ObjectInfo>.Success(objectInfo);
     }
 
-    public ValueTask<StorageResult> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
+    public async ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         var filePath = GetObjectPath(request.BucketName, request.Key);
-        if (!File.Exists(filePath)) {
-            return ValueTask.FromResult(StorageResult.Failure(ObjectNotFound(request.BucketName, request.Key)));
+        var versioningEnabled = await IsVersioningEnabledAsync(request.BucketName, cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(request.VersionId)) {
+            var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+            if (!storedObjectResult.IsSuccess) {
+                return StorageResult<DeleteObjectResult>.Failure(storedObjectResult.Error!);
+            }
+
+            var storedObject = storedObjectResult.Value!;
+            if (!storedObject.IsDeleteMarker && !string.IsNullOrWhiteSpace(storedObject.ContentPath) && File.Exists(storedObject.ContentPath)) {
+                File.Delete(storedObject.ContentPath);
+            }
+
+            if (storedObject.IsCurrent) {
+                await DeleteStoredObjectStateAsync(request.BucketName, request.Key, filePath, request.VersionId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
+                    DeleteEmptyParentDirectories(Path.GetDirectoryName(storedObject.ContentPath), GetBucketPath(request.BucketName));
+                }
+
+                var promotedCurrent = await PromoteLatestArchivedVersionAsync(request.BucketName, request.Key, cancellationToken);
+                return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId,
+                    IsDeleteMarker = storedObject.IsDeleteMarker,
+                    CurrentObject = promotedCurrent
+                });
+            }
+
+            await DeleteArchivedVersionStateAsync(request.BucketName, request.Key, request.VersionId, storedObject.ContentPath, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
+                DeleteEmptyParentDirectories(Path.GetDirectoryName(storedObject.ContentPath), GetVersionsRootPath(request.BucketName));
+            }
+
+            return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+            {
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = request.VersionId,
+                IsDeleteMarker = storedObject.IsDeleteMarker
+            });
         }
 
-        File.Delete(filePath);
-
-        var metadataPath = GetMetadataPath(filePath);
-        if (File.Exists(metadataPath)) {
-            File.Delete(metadataPath);
+        if (!await HasCurrentVersionStateAsync(request.BucketName, request.Key, cancellationToken)) {
+            return StorageResult<DeleteObjectResult>.Failure(ObjectNotFound(request.BucketName, request.Key));
         }
+
+        if (versioningEnabled && !request.BypassDeleteMarkerCreation) {
+            await ArchiveCurrentObjectVersionAsync(request.BucketName, request.Key, filePath, cancellationToken);
+
+            if (File.Exists(filePath)) {
+                File.Delete(filePath);
+            }
+
+            var deleteMarker = await CreateCurrentDeleteMarkerAsync(request.BucketName, request.Key, cancellationToken);
+            return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+            {
+                BucketName = request.BucketName,
+                Key = request.Key,
+                VersionId = deleteMarker.VersionId,
+                IsDeleteMarker = true,
+                CurrentObject = deleteMarker
+            });
+        }
+
+        if (File.Exists(filePath)) {
+            File.Delete(filePath);
+        }
+
+        await DeleteStoredObjectStateAsync(request.BucketName, request.Key, filePath, versionId: null, cancellationToken);
 
         DeleteEmptyParentDirectories(Path.GetDirectoryName(filePath), GetBucketPath(request.BucketName));
-        return ValueTask.FromResult(StorageResult.Success());
+        return StorageResult<DeleteObjectResult>.Success(new DeleteObjectResult
+        {
+            BucketName = request.BucketName,
+            Key = request.Key
+        });
     }
 
     private static string InitializeRootPath(DiskStorageOptions options)
@@ -555,6 +1026,21 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
     private static bool IsMetadataFile(string filePath)
     {
         return filePath.EndsWith(MetadataSuffix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSystemFile(string bucketPath, string filePath)
+    {
+        if (IsMetadataFile(filePath) || IsBucketMetadataFile(filePath)) {
+            return true;
+        }
+
+        var relativePath = Path.GetRelativePath(bucketPath, filePath).Replace('\\', '/');
+        return relativePath.StartsWith($"{VersionStoreDirectoryName}/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBucketMetadataFile(string filePath)
+    {
+        return string.Equals(Path.GetFileName(filePath), BucketMetadataFileName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeKey(string? key)
@@ -621,6 +1107,54 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         return objectPath + MetadataSuffix;
     }
 
+    private static string GetBucketMetadataPath(string bucketPath)
+    {
+        return Path.Combine(bucketPath, BucketMetadataFileName);
+    }
+
+    private string GetVersionsRootPath(string bucketName)
+    {
+        return Path.Combine(GetBucketPath(bucketName), VersionStoreDirectoryName);
+    }
+
+    private string GetObjectVersionsDirectoryPath(string bucketName, string key)
+    {
+        var versionsRootPath = GetVersionsRootPath(bucketName);
+        var normalizedKey = NormalizeKey(key);
+        var segments = normalizedKey.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (segments.Length == 0 || segments.Any(static segment => segment == "." || segment == "..")) {
+            throw new ArgumentException("Object key contains invalid path segments.", nameof(key));
+        }
+
+        var pathParts = new string[segments.Length + 1];
+        pathParts[0] = versionsRootPath;
+        Array.Copy(segments, 0, pathParts, 1, segments.Length);
+
+        var fullPath = Path.GetFullPath(Path.Combine(pathParts));
+        var versionsRoot = Path.GetFullPath(versionsRootPath);
+        if (!fullPath.StartsWith(versionsRoot, StringComparison.OrdinalIgnoreCase)) {
+            throw new ArgumentException("Object key resolves outside the version store root.", nameof(key));
+        }
+
+        return fullPath;
+    }
+
+    private string GetArchivedVersionContentPath(string bucketName, string key, string versionId)
+    {
+        if (string.IsNullOrWhiteSpace(versionId)) {
+            throw new ArgumentException("Version ID is required.", nameof(versionId));
+        }
+
+        if (versionId.Contains(Path.DirectorySeparatorChar)
+            || versionId.Contains(Path.AltDirectorySeparatorChar)
+            || versionId.Contains("..", StringComparison.Ordinal)) {
+            throw new ArgumentException("Version ID contains invalid path characters.", nameof(versionId));
+        }
+
+        return Path.Combine(GetObjectVersionsDirectoryPath(bucketName, key), versionId, "content");
+    }
+
     private string GetMultipartRootPath()
     {
         return Path.Combine(_rootPath, MultipartUploadsDirectoryName);
@@ -663,20 +1197,183 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         return Path.Combine(GetMultipartPartsDirectoryPath(uploadDirectoryPath), $"{partNumber:D5}.part");
     }
 
-    private async Task<ObjectInfo> CreateObjectInfoAsync(string bucketName, string filePath, CancellationToken cancellationToken)
+    private async Task<ObjectInfo> CreateObjectInfoAsync(string bucketName, string filePath, bool isLatest, CancellationToken cancellationToken)
     {
-        var fileInfo = new FileInfo(filePath);
-        var metadata = await ReadMetadataAsync(filePath, cancellationToken);
+        var objectKey = GetObjectKey(GetBucketPath(bucketName), filePath);
+        var metadata = await ReadStoredObjectMetadataAsync(bucketName, objectKey, filePath, versionId: null, cancellationToken);
+        return CreateObjectInfo(bucketName, objectKey, filePath, metadata, isLatest);
+    }
+
+    private Task<ObjectInfo> CreateObjectInfoAsync(string bucketName, string filePath, CancellationToken cancellationToken)
+    {
+        return CreateObjectInfoAsync(bucketName, filePath, isLatest: true, cancellationToken);
+    }
+
+    private ObjectInfo CreateObjectInfo(string bucketName, string objectKey, string? contentPath, DiskObjectMetadata metadata, bool isLatest)
+    {
+        var fileInfo = !string.IsNullOrWhiteSpace(contentPath) && File.Exists(contentPath)
+            ? new FileInfo(contentPath)
+            : null;
+
+        var lastModifiedUtc = metadata.LastModifiedUtc
+            ?? fileInfo?.LastWriteTimeUtc
+            ?? DateTimeOffset.UtcNow;
+
         return new ObjectInfo
         {
             BucketName = bucketName,
-            Key = GetObjectKey(GetBucketPath(bucketName), filePath),
-            ContentLength = fileInfo.Length,
-            ContentType = metadata.ContentType ?? "application/octet-stream",
-            ETag = BuildETag(fileInfo),
-            LastModifiedUtc = fileInfo.LastWriteTimeUtc,
-            Metadata = metadata.Metadata
+            Key = objectKey,
+            VersionId = metadata.VersionId,
+            IsLatest = isLatest,
+            IsDeleteMarker = metadata.IsDeleteMarker,
+            ContentLength = metadata.IsDeleteMarker ? 0 : fileInfo?.Length ?? 0,
+            ContentType = metadata.IsDeleteMarker ? null : metadata.ContentType ?? "application/octet-stream",
+            ETag = metadata.IsDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
+            LastModifiedUtc = lastModifiedUtc,
+            Metadata = metadata.Metadata,
+            Tags = metadata.Tags,
+            Checksums = metadata.Checksums
         };
+    }
+
+    private Task<ObjectInfo> CreateObjectInfoAsync(string bucketName, string objectKey, string contentPath, DiskObjectMetadata metadata, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(CreateObjectInfo(bucketName, objectKey, contentPath, metadata, metadata.IsLatest));
+    }
+
+    private async Task<DiskObjectMetadata> ReadStoredObjectMetadataAsync(string bucketName, string key, string objectPath, string? versionId, CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is null) {
+            return await ReadMetadataAsync(objectPath, cancellationToken);
+        }
+
+        var objectInfo = await _objectStateStore.GetObjectInfoAsync(Name, bucketName, key, versionId, cancellationToken);
+        return ToDiskObjectMetadata(objectInfo);
+    }
+
+    private async Task<DiskObjectMetadata?> TryReadCurrentObjectMetadataAsync(string bucketName, string key, string objectPath, CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is not null) {
+            var objectInfo = await _objectStateStore.GetObjectInfoAsync(Name, bucketName, key, versionId: null, cancellationToken);
+            return objectInfo is null ? null : ToDiskObjectMetadata(objectInfo);
+        }
+
+        var metadataPath = GetMetadataPath(objectPath);
+        return File.Exists(metadataPath)
+            ? await ReadMetadataAsync(objectPath, cancellationToken)
+            : null;
+    }
+
+    private async Task<DiskObjectMetadata?> ReadArchivedObjectMetadataAsync(string bucketName, string key, string versionId, CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is not null) {
+            var objectInfo = await _objectStateStore.GetObjectInfoAsync(Name, bucketName, key, versionId, cancellationToken);
+            return objectInfo is null ? null : ToDiskObjectMetadata(objectInfo);
+        }
+
+        var archivedContentPath = GetArchivedVersionContentPath(bucketName, key, versionId);
+        var archivedMetadataPath = GetMetadataPath(archivedContentPath);
+        if (!File.Exists(archivedMetadataPath)) {
+            return null;
+        }
+
+        return await ReadMetadataAsync(archivedContentPath, cancellationToken);
+    }
+
+    private async Task WriteStoredObjectStateAsync(
+        string bucketName,
+        string key,
+        string objectPath,
+        string? versionId,
+        string? contentType,
+        IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
+        IReadOnlyDictionary<string, string>? checksums,
+        bool isDeleteMarker,
+        bool isLatest,
+        DateTimeOffset? lastModifiedUtc,
+        CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is null) {
+            await WriteMetadataAsync(objectPath, new DiskObjectMetadata
+            {
+                VersionId = versionId,
+                IsLatest = isLatest,
+                IsDeleteMarker = isDeleteMarker,
+                LastModifiedUtc = lastModifiedUtc,
+                ContentType = contentType,
+                Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
+                Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
+                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+            }, cancellationToken);
+
+            return;
+        }
+
+        FileInfo? fileInfo = !isDeleteMarker && File.Exists(objectPath)
+            ? new FileInfo(objectPath)
+            : null;
+
+        await _objectStateStore.UpsertObjectInfoAsync(Name, new ObjectInfo
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId,
+            IsLatest = isLatest,
+            IsDeleteMarker = isDeleteMarker,
+            ContentLength = isDeleteMarker ? 0 : fileInfo?.Length ?? 0,
+            ContentType = isDeleteMarker ? null : contentType,
+            ETag = isDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
+            LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
+            Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
+            Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
+            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+        }, cancellationToken);
+    }
+
+    private Task WriteStoredObjectStateAsync(
+        string bucketName,
+        string key,
+        string objectPath,
+        string? versionId,
+        string? contentType,
+        IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
+        IReadOnlyDictionary<string, string>? checksums,
+        CancellationToken cancellationToken)
+    {
+        return WriteStoredObjectStateAsync(
+            bucketName,
+            key,
+            objectPath,
+            versionId,
+            contentType,
+            metadata,
+            tags,
+            checksums,
+            isDeleteMarker: false,
+            isLatest: true,
+            lastModifiedUtc: null,
+            cancellationToken);
+    }
+
+    private async Task DeleteStoredObjectStateAsync(string bucketName, string key, string objectPath, string? versionId, CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is not null) {
+            await _objectStateStore.RemoveObjectInfoAsync(Name, bucketName, key, versionId, cancellationToken);
+            return;
+        }
+
+        var metadataPath = GetMetadataPath(objectPath);
+        if (File.Exists(metadataPath)) {
+            File.Delete(metadataPath);
+        }
+    }
+
+    private Task DeleteStoredObjectStateAsync(string bucketName, string key, string objectPath, CancellationToken cancellationToken)
+    {
+        return DeleteStoredObjectStateAsync(bucketName, key, objectPath, versionId: null, cancellationToken);
     }
 
     private async Task<DiskObjectMetadata> ReadMetadataAsync(string objectPath, CancellationToken cancellationToken)
@@ -691,19 +1388,458 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
             ?? new DiskObjectMetadata();
     }
 
+    private async ValueTask<StorageResult<ResolvedStoredObject>> ResolveStoredObjectAsync(string bucketName, string key, string? versionId, CancellationToken cancellationToken)
+    {
+        var currentPath = GetObjectPath(bucketName, key);
+        var currentResolution = await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(versionId)) {
+            if (currentResolution is null || currentResolution.IsDeleteMarker) {
+                return StorageResult<ResolvedStoredObject>.Failure(ObjectNotFound(bucketName, key));
+            }
+
+            return StorageResult<ResolvedStoredObject>.Success(currentResolution);
+        }
+
+        if (currentResolution is not null && string.Equals(currentResolution.Metadata.VersionId, versionId, StringComparison.Ordinal)) {
+            return StorageResult<ResolvedStoredObject>.Success(currentResolution);
+        }
+
+        var archivedMetadata = await ReadArchivedObjectMetadataAsync(bucketName, key, versionId, cancellationToken);
+        if (archivedMetadata is null) {
+            return StorageResult<ResolvedStoredObject>.Failure(ObjectNotFound(bucketName, key, versionId));
+        }
+
+        var archivedContentPath = GetArchivedVersionContentPath(bucketName, key, versionId);
+        if (archivedMetadata.IsDeleteMarker) {
+            return StorageResult<ResolvedStoredObject>.Success(new ResolvedStoredObject(null, archivedMetadata, false, true));
+        }
+
+        if (!File.Exists(archivedContentPath)) {
+            return StorageResult<ResolvedStoredObject>.Failure(ObjectNotFound(bucketName, key, versionId));
+        }
+
+        return StorageResult<ResolvedStoredObject>.Success(new ResolvedStoredObject(archivedContentPath, archivedMetadata, false, false));
+    }
+
+    private async Task<bool> IsVersioningEnabledAsync(string bucketName, CancellationToken cancellationToken)
+    {
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return false;
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        return metadata.VersioningStatus == BucketVersioningStatus.Enabled;
+    }
+
+    private async Task ArchiveCurrentObjectVersionAsync(string bucketName, string key, string currentPath, CancellationToken cancellationToken)
+    {
+        var currentObject = await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken);
+        if (currentObject is null) {
+            return;
+        }
+
+        var versionId = string.IsNullOrWhiteSpace(currentObject.Metadata.VersionId)
+            ? CreateVersionId()
+            : currentObject.Metadata.VersionId;
+        var archivedContentPath = GetArchivedVersionContentPath(bucketName, key, versionId!);
+        var archivedDirectoryPath = Path.GetDirectoryName(archivedContentPath)!;
+        Directory.CreateDirectory(archivedDirectoryPath);
+
+        if (!currentObject.IsDeleteMarker && !string.IsNullOrWhiteSpace(currentObject.ContentPath) && File.Exists(currentObject.ContentPath)) {
+            File.Copy(currentObject.ContentPath, archivedContentPath, overwrite: true);
+            File.SetLastWriteTimeUtc(archivedContentPath, File.GetLastWriteTimeUtc(currentObject.ContentPath));
+        }
+
+        await WriteStoredObjectStateAsync(
+            bucketName,
+            key,
+            archivedContentPath,
+            versionId,
+            currentObject.Metadata.ContentType,
+            currentObject.Metadata.Metadata,
+            currentObject.Metadata.Tags,
+            currentObject.Metadata.Checksums,
+            currentObject.IsDeleteMarker,
+            isLatest: false,
+            currentObject.Metadata.LastModifiedUtc,
+            cancellationToken);
+    }
+
+    private ArchivedVersionEntry? TryParseArchivedVersionPath(string bucketName, string archivedMetadataPath)
+    {
+        if (!IsMetadataFile(archivedMetadataPath)) {
+            return null;
+        }
+
+        var versionsRootPath = GetVersionsRootPath(bucketName);
+        var relativePath = Path.GetRelativePath(versionsRootPath, archivedMetadataPath).Replace('\\', '/');
+        var segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 3 || !string.Equals(segments[^1], $"content{MetadataSuffix}", StringComparison.Ordinal)) {
+            return null;
+        }
+
+        var versionId = segments[^2];
+        var objectKey = string.Join('/', segments[..^2]);
+        return string.IsNullOrWhiteSpace(objectKey)
+            ? null
+            : new ArchivedVersionEntry(objectKey, versionId, GetArchivedVersionContentPath(bucketName, objectKey, versionId));
+    }
+
+    private async Task<ResolvedStoredObject?> TryResolveCurrentStoredObjectAsync(string bucketName, string key, string currentPath, CancellationToken cancellationToken)
+    {
+        if (File.Exists(currentPath)) {
+            var currentMetadata = await ReadStoredObjectMetadataAsync(bucketName, key, currentPath, versionId: null, cancellationToken);
+            return new ResolvedStoredObject(currentPath, currentMetadata, true, false);
+        }
+
+        var currentMetadataWithoutContent = await TryReadCurrentObjectMetadataAsync(bucketName, key, currentPath, cancellationToken);
+        return currentMetadataWithoutContent?.IsDeleteMarker == true
+            ? new ResolvedStoredObject(null, currentMetadataWithoutContent, true, true)
+            : null;
+    }
+
+    private async Task<IReadOnlyList<ObjectInfo>> GetOrderedObjectVersionsAsync(string bucketName, string? prefix, CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is not null) {
+            var platformManagedVersions = new List<ObjectInfo>();
+            await foreach (var version in _objectStateStore.ListObjectVersionsAsync(Name, bucketName, prefix, cancellationToken).WithCancellation(cancellationToken)) {
+                platformManagedVersions.Add(version);
+            }
+
+            return platformManagedVersions
+                .OrderBy(version => version.Key, StringComparer.Ordinal)
+                .ThenByDescending(version => version.IsLatest)
+                .ThenByDescending(version => version.VersionId, StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        var bucketPath = GetBucketPath(bucketName);
+        var versions = new List<ObjectInfo>();
+
+        foreach (var filePath in Directory.EnumerateFiles(bucketPath, "*", SearchOption.AllDirectories)
+                     .Where(filePath => !IsSystemFile(bucketPath, filePath))) {
+            cancellationToken.ThrowIfCancellationRequested();
+            var objectKey = GetObjectKey(bucketPath, filePath);
+            if (!string.IsNullOrWhiteSpace(prefix) && !objectKey.StartsWith(prefix, StringComparison.Ordinal)) {
+                continue;
+            }
+
+            versions.Add(await CreateObjectInfoAsync(bucketName, filePath, isLatest: true, cancellationToken));
+        }
+
+        foreach (var deleteMarker in await EnumerateCurrentDeleteMarkersAsync(bucketName, cancellationToken)) {
+            if (!string.IsNullOrWhiteSpace(prefix) && !deleteMarker.Key.StartsWith(prefix, StringComparison.Ordinal)) {
+                continue;
+            }
+
+            versions.Add(deleteMarker);
+        }
+
+        var archivedVersionsRootPath = GetVersionsRootPath(bucketName);
+        if (Directory.Exists(archivedVersionsRootPath)) {
+            foreach (var archivedMetadataPath in Directory.EnumerateFiles(archivedVersionsRootPath, $"*{MetadataSuffix}", SearchOption.AllDirectories)) {
+                cancellationToken.ThrowIfCancellationRequested();
+                var archivedVersion = TryParseArchivedVersionPath(bucketName, archivedMetadataPath);
+                if (archivedVersion is null) {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(prefix) && !archivedVersion.ObjectKey.StartsWith(prefix, StringComparison.Ordinal)) {
+                    continue;
+                }
+
+                var metadata = await ReadMetadataAsync(archivedVersion.ContentPath, cancellationToken);
+                versions.Add(CreateObjectInfo(bucketName, archivedVersion.ObjectKey, metadata.IsDeleteMarker ? null : archivedVersion.ContentPath, metadata, isLatest: false));
+            }
+        }
+
+        return versions
+            .OrderBy(version => version.Key, StringComparer.Ordinal)
+            .ThenByDescending(version => version.IsLatest)
+            .ThenByDescending(version => version.VersionId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private async Task<bool> HasCurrentVersionStateAsync(string bucketName, string key, CancellationToken cancellationToken)
+    {
+        var currentPath = GetObjectPath(bucketName, key);
+        return await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken) is not null;
+    }
+
+    private async Task<ObjectInfo> CreateCurrentDeleteMarkerAsync(string bucketName, string key, CancellationToken cancellationToken)
+    {
+        var currentPath = GetObjectPath(bucketName, key);
+        var versionId = CreateVersionId();
+        var lastModifiedUtc = DateTimeOffset.UtcNow;
+
+        await WriteStoredObjectStateAsync(
+            bucketName,
+            key,
+            currentPath,
+            versionId,
+            contentType: null,
+            metadata: null,
+            tags: null,
+            checksums: null,
+            isDeleteMarker: true,
+            isLatest: true,
+            lastModifiedUtc,
+            cancellationToken);
+
+        return CreateObjectInfo(bucketName, key, null, new DiskObjectMetadata
+        {
+            VersionId = versionId,
+            IsLatest = true,
+            IsDeleteMarker = true,
+            LastModifiedUtc = lastModifiedUtc
+        }, isLatest: true);
+    }
+
+    private async Task DeleteArchivedVersionStateAsync(string bucketName, string key, string versionId, string? contentPath, CancellationToken cancellationToken)
+    {
+        var archivedContentPath = string.IsNullOrWhiteSpace(contentPath)
+            ? GetArchivedVersionContentPath(bucketName, key, versionId)
+            : contentPath;
+
+        await DeleteStoredObjectStateAsync(bucketName, key, archivedContentPath, versionId, cancellationToken);
+
+        var metadataPath = GetMetadataPath(archivedContentPath);
+        if (File.Exists(metadataPath)) {
+            File.Delete(metadataPath);
+        }
+    }
+
+    private async Task<ObjectInfo?> PromoteLatestArchivedVersionAsync(string bucketName, string key, CancellationToken cancellationToken)
+    {
+        var latestArchived = await TryGetLatestArchivedVersionAsync(bucketName, key, cancellationToken);
+        if (latestArchived is null) {
+            return null;
+        }
+
+        var currentPath = GetObjectPath(bucketName, key);
+        var currentDirectoryPath = Path.GetDirectoryName(currentPath)!;
+        Directory.CreateDirectory(currentDirectoryPath);
+
+        if (latestArchived.IsDeleteMarker) {
+            await WriteStoredObjectStateAsync(
+                bucketName,
+                key,
+                currentPath,
+                latestArchived.Metadata.VersionId,
+                contentType: null,
+                latestArchived.Metadata.Metadata,
+                latestArchived.Metadata.Tags,
+                latestArchived.Metadata.Checksums,
+                isDeleteMarker: true,
+                isLatest: true,
+                latestArchived.Metadata.LastModifiedUtc,
+                cancellationToken);
+        }
+        else {
+            if (string.IsNullOrWhiteSpace(latestArchived.ContentPath) || !File.Exists(latestArchived.ContentPath)) {
+                return null;
+            }
+
+            File.Move(latestArchived.ContentPath, currentPath, overwrite: true);
+            await WriteStoredObjectStateAsync(
+                bucketName,
+                key,
+                currentPath,
+                latestArchived.Metadata.VersionId,
+                latestArchived.Metadata.ContentType,
+                latestArchived.Metadata.Metadata,
+                latestArchived.Metadata.Tags,
+                latestArchived.Metadata.Checksums,
+                isDeleteMarker: false,
+                isLatest: true,
+                latestArchived.Metadata.LastModifiedUtc,
+                cancellationToken);
+        }
+
+        await DeleteArchivedVersionStateAsync(bucketName, key, latestArchived.Metadata.VersionId!, latestArchived.ContentPath, cancellationToken);
+        return CreateObjectInfo(bucketName, key, latestArchived.IsDeleteMarker ? null : currentPath, latestArchived.Metadata, isLatest: true);
+    }
+
+    private async Task<ResolvedStoredObject?> TryGetLatestArchivedVersionAsync(string bucketName, string key, CancellationToken cancellationToken)
+    {
+        if (_objectStateStore is not null) {
+            ObjectInfo? latestVersion = null;
+            await foreach (var candidate in _objectStateStore.ListObjectVersionsAsync(Name, bucketName, key, cancellationToken).WithCancellation(cancellationToken)) {
+                if (!string.Equals(candidate.Key, key, StringComparison.Ordinal) || candidate.IsLatest) {
+                    continue;
+                }
+
+                if (latestVersion is null || StringComparer.Ordinal.Compare(candidate.VersionId, latestVersion.VersionId) > 0) {
+                    latestVersion = candidate;
+                }
+            }
+
+            if (latestVersion is null) {
+                return null;
+            }
+
+            var metadata = ToDiskObjectMetadata(latestVersion);
+            return new ResolvedStoredObject(
+                latestVersion.IsDeleteMarker ? null : GetArchivedVersionContentPath(bucketName, key, latestVersion.VersionId!),
+                metadata,
+                IsCurrent: false,
+                IsDeleteMarker: latestVersion.IsDeleteMarker);
+        }
+
+        var versionsDirectoryPath = GetObjectVersionsDirectoryPath(bucketName, key);
+        if (!Directory.Exists(versionsDirectoryPath)) {
+            return null;
+        }
+
+        ResolvedStoredObject? latestArchived = null;
+        foreach (var metadataPath in Directory.EnumerateFiles(versionsDirectoryPath, $"*{MetadataSuffix}", SearchOption.AllDirectories)) {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var archivedVersion = TryParseArchivedVersionPath(bucketName, metadataPath);
+            if (archivedVersion is null || !string.Equals(archivedVersion.ObjectKey, key, StringComparison.Ordinal)) {
+                continue;
+            }
+
+            var metadata = await ReadMetadataAsync(archivedVersion.ContentPath, cancellationToken);
+            var candidate = new ResolvedStoredObject(
+                metadata.IsDeleteMarker ? null : archivedVersion.ContentPath,
+                metadata,
+                IsCurrent: false,
+                IsDeleteMarker: metadata.IsDeleteMarker);
+
+            if (latestArchived is null || StringComparer.Ordinal.Compare(candidate.Metadata.VersionId, latestArchived.Metadata.VersionId) > 0) {
+                latestArchived = candidate;
+            }
+        }
+
+        return latestArchived;
+    }
+
+    private async Task<IReadOnlyList<ObjectInfo>> EnumerateCurrentDeleteMarkersAsync(string bucketName, CancellationToken cancellationToken)
+    {
+        var bucketPath = GetBucketPath(bucketName);
+        var results = new List<ObjectInfo>();
+
+        foreach (var metadataPath in Directory.EnumerateFiles(bucketPath, $"*{MetadataSuffix}", SearchOption.AllDirectories)
+                     .Where(path => !IsBucketMetadataFile(path) && !path.Contains($"{VersionStoreDirectoryName}{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))) {
+            cancellationToken.ThrowIfCancellationRequested();
+            var objectPath = metadataPath[..^MetadataSuffix.Length];
+            if (File.Exists(objectPath)) {
+                continue;
+            }
+
+            var metadata = await ReadMetadataAsync(objectPath, cancellationToken);
+            if (!metadata.IsDeleteMarker) {
+                continue;
+            }
+
+            var objectKey = GetObjectKey(bucketPath, objectPath);
+            results.Add(CreateObjectInfo(bucketName, objectKey, null, metadata, isLatest: true));
+        }
+
+        return results;
+    }
+
+    private static bool IsVersionAfterMarker(ObjectInfo version, string? keyMarker, string? versionIdMarker)
+    {
+        if (string.IsNullOrWhiteSpace(keyMarker)) {
+            return true;
+        }
+
+        var keyComparison = StringComparer.Ordinal.Compare(version.Key, NormalizeKey(keyMarker));
+        if (keyComparison > 0) {
+            return true;
+        }
+
+        if (keyComparison < 0) {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(versionIdMarker)
+               && StringComparer.Ordinal.Compare(version.VersionId, versionIdMarker) < 0;
+    }
+
+    private static DiskObjectMetadata ToDiskObjectMetadata(ObjectInfo? objectInfo)
+    {
+        return objectInfo is null
+            ? new DiskObjectMetadata()
+            : new DiskObjectMetadata
+            {
+                VersionId = objectInfo.VersionId,
+                IsLatest = objectInfo.IsLatest,
+                IsDeleteMarker = objectInfo.IsDeleteMarker,
+                LastModifiedUtc = objectInfo.LastModifiedUtc,
+                ContentType = objectInfo.ContentType,
+                Metadata = objectInfo.Metadata is null ? null : new Dictionary<string, string>(objectInfo.Metadata, StringComparer.Ordinal),
+                Tags = objectInfo.Tags is null ? null : new Dictionary<string, string>(objectInfo.Tags, StringComparer.Ordinal),
+                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase)
+            };
+    }
+
+    private async Task<StorageResult<BucketInfo>> HeadBucketCoreAsync(string bucketName, string bucketPath, CancellationToken cancellationToken)
+    {
+        var directoryInfo = new DirectoryInfo(bucketPath);
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        return StorageResult<BucketInfo>.Success(new BucketInfo
+        {
+            Name = bucketName,
+            CreatedAtUtc = directoryInfo.CreationTimeUtc,
+            VersioningEnabled = metadata.VersioningStatus == BucketVersioningStatus.Enabled
+        });
+    }
+
+    private static void DeleteBucketMetadata(string bucketPath)
+    {
+        var bucketMetadataPath = GetBucketMetadataPath(bucketPath);
+        if (File.Exists(bucketMetadataPath)) {
+            File.Delete(bucketMetadataPath);
+        }
+    }
+
+    private static async Task<DiskBucketMetadata> ReadBucketMetadataAsync(string bucketPath, CancellationToken cancellationToken)
+    {
+        var bucketMetadataPath = GetBucketMetadataPath(bucketPath);
+        if (!File.Exists(bucketMetadataPath)) {
+            return new DiskBucketMetadata();
+        }
+
+        await using var stream = new FileStream(bucketMetadataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        return await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskBucketMetadata, cancellationToken)
+            ?? new DiskBucketMetadata();
+    }
+
+    private static async Task WriteBucketMetadataAsync(string bucketPath, DiskBucketMetadata metadata, CancellationToken cancellationToken)
+    {
+        var bucketMetadataPath = GetBucketMetadataPath(bucketPath);
+        var tempBucketMetadataPath = $"{bucketMetadataPath}.{Guid.NewGuid():N}.tmp";
+        try {
+            await using (var stream = new FileStream(tempBucketMetadataPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
+                await JsonSerializer.SerializeAsync(stream, metadata, DiskStorageJsonSerializerContext.Default.DiskBucketMetadata, cancellationToken);
+            }
+
+            File.Move(tempBucketMetadataPath, bucketMetadataPath, overwrite: true);
+        }
+        finally {
+            if (File.Exists(tempBucketMetadataPath)) {
+                File.Delete(tempBucketMetadataPath);
+            }
+        }
+    }
+
     private async ValueTask<StorageResult<MultipartUploadStateContext>> ReadMultipartStateAsync(string bucketName, string key, string uploadId, CancellationToken cancellationToken)
     {
         var uploadDirectoryPath = GetMultipartUploadPath(bucketName, uploadId);
         var statePath = GetMultipartStatePath(uploadDirectoryPath);
-        if (!File.Exists(statePath)) {
+        if (_multipartStateStore is null && !File.Exists(statePath)) {
             return StorageResult<MultipartUploadStateContext>.Failure(MultipartConflict(
                 $"Multipart upload '{uploadId}' was not found.",
                 bucketName,
                 key));
         }
 
-        await using var stream = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        var state = await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+        var state = await ReadStoredMultipartStateAsync(bucketName, key, uploadId, statePath, cancellationToken);
         if (state is null
             || !string.Equals(state.BucketName, bucketName, StringComparison.Ordinal)
             || !string.Equals(state.Key, key, StringComparison.Ordinal)
@@ -723,21 +1859,38 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         InitiateMultipartUploadRequest request,
         CancellationToken cancellationToken)
     {
-        var state = new DiskMultipartUploadState
+        var state = new MultipartUploadState
         {
             BucketName = uploadInfo.BucketName,
             Key = uploadInfo.Key,
             UploadId = uploadInfo.UploadId,
             InitiatedAtUtc = uploadInfo.InitiatedAtUtc,
             ContentType = request.ContentType,
-            Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata)
+            Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata),
+            ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm
         };
+
+        if (_multipartStateStore is not null) {
+            await _multipartStateStore.UpsertMultipartUploadStateAsync(Name, state, cancellationToken);
+            Directory.CreateDirectory(GetMultipartPartsDirectoryPath(uploadDirectoryPath));
+            return StorageResult<MultipartUploadInfo>.Success(uploadInfo);
+        }
 
         var statePath = GetMultipartStatePath(uploadDirectoryPath);
         var tempStatePath = $"{statePath}.{Guid.NewGuid():N}.tmp";
+        var diskState = new DiskMultipartUploadState
+        {
+            BucketName = state.BucketName,
+            Key = state.Key,
+            UploadId = state.UploadId,
+            InitiatedAtUtc = state.InitiatedAtUtc,
+            ContentType = state.ContentType,
+            Metadata = state.Metadata is null ? null : new Dictionary<string, string>(state.Metadata, StringComparer.Ordinal),
+            ChecksumAlgorithm = state.ChecksumAlgorithm
+        };
         try {
             await using (var stream = new FileStream(tempStatePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await JsonSerializer.SerializeAsync(stream, state, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+                await JsonSerializer.SerializeAsync(stream, diskState, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
             }
 
             File.Move(tempStatePath, statePath, overwrite: true);
@@ -748,6 +1901,57 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
             if (File.Exists(tempStatePath)) {
                 File.Delete(tempStatePath);
             }
+        }
+    }
+
+    private async ValueTask<MultipartUploadState?> ReadStoredMultipartStateAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        string statePath,
+        CancellationToken cancellationToken)
+    {
+        if (_multipartStateStore is not null) {
+            return await _multipartStateStore.GetMultipartUploadStateAsync(Name, bucketName, key, uploadId, cancellationToken);
+        }
+
+        if (!File.Exists(statePath)) {
+            return null;
+        }
+
+        await using var stream = new FileStream(statePath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var diskState = await JsonSerializer.DeserializeAsync(stream, DiskStorageJsonSerializerContext.Default.DiskMultipartUploadState, cancellationToken);
+        if (diskState is null) {
+            return null;
+        }
+
+        return new MultipartUploadState
+        {
+            BucketName = diskState.BucketName,
+            Key = diskState.Key,
+            UploadId = diskState.UploadId,
+            InitiatedAtUtc = diskState.InitiatedAtUtc,
+            ContentType = diskState.ContentType,
+            Metadata = diskState.Metadata,
+            ChecksumAlgorithm = diskState.ChecksumAlgorithm
+        };
+    }
+
+    private async Task DeleteStoredMultipartStateAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        string uploadDirectoryPath,
+        CancellationToken cancellationToken)
+    {
+        if (_multipartStateStore is not null) {
+            await _multipartStateStore.RemoveMultipartUploadStateAsync(Name, bucketName, key, uploadId, cancellationToken);
+            return;
+        }
+
+        var statePath = GetMultipartStatePath(uploadDirectoryPath);
+        if (File.Exists(statePath)) {
+            File.Delete(statePath);
         }
     }
 
@@ -772,6 +1976,158 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
     private static string BuildETag(FileInfo fileInfo)
     {
         return $"{fileInfo.Length:x}-{fileInfo.LastWriteTimeUtc.Ticks:x}";
+    }
+
+    private static string CreateVersionId()
+    {
+        return Guid.CreateVersion7().ToString("N");
+    }
+
+    private static async Task<IReadOnlyDictionary<string, string>> ComputeChecksumsAsync(string objectPath, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(objectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var crc32 = Crc32Accumulator.Create();
+        var buffer = new byte[81920];
+
+        while (true) {
+            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            if (read == 0) {
+                break;
+            }
+
+            sha256.AppendData(buffer, 0, read);
+            crc32.Append(buffer.AsSpan(0, read));
+        }
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["sha256"] = Convert.ToBase64String(sha256.GetHashAndReset()),
+            ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes())
+        };
+    }
+
+    private StorageError? ValidateRequestedChecksums(
+        IReadOnlyDictionary<string, string>? requestedChecksums,
+        IReadOnlyDictionary<string, string>? actualChecksums,
+        string bucketName,
+        string objectKey)
+    {
+        if (requestedChecksums is null || requestedChecksums.Count == 0) {
+            return null;
+        }
+
+        foreach (var requestedChecksum in requestedChecksums) {
+            if (!string.Equals(requestedChecksum.Key, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(requestedChecksum.Key, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+                return StorageError.Unsupported(
+                    $"Checksum algorithm '{requestedChecksum.Key}' is not currently supported for request validation.",
+                    bucketName,
+                    objectKey);
+            }
+
+            if (actualChecksums is null
+                || !actualChecksums.TryGetValue(requestedChecksum.Key, out var actualChecksum)
+                || !string.Equals(requestedChecksum.Value, actualChecksum, StringComparison.Ordinal)) {
+                return new StorageError
+                {
+                    Code = StorageErrorCode.InvalidChecksum,
+                    Message = $"The supplied {requestedChecksum.Key.ToUpperInvariant()} checksum for object '{objectKey}' does not match the uploaded content.",
+                    BucketName = bucketName,
+                    ObjectKey = objectKey,
+                    ProviderName = options.ProviderName,
+                    SuggestedHttpStatusCode = 400
+                };
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryNormalizeChecksumAlgorithm(string? value, out string? checksumAlgorithm)
+    {
+        if (string.IsNullOrWhiteSpace(value)) {
+            checksumAlgorithm = null;
+            return true;
+        }
+
+        if (string.Equals(value, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "SHA256", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = Sha256ChecksumAlgorithm;
+            return true;
+        }
+
+        if (string.Equals(value, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "CRC32", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = Crc32ChecksumAlgorithm;
+            return true;
+        }
+
+        checksumAlgorithm = null;
+        return false;
+    }
+
+    private static bool TryGetChecksumValue(IReadOnlyDictionary<string, string>? checksums, string? algorithm, out string value)
+    {
+        value = string.Empty;
+        if (checksums is null || string.IsNullOrWhiteSpace(algorithm)) {
+            return false;
+        }
+
+        if (checksums.TryGetValue(algorithm, out var directValue) && !string.IsNullOrWhiteSpace(directValue)) {
+            value = directValue;
+            return true;
+        }
+
+        foreach (var checksum in checksums) {
+            if (string.Equals(checksum.Key, algorithm, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(checksum.Value)) {
+                value = checksum.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static IReadOnlyDictionary<string, string>? CreateMultipartPartResponseChecksums(
+        IReadOnlyDictionary<string, string> actualChecksums,
+        string? uploadChecksumAlgorithm,
+        IReadOnlyDictionary<string, string>? requestedChecksums)
+    {
+        if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
+            && TryGetChecksumValue(actualChecksums, uploadChecksumAlgorithm, out var uploadChecksum)) {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [uploadChecksumAlgorithm] = uploadChecksum
+            };
+        }
+
+        if (requestedChecksums is null || requestedChecksums.Count == 0) {
+            return null;
+        }
+
+        var responseChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var requestedChecksum in requestedChecksums) {
+            if (TryGetChecksumValue(actualChecksums, requestedChecksum.Key, out var actualChecksum)) {
+                responseChecksums[requestedChecksum.Key] = actualChecksum;
+            }
+        }
+
+        return responseChecksums.Count == 0
+            ? null
+            : responseChecksums;
+    }
+
+    private static string BuildCompositeSha256Checksum(IReadOnlyList<string> partChecksums)
+    {
+        using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var partChecksum in partChecksums) {
+            checksum.AppendData(Convert.FromBase64String(partChecksum));
+        }
+
+        return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Count}";
     }
 
     private static StorageError? EvaluatePreconditions(GetObjectRequest request, ObjectInfo objectInfo)
@@ -973,6 +2329,19 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         };
     }
 
+    private StorageError MultipartInvalidRequest(string message, string bucketName, string objectKey)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.MultipartConflict,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
     private static bool WasModifiedAfter(DateTimeOffset lastModifiedUtc, DateTimeOffset comparisonUtc)
     {
         return TruncateToWholeSeconds(lastModifiedUtc) > TruncateToWholeSeconds(comparisonUtc);
@@ -1008,12 +2377,14 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         };
     }
 
-    private StorageError ObjectNotFound(string bucketName, string objectKey)
+    private StorageError ObjectNotFound(string bucketName, string objectKey, string? versionId = null)
     {
         return new StorageError
         {
             Code = StorageErrorCode.ObjectNotFound,
-            Message = $"Object '{objectKey}' was not found in bucket '{bucketName}'.",
+            Message = string.IsNullOrWhiteSpace(versionId)
+                ? $"Object '{objectKey}' was not found in bucket '{bucketName}'."
+                : $"Object '{objectKey}' with version '{versionId}' was not found in bucket '{bucketName}'.",
             BucketName = bucketName,
             ObjectKey = objectKey,
             ProviderName = options.ProviderName,
@@ -1021,6 +2392,61 @@ internal sealed class DiskStorageService(DiskStorageOptions options) : IStorageB
         };
     }
 
-    private sealed record MultipartUploadStateContext(string UploadDirectoryPath, DiskMultipartUploadState State);
+    private sealed record MultipartUploadStateContext(string UploadDirectoryPath, MultipartUploadState State);
+
+    private sealed record ResolvedStoredObject(string? ContentPath, DiskObjectMetadata Metadata, bool IsCurrent, bool IsDeleteMarker);
+
+    private sealed record ArchivedVersionEntry(string ObjectKey, string VersionId, string ContentPath);
+
+    private struct Crc32Accumulator
+    {
+        private static readonly uint[] Table = CreateTable();
+
+        private uint _current;
+
+        public static Crc32Accumulator Create()
+        {
+            return new Crc32Accumulator
+            {
+                _current = 0xFFFFFFFFu
+            };
+        }
+
+        public void Append(ReadOnlySpan<byte> buffer)
+        {
+            foreach (var value in buffer) {
+                _current = (_current >> 8) ^ Table[(byte)(_current ^ value)];
+            }
+        }
+
+        public byte[] GetHashBytes()
+        {
+            var finalized = ~_current;
+            return
+            [
+                (byte)(finalized >> 24),
+                (byte)(finalized >> 16),
+                (byte)(finalized >> 8),
+                (byte)finalized
+            ];
+        }
+
+        private static uint[] CreateTable()
+        {
+            var table = new uint[256];
+            for (uint i = 0; i < table.Length; i++) {
+                var value = i;
+                for (var bit = 0; bit < 8; bit++) {
+                    value = (value & 1) == 0
+                        ? value >> 1
+                        : 0xEDB88320u ^ (value >> 1);
+                }
+
+                table[i] = value;
+            }
+
+            return table;
+        }
+    }
 
 }

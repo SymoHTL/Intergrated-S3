@@ -13,4 +13,8 @@ public sealed class UploadMultipartPartRequest
     public required Stream Content { get; init; }
 
     public long? ContentLength { get; init; }
+
+    public string? ChecksumAlgorithm { get; init; }
+
+    public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 }

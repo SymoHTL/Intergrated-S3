@@ -14,7 +14,7 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - capability descriptors
   - async storage contracts
   - backend abstraction via `IStorageBackend`
-  - request models for range, conditional, pagination, and copy-object flows
+  - request models for range, conditional, pagination, copy-object, multipart-upload, and object-tagging flows
 - `IntegratedS3.Core` orchestration layer with:
   - `IStorageService` orchestration over registered backends
   - provider selection through registered backends
@@ -23,6 +23,8 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - overrideable backend-health evaluation via `IStorageBackendHealthEvaluator`
   - catalog synchronization hooks for bucket/object operations
   - first-class copy orchestration over registered backends
+  - multipart orchestration over the primary backend with explicit unsupported behavior under write-through replication
+  - current-version object-tag read/write orchestration with catalog refresh and write-through replication support
   - storage-aware authorization via an `IStorageService` decorator over orchestration
 - default `IntegratedS3.Core` registration with an overrideable `IStorageCatalogStore`
 - default `IntegratedS3.Core` authorization registration with:
@@ -39,8 +41,16 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - range reads
   - ETag/date-based conditional reads
   - copy operations with source preconditions
+  - multipart upload initiate/upload-part/complete/abort behavior with persisted upload state and part assembly
+  - current-version object-tag persistence through sidecar metadata
+  - bucket-level versioning configuration persistence with enable/suspend controls
+  - historical object version archiving plus version-id-aware read/head/delete/tag flows for current and archived object versions
+  - S3-style delete-marker creation and promotion behavior for version-enabled deletes
+  - list-object-versions semantics for current objects, archived versions, and delete markers
+  - computed SHA-256 object checksum persistence/exposure for the current write, copy, and multipart paths, including per-part checksum echoes and composite multipart completion responses
+  - request-side SHA-256 and CRC32 checksum validation for direct put-object writes plus multipart SHA-256 part validation on the supported surface
   - streaming reads/writes
-  - sidecar metadata persistence
+  - transitional sidecar metadata persistence with platform-managed historical version/delete-marker state composition when an object-state store is registered
   - basic path traversal protection
 - `IntegratedS3.AspNetCore` integration with:
   - `AddIntegratedS3(...)`
@@ -52,21 +62,32 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - service document endpoint
   - capability endpoint
   - bucket endpoints
-  - object endpoints with metadata-header round-tripping, pagination, range, conditional, and copy behavior
+  - object endpoints with metadata-header round-tripping, pagination, range, conditional, copy, and multipart behavior
   - S3-compatible XML list-buckets, list-objects-v2, batch-delete, error, and copy-object responses for the currently supported surface area
+  - S3-compatible multipart initiate/part-upload/complete/abort flows for the currently supported surface area
+  - S3-compatible object tagging via `GET` / `PUT ?tagging` for current and archived versions on the currently supported surface
+  - S3-compatible bucket versioning configuration via `GET` / `PUT ?versioning`
+  - S3-compatible object access via `versionId` on the currently supported object/tagging/delete routes for current and archived versions
+  - S3-compatible `x-amz-version-id` response headers for current object versions
+  - S3-compatible `x-amz-delete-marker` response headers and delete-result XML fields for versioned deletes
+  - S3-compatible `GET ?versions` bucket listing with `key-marker` / `version-id-marker` handling
+  - S3-compatible `x-amz-checksum-sha256` and `x-amz-checksum-crc32` request validation for current direct put-object flows
   - `ListObjectsV2` delimiter/common-prefix and `start-after` handling for S3-compatible hierarchical listings
   - AWS Signature Version 4 request authentication for both authorization-header and presigned-query request flows when enabled
+  - SigV4-compatible `aws-chunked` request body decoding for current write flows including multipart part upload
   - optional virtual-hosted-style request routing when enabled via configuration
   - conditional authentication middleware activation when auth services are registered
 - automated tests covering:
   - bootstrap registration
-  - disk provider behavior including pagination, range, conditional requests, and copy operations
-  - HTTP integration behavior including metadata headers, pagination, range, conditional requests, copy operations, S3-compatible XML list/delete behavior, `ListObjectsV2` delimiter/common-prefix and `start-after` flows, and virtual-hosted-style routing
-  - Core orchestration behavior including catalog synchronization for copied objects and mirrored write-through replication
+  - disk provider behavior including pagination, range, conditional requests, copy operations, multipart upload flows, bucket versioning controls, historical object version access/tagging/deletion, and checksum request validation
+  - HTTP integration behavior including metadata headers, pagination, range, conditional requests, copy operations, multipart upload flows, bucket versioning controls, historical object `versionId` access, checksum-header validation, S3-compatible XML list/delete/versioning behavior, `ListObjectsV2` delimiter/common-prefix and `start-after` flows, and virtual-hosted-style routing
+  - S3-compatible list-object-versions and delete-marker behavior across HTTP and AWS SDK compatibility flows
+  - Core orchestration behavior including catalog synchronization for copied objects, mirrored write-through replication, and replicated object-tag updates
   - Core read routing behavior for unhealthy primaries, replica-preferred reads, and provider-unavailable read failover
+  - Core multipart behavior including explicit rejection when write-through replication is enabled
   - ClaimsPrincipal-driven authorization behavior in both Core and HTTP flows
   - SigV4 header authentication, presigned-query authentication, and invalid-signature handling on the HTTP surface
-  - AWS SDK compatibility behavior for path-style and virtual-hosted-style CRUD/list flows, root bucket listing, delimiter/start-after object listing, plus presigned URL and copy/conditional coverage
+  - AWS SDK compatibility behavior for path-style and virtual-hosted-style CRUD/list flows, root bucket listing, delimiter/start-after object listing, multipart upload flows, plus presigned URL and copy/conditional coverage
   - overrideability of the catalog persistence abstraction
 
 ### Important current architectural decision
@@ -114,6 +135,28 @@ This is especially important for potential future providers such as MediaFire-st
 
 Detailed to do:
 
+- **define auxiliary support-state ownership explicitly**
+
+  - add a second backend-reported descriptor in addition to capability support status so the system can express where non-blob support state lives
+  - this should answer questions such as:
+    - does the backend itself own metadata persistence?
+    - does IntegratedS3 own that state through a platform-managed database/catalog layer?
+    - is the state delegated to an upstream system?
+  - evaluate an enum/descriptor shape along the lines of:
+    - `BackendOwned`
+    - `PlatformManaged`
+    - `Delegated`
+    - `None` / `NotApplicable`
+  - apply this concept to metadata, tags, checksums, version catalogs, multipart state, retention state, and redirect/location state rather than assuming a single storage strategy for all concerns
+  - capability support should answer **whether** a feature exists, while this second descriptor should answer **who persists or resolves its support state**
+  - for the target disk-provider architecture, object bytes live on disk but metadata and other auxiliary state should default to `PlatformManaged` rather than sidecar files
+
+Status:
+
+- support-state ownership descriptors now exist and can report `PlatformManaged` ownership independently from capability support
+- the disk provider now uses that model for historical version/delete-marker metadata when an object-state store is registered
+- current-object metadata and some other auxiliary state still retain transitional sidecar behavior and should continue moving toward platform-managed persistence
+
 - **define provider modes explicitly**
 
   - document and support at least these provider shapes:
@@ -125,6 +168,8 @@ Detailed to do:
 - **keep raw storage transport separate from auxiliary feature state**
 
   - avoid assuming every `IStorageBackend` can or should persist arbitrary extra metadata next to the object
+  - do not require local providers such as the disk backend to own metadata persistence just because they own object bytes
+  - prefer an architecture where the backend focuses on bucket/object transport and a separate platform-managed persistence layer stores auxiliary state
   - treat the following as potentially externalized concerns rather than mandatory backend-owned concerns:
     - object metadata persistence
     - object tags
@@ -143,17 +188,20 @@ Detailed to do:
     - tag store
     - checksum store / validator
     - redirect or object-location resolver
+  - make the platform-managed database layer the default composition point for these services in managed deployments instead of assuming filesystem sidecars in each provider
+  - design the disk provider specifically so it can store bytes only while metadata, tags, versions, multipart state, and checksums are persisted through these support services
   - ensure these services are optional and overrideable through DI
   - keep `IntegratedS3.Core` persistence-agnostic while still allowing composition with EF, custom databases, caches, or provider-native implementations
 
 - **clarify capability reporting beyond simple local emulation**
 
   - revisit whether `native | emulated | unsupported` is expressive enough for long-term provider diversity
+  - keep capability support and support-state ownership as separate concepts so a feature can be reported as `emulated` while its state ownership is `PlatformManaged`
   - evaluate whether the system needs additional semantics such as:
     - delegated
     - externalized
     - proxied
-  - if the enum should remain small, add another descriptor surface that explains *how* a capability is fulfilled without breaking current compatibility reporting
+  - if the capability enum should remain small, add another descriptor surface that explains *how* a capability is fulfilled and where its support state lives without breaking current compatibility reporting
   - document clearly that disk sidecars are only one emulation technique, not the canonical expectation for all providers
 
 - **design a first-class passthrough / middleman mode**
@@ -180,6 +228,7 @@ Detailed to do:
 - **ensure future provider implementations are not blocked by local-sidecar assumptions**
 
   - add tests and design checks for providers that cannot write arbitrary sidecar files or auxiliary metadata next to the blob
+  - add tests and design checks for providers that intentionally persist all metadata in the platform-managed database layer while the backend stores only object bytes
   - validate at least one future-oriented scenario such as:
     - upstream S3 passthrough provider
     - remote blob provider with external metadata catalog
@@ -188,8 +237,9 @@ Detailed to do:
 
 - **treat disk sidecars as an implementation choice, not a platform law**
 
-  - keep the disk backend free to use sidecars/index files where that remains pragmatic
-  - avoid letting that implementation choice leak upward into shared abstractions or orchestration assumptions
+  - treat the current sidecar approach as transitional, not as the target architecture
+  - the intended end state for the disk provider is that disk stores object bytes and the database/support-state layer stores metadata, tags, checksums, version chains, and multipart tracking
+  - avoid letting any temporary sidecar/index implementation leak upward into shared abstractions or orchestration assumptions
   - whenever a new shared contract is introduced, explicitly ask whether it requires backend-owned persistence or can be satisfied through composition
 
 - **sequence this work alongside the next capability slices**
@@ -199,6 +249,7 @@ Detailed to do:
     - native implementations
     - externalized support-state implementations
     - delegated/passthrough implementations
+  - use the disk provider as the first proof point for `PlatformManaged` support-state ownership instead of adding more sidecar-backed metadata behavior there
   - do not bake disk-specific persistence assumptions into the new versioning/tag/checksum APIs
 
 ### Recommended package layout
@@ -241,7 +292,7 @@ Detailed to do:
 
 - `IntegratedS3.Provider.Disk`
   - disk backend implementation
-  - metadata/version sidecar support
+  - local blob storage with externally managed metadata/support-state by default
   - local streaming/file I/O
 
 - `IntegratedS3.Client`
@@ -288,11 +339,36 @@ Define a backend-agnostic storage contract that supports S3-level semantics whil
 - encryption descriptors
 - capability discovery
 
+### Auxiliary support-state ownership
+
+Capability support alone is not enough. The system also needs a separate backend-reported descriptor that explains where non-blob support state is owned or resolved.
+
+Recommended direction:
+
+- keep capability status focused on `native | emulated | unsupported`
+- add a second enum/descriptor for support-state ownership, with a shape such as:
+  - `BackendOwned`
+  - `PlatformManaged`
+  - `Delegated`
+  - `None` / `NotApplicable`
+- allow this descriptor to apply per concern or per capability slice rather than only once for the entire backend
+- use it to drive orchestration and persistence composition for:
+  - metadata
+  - tags
+  - checksums
+  - version chains
+  - multipart state
+  - retention/legal-hold state
+  - redirect/object-location state
+
+The desired disk-provider direction is explicit: the disk backend should store raw object bytes, while metadata and other auxiliary state should live in the platform-managed database/catalog layer.
+
 ### Required design rules
 
 - no provider-specific SDK types should leak into public contracts
 - all storage operations must be async and streaming-capable
 - unsupported features must be explicit through capability reporting, not hidden or silently degraded
+- backend contracts must not require providers to persist auxiliary metadata or other support state when that state can be externalized through platform services
 - error behavior must be normalized
 
 ### Canonical error model
@@ -347,9 +423,26 @@ For each feature, every backend should declare one of:
 - emulated
 - unsupported
 
+### Per-backend support-state ownership
+
+For metadata-bearing or emulated features, every backend should also declare where the auxiliary support state lives:
+
+- `BackendOwned`
+- `PlatformManaged`
+- `Delegated`
+- `None` / `NotApplicable`
+
+This second descriptor is especially important for local and passthrough providers, because it prevents the architecture from assuming that `emulated` automatically means `persisted by the storage driver itself`.
+
+Examples:
+
+- disk provider: object bytes may be backend-owned on disk while metadata/tags/versioning/checksum state is `PlatformManaged`
+- S3 passthrough provider: support state may be `Delegated` to the upstream S3-compatible system
+- custom website/blob provider: object transport may be backend-owned while metadata is either `PlatformManaged` or `Delegated` depending on integration shape
+
 ### Disk backend emulation needs
 
-The disk provider will likely need sidecar/index support for:
+The disk provider will likely need externally managed catalog/state support — database-backed by default — for:
 
 - ETags
 - metadata
@@ -367,8 +460,8 @@ The project now has enough implemented surface area that the capability slices c
 | --- | --- | --- | --- | --- | --- |
 | bucket create/delete/list/head | implemented | native | implemented | yes | available through both JSON convenience routes and S3-compatible routes |
 | object get/put/delete/head | implemented | native | implemented | yes | supports streaming request/response flows |
-| object metadata and headers | implemented | emulated | implemented | yes | disk uses sidecar metadata persistence and metadata-header round-tripping |
-| list objects semantics | implemented | native | partially implemented | yes | S3 surface currently focuses on `ListObjectsV2`; version-aware listing is still pending |
+| object metadata and headers | implemented | emulated | implemented | yes | current disk implementation uses sidecars for metadata-header round-tripping; target architecture moves this support state into the platform-managed database/catalog layer |
+| list objects semantics | implemented | native plus emulated version catalogs | implemented | yes | S3 surface now supports both `ListObjectsV2` and `GET ?versions` for the currently supported versioned-object lifecycle |
 | pagination / continuation tokens | implemented | native | implemented | yes | JSON route exposes a continuation header; S3 route exposes `NextContinuationToken` |
 | delimiter / common-prefix listing | implemented | emulated at protocol layer | implemented | yes | current S3-compatible behavior is exercised for hierarchical listings |
 | range requests | implemented | native | implemented | yes | single-range byte requests only today |
@@ -381,10 +474,10 @@ The project now has enough implemented surface area that the capability slices c
 | SigV4 header authentication | implemented | n/a | implemented | yes | authorization-header validation is covered in HTTP and AWS SDK tests |
 | SigV4 presigned-query validation | implemented | n/a | implemented | yes | request validation exists even though first-party presign generation does not |
 | first-party presign generation | not started | unsupported | not exposed | no | next step belongs in client/core surface design, not only protocol helpers |
-| multipart upload lifecycle | not started | unsupported | not implemented | no | currently the largest protocol fidelity gap |
-| object tags | not started | unsupported | not implemented | no | no shared contract or disk-side persistence yet |
-| versioning | placeholder only | unsupported | not implemented | no | contracts mention version-shaped flows, but end-to-end behavior is still absent |
-| checksums | not started | unsupported | not implemented | no | hash persistence/validation and header parity are both still pending |
+| multipart upload lifecycle | implemented | emulated | implemented | yes | initiate/upload-part/complete/abort flows are implemented; current orchestration remains primary-backend-only and rejects write-through replication |
+| object tags | partially implemented | emulated | implemented | yes | direct contracts and S3-compatible `GET` / `PUT` / `DELETE ?tagging` now cover current and archived object versions on the currently supported surface, including version-id-aware delete-tagging parity; broader tagging edge cases and continued persistence cleanup are still pending |
+| versioning | implemented for the current vertical slice | emulated with platform-managed historical catalogs | implemented for the current supported surface | yes | current object versions receive persisted opaque version IDs, overwrites archive historical versions, `versionId` read/head/delete/tagging/copy-source flows can target archived versions, `GET` / `PUT ?versioning` round-trip through Core/disk/HTTP, `GET ?versions` now lists historical versions and delete markers, and version-enabled deletes now create S3-compatible delete markers while historical metadata can be platform-managed |
+| checksums | partially implemented | emulated | partially implemented | yes | disk now computes and persists checksums for the current put/copy/multipart flows, preserves them through platform-managed object state, validates direct put-object SHA-256 plus CRC32 request headers, and supports checksum-enabled multipart SHA-256 initiate/upload-part/complete parity including per-part checksum echoes plus composite completion checksum/type exposure; broader algorithm coverage and deeper header edge cases are still pending |
 | ACL / policy behavior | not started | unsupported | not implemented | no | authorization is `ClaimsPrincipal`-driven rather than S3 ACL compatible today |
 | CORS | not started | unsupported | not implemented | no | expected to land later as explicit HTTP integration work |
 | object lock / retention / legal hold | not started | unsupported | not implemented | no | needs both abstractions and provider persistence shape |
@@ -491,8 +584,13 @@ Status:
 
 - initial endpoint mapping is implemented for service, bucket, and object operations
 - object endpoints now include pagination, range requests, conditional GET/HEAD support, and copy-object behavior via `PUT` with `x-amz-copy-source`
+- S3-compatible multipart initiate/upload-part/complete/abort routing is implemented on the current object surface
+- S3-compatible current-version object tagging is implemented through `GET` / `PUT ?tagging`
+- `versionId` handling is implemented for the currently supported object read/head/delete and tagging routes, and copy-source parsing now honors `versionId` for archived-version source reads as well
+- current object responses now emit `x-amz-version-id`, direct put-object requests can validate `x-amz-checksum-sha256` / `x-amz-checksum-crc32`, and bucket routes now support S3-compatible `GET` / `PUT ?versioning`
 - S3-compatible root/bucket/object routing is implemented alongside the JSON convenience endpoints for the currently supported operations
 - AWS Signature Version 4 request validation is implemented for authorization-header and presigned-query requests, though first-party presign generation APIs are still pending
+- SigV4-compatible `aws-chunked` request bodies are decoded for the currently supported write flows, including multipart part upload
 - batch delete and S3-compatible XML list responses are implemented for the supported bucket-level routes, including delimiter/common-prefix and `start-after` handling on the `list-type=2` surface
 - authenticated ASP.NET requests now flow `HttpContext.User` into Core authorization evaluation
 - feature-group toggles are not implemented yet
@@ -627,20 +725,26 @@ Status:
 - conditional request status mapping is partially implemented for `GET`/`HEAD` via ETag and HTTP-date validators
 - continuation-token pagination is implemented for both the JSON convenience endpoint (custom continuation header) and the S3-compatible `list-type=2` XML bucket-listing route
 - S3-compatible `ListObjectsV2` now supports delimiter/common-prefix and `start-after` semantics for the currently supported surface area
+- multipart upload initiate/upload-part/complete/abort behavior is implemented across the current abstractions, disk backend, XML request/response models, and S3-compatible HTTP object routes
+- object tagging is implemented across the current abstractions, disk backend, XML request/response models, and S3-compatible HTTP object routes for current and archived versions on the supported surface
+- historical object-addressing is now implemented for the currently supported `versionId` object/tagging/delete flows, with `x-amz-version-id` emitted on current and archived object responses
+- bucket-level versioning controls are implemented for the currently supported `GET` / `PUT ?versioning` route surface
 - copy-object behavior is implemented through `PUT` plus `x-amz-copy-source`, and the HTTP surface now returns an S3-style XML `CopyObjectResult`
 - batch delete is implemented through `POST ?delete`, and the HTTP surface now returns an S3-style XML `DeleteResult`
 - S3-style XML error responses are now returned for storage endpoint failures
-- SigV4 authorization-header and presigned-query request authentication are implemented for the currently supported surface area, while multipart and broader parity hardening are still pending
+- SigV4 authorization-header and presigned-query request authentication are implemented for the currently supported surface area, and SigV4-compatible `aws-chunked` request decoding now supports current write flows including multipart part upload
+- direct put-object requests now validate SHA-256 checksum headers on the current supported surface area and map mismatches to S3-style `BadDigest` responses
 
 ### Current protocol fidelity gaps worth prioritizing
 
 The current HTTP surface is real and useful, but it still has some clearly bounded fidelity gaps that should be treated as deliberate backlog rather than invisible debt:
 
-- multipart upload lifecycle is entirely absent across abstractions, providers, endpoints, and tests
+- multipart upload support currently covers the core initiate/upload-part/complete/abort workflow, but broader parity such as multipart listing/discovery semantics and richer edge-case hardening is still pending
+- object tagging now covers current and archived object versions on the currently supported surface, including S3-compatible delete-tagging; broader S3 tagging edge-case behavior is still pending
 - only the currently supported bucket subresources are implemented; unsupported S3 bucket/object subresources intentionally return `NotImplemented`
-- S3-compatible bucket listing is centered on `list-type=2`; broader listing parity such as version-aware listing and additional subresource combinations is still pending
+- S3-compatible bucket listing now covers both `list-type=2` and the current `?versions` subresource, while additional subresource combinations are still pending
 - conditional behavior is solid for the current `GET` / `HEAD` paths, but broader S3 precedence and edge-case parity still need hardening
-- SigV4 validation works for the implemented routing surface, but canonical-request edge cases and parity hardening should continue before claiming wider compatibility
+- SigV4 validation and `aws-chunked` decoding work for the implemented routing surface, but canonical-request edge cases and parity hardening should continue before claiming wider compatibility
 - first-party presign generation is not yet exposed even though presigned request validation is implemented
 
 ### Addressing strategy
@@ -666,9 +770,10 @@ Build `IntegratedS3.Provider.Disk` first to validate:
 
 Status:
 
-- this milestone is partially implemented
-- current disk backend validates the basic abstraction shape, streaming CRUD, metadata sidecars, local orchestration/catalog persistence, paginated listing, range reads, conditional requests, and copy-object behavior
-- advanced disk-emulated features such as versioning, multipart, checksums, retention, tags, and richer indexing are still pending
+- this milestone is still in progress, but the current versioning slice is substantially broader
+- current disk backend validates the basic abstraction shape, streaming CRUD, metadata sidecars, local orchestration/catalog persistence, paginated listing, range reads, conditional requests, copy-object behavior, multipart upload lifecycle handling, bucket versioning controls, historical object version access/tagging/deletion, list-object-versions behavior, delete-marker creation/promotion, and direct put-object checksum request validation
+- historical version and delete-marker metadata can now be composed through platform-managed object-state/catalog persistence, while some current-object metadata paths still remain transitional sidecar-backed behavior
+- retention, broader indexing, and remaining checksum parity work are still pending
 
 ### 2. Native S3 provider second
 
@@ -791,8 +896,8 @@ Status:
 - disk-provider tests exist
 - ASP.NET integration tests exist
 - Core orchestration tests exist
-- pagination/range/conditional/copy behavior is covered in automated tests today
-- AWS SDK compatibility coverage now includes virtual-hosted-style CRUD/list plus host-style presigned URL and copy/conditional flows
+- pagination/range/conditional/copy/multipart/tagging behavior is covered in automated tests today
+- AWS SDK compatibility coverage now includes virtual-hosted-style CRUD/list plus host-style presigned URL, multipart upload, and copy/conditional flows
 - initial fault-injection coverage now exists for mirrored-write replica failures in Core orchestration tests
 - S3 conformance, broader fault-injection coverage, trimming/AOT publish verification, and benchmark automation are still pending
 
@@ -837,7 +942,7 @@ Status: **in progress / partially complete**
 - disk provider exists
 - local sample host exists
 - direct service usage exists through `IStorageService`
-- current metadata approach is sidecar-based and catalog-assisted, with paginated listing, range reads, conditional requests, and copy operations now implemented
+- current metadata approach is sidecar-based and catalog-assisted, but the target architecture is database-backed platform-managed support state, with paginated listing, range reads, conditional requests, and copy operations now implemented
 - the disk backend is still not feature-complete for versioning/tags/checksums
 
 ### M3 — Native S3 provider and presigned URL support
@@ -898,7 +1003,12 @@ Status: **in progress / partially complete**
 - checksum persistence and validation
 - tag support
 
-Status: **not started**
+Status: **in progress / partially complete**
+
+- object tagging is implemented across abstractions, Core orchestration, HTTP `?tagging` routes, and automated tests for current and archived versions on the supported surface, including explicit delete-tagging flows and version-id-aware response parity, while the disk path still uses sidecars and the target direction remains platform-managed tag persistence
+- persisted checksum metadata is now implemented for the current disk/Core/HTTP object lifecycle paths, including platform-managed object-state composition, SHA-256 response header exposure, direct put-object request-side SHA-256 plus CRC32 validation, and checksum-enabled multipart SHA-256 initiate/upload-part/complete parity with composite completion checksums
+- AWS SDK and S3-compatible HTTP coverage now round-trip the current supported multipart checksum slice, including per-part checksum echoes plus `ChecksumType` / `x-amz-checksum-type` exposure for composite completions
+- version-id scaffolding is now in place for current object versions across disk/Core/catalog/HTTP, bucket-level versioning controls round-trip through Core/disk/HTTP, the disk/HTTP surface supports archived-version access, tagging, delete-tagging, deletion, copy-source reads, list-object-versions, and S3-compatible delete markers, and historical version/delete-marker metadata can now flow through platform-managed catalog/object-state persistence; continued movement of current-object auxiliary metadata off sidecars, broader checksum algorithm coverage, and remaining advanced versioning/tagging edge cases are still pending
 
 ### M7 — Advanced S3-compatible features
 
@@ -962,14 +1072,23 @@ Status: **not started**
 - `src/IntegratedS3/IntegratedS3.Abstractions/Requests/CopyObjectRequest.cs`
   - first-class copy-object contract used by Core, providers, and HTTP copy handling
 
+- `src/IntegratedS3/IntegratedS3.Abstractions/Requests/InitiateMultipartUploadRequest.cs`
+  - provider-agnostic multipart initiation contract
+
+- `src/IntegratedS3/IntegratedS3.Abstractions/Requests/UploadMultipartPartRequest.cs`
+  - provider-agnostic multipart part-upload contract
+
+- `src/IntegratedS3/IntegratedS3.Abstractions/Requests/CompleteMultipartUploadRequest.cs`
+  - provider-agnostic multipart completion contract and ordered part list
+
 - `src/IntegratedS3/IntegratedS3.Core/Services/IStorageCatalogStore.cs`
   - overrideable metadata/catalog persistence abstraction
 
 - `src/IntegratedS3/IntegratedS3.Provider.Disk/DiskStorageService.cs`
-  - current disk backend implementation including pagination, range, conditional, and copy behavior
+  - current disk backend implementation including pagination, range, conditional, copy, and multipart behavior
 
 - `src/IntegratedS3/IntegratedS3.AspNetCore/Endpoints/IntegratedS3EndpointRouteBuilderExtensions.cs`
-  - current HTTP surface for service, bucket, and object operations including conditional reads, pagination, and copy-source handling
+  - current HTTP surface for service, bucket, and object operations including conditional reads, pagination, copy-source handling, multipart routing, and `aws-chunked` request decoding
 
 - `src/IntegratedS3/IntegratedS3.Tests/`
   - current unit and integration coverage for bootstrap, disk, HTTP, and Core orchestration behavior
@@ -1002,31 +1121,29 @@ Status: **not started**
 
 ## Recommended Next Execution Slice
 
-The most pragmatic next step is to make **versioning, tags, and checksum fidelity** the next primary capability slice.
+The most pragmatic next step is now to build on the newly landed **multipart checksum parity, delete-tagging, and platform-managed historical catalog** slice by continuing the migration of auxiliary metadata away from provider-local sidecars and hardening the remaining versioning/tagging edge cases on the current supported surface.
 
 Why this should come next:
 
-- multipart scaffolding has now landed, so the next biggest application-facing fidelity gap is object lifecycle and metadata parity rather than basic transfer flow
-- versioning and checksum-aware writes are natural follow-ons to multipart because they pressure the same object identity and completion boundaries
-- tags and richer metadata fidelity help keep both the in-process service surface and the HTTP surface aligned before more advanced access-control features are added
-- this slice also provides a clearer basis for eventual native S3-provider parity than jumping directly into ACLs, retention, or reconciliation internals
+- the supported multipart checksum slice is now coherent across Core, disk, HTTP, XML, and AWS SDK compatibility tests, so the biggest remaining fidelity gaps have shifted toward persistence cleanup and the rest of the tagging/version lifecycle
+- historical version/delete-marker state and multipart checksum state now have provider-agnostic platform-managed seams, which makes this a good moment to keep moving current-object metadata, tags, and checksums in the same architectural direction
+- remaining non-current-version/tagging edge cases plus auxiliary-state persistence cleanup are now the clearest user-visible and architectural gaps on the supported surface
+- after the auxiliary-state path is less sidecar-centric, reconciliation/health work and advanced subresources can build on a more even provider model
 
 Recommended implementation sequence:
 
-1. add provider-agnostic contracts for version identifiers, object tags, and checksum metadata in `IntegratedS3.Abstractions`
-2. extend Core orchestration and catalog persistence to preserve version/tag/checksum metadata without leaking provider-specific types
-3. implement a first disk-backed emulation strategy for version chains, tag sidecars, and persisted checksum metadata
-4. expose the initial S3-compatible HTTP endpoints and headers for the supported subset
-5. add conformance-style tests plus AWS SDK compatibility coverage for the supported versioning/tag/checksum scenarios
-6. after that slice lands, choose between richer reconciliation/health behavior or the next set of advanced S3-compatible bucket and object subresources
+1. continue moving disk-provider current-object metadata, tags, and checksum persistence from sidecars toward platform-managed support-state services by default
+2. add more conformance-style tests around version pagination markers, remaining non-current-version/tagging edge cases, and checksum/header fidelity
+3. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples for metadata/tag/checksum state evolution
+4. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less sidecar-centric
+5. after that slice lands, choose between reconciliation semantics for divergent replicas or the next set of advanced S3-compatible bucket and object subresources
 
 ## Suggested Next Step
 
 Given the current implementation state, the next recommended step should be:
 
-1. implement versioning, tags, and checksum scaffolding as the next explicit capability slice across abstractions, Core, disk, HTTP, and tests
-2. while doing that work, keep hardening the remaining S3-compatible fidelity edges around multipart listing semantics, checksum headers, and unsupported subresources
-3. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less lopsided
-4. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples
-5. introduce reconciliation semantics for stale or divergent replicas after versioning and multipart foundations are clearer
-
+1. continue moving the disk-provider metadata path toward platform-managed database persistence for current-object metadata, tags, checksums, and other auxiliary support state
+2. add more conformance-style coverage for version pagination markers, remaining non-current-version/tagging cases, and checksum/header fidelity
+3. extend backend health from static evaluation into active probes, health snapshots, and richer read failover semantics once the object-fidelity surface is less sidecar-centric
+4. document the extracted EF integration pattern further with migrations guidance and consumer-owned model examples, including metadata/tag/version/checksum state evolution
+5. introduce reconciliation semantics for stale or divergent replicas after the auxiliary-state migration is clearer

@@ -13,7 +13,7 @@ public interface IStorageCatalogStore
 
     ValueTask UpsertObjectAsync(string providerName, ObjectInfo @object, CancellationToken cancellationToken = default);
 
-    ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, CancellationToken cancellationToken = default);
+    ValueTask RemoveObjectAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default);
 
     ValueTask<IReadOnlyList<StoredObjectEntry>> ListObjectsAsync(string? providerName = null, string? bucketName = null, CancellationToken cancellationToken = default);
 }

@@ -47,6 +47,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             Content = new StringContent("hello from xunit", Encoding.UTF8, "text/plain")
         };
         uploadRequest.Headers.Add("x-integrateds3-meta-author", "copilot");
+        var expectedChecksum = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes("hello from xunit")));
 
         var uploadResponse = await client.SendAsync(uploadRequest);
         Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
@@ -61,16 +62,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("docs/hello.txt", uploadedObject.Key);
         Assert.StartsWith("text/plain", uploadedObject.ContentType, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("copilot", uploadedObject.Metadata!["author"]);
+        Assert.Equal(expectedChecksum, uploadedObject.Checksums!["sha256"]);
 
         using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/test-bucket/objects/docs/hello.txt");
         var headResponse = await client.SendAsync(headRequest);
         Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
         Assert.Equal("copilot", Assert.Single(headResponse.Headers.GetValues("x-integrateds3-meta-author")));
+        Assert.Equal(expectedChecksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha256")));
         Assert.Equal("text/plain", headResponse.Content.Headers.ContentType?.MediaType);
 
         var downloadResponse = await client.GetAsync("/integrated-s3/buckets/test-bucket/objects/docs/hello.txt");
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
         Assert.Equal("copilot", Assert.Single(downloadResponse.Headers.GetValues("x-integrateds3-meta-author")));
+        Assert.Equal(expectedChecksum, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256")));
         Assert.Equal("hello from xunit", await downloadResponse.Content.ReadAsStringAsync());
 
         var deleteObjectResponse = await client.DeleteAsync("/integrated-s3/buckets/test-bucket/objects/docs/hello.txt");
@@ -78,6 +82,316 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var deleteBucketResponse = await client.DeleteAsync("/integrated-s3/buckets/test-bucket");
         Assert.Equal(HttpStatusCode.NoContent, deleteBucketResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task PutObject_WithChecksumHeaders_ValidatesPayloadAndEmitsCurrentVersionHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/versioned-bucket", content: null)).StatusCode);
+
+        const string payload = "hello versioned checksum";
+        var checksum = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/versioned-bucket/docs/versioned.txt")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        putRequest.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", checksum);
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(putResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        var versionId = Assert.Single(putResponse.Headers.GetValues("x-amz-version-id"));
+        Assert.False(string.IsNullOrWhiteSpace(versionId));
+
+        using var putTaggingRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/versioned-bucket/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}")
+        {
+            Content = new StringContent("""
+<Tagging>
+  <TagSet>
+    <Tag><Key>owner</Key><Value>copilot</Value></Tag>
+  </TagSet>
+</Tagging>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var putTaggingResponse = await client.SendAsync(putTaggingRequest);
+        Assert.Equal(HttpStatusCode.OK, putTaggingResponse.StatusCode);
+
+        var getVersionedObjectResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.OK, getVersionedObjectResponse.StatusCode);
+        Assert.Equal(checksum, Assert.Single(getVersionedObjectResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(versionId, Assert.Single(getVersionedObjectResponse.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal(payload, await getVersionedObjectResponse.Content.ReadAsStringAsync());
+
+        var getTaggingResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.OK, getTaggingResponse.StatusCode);
+        var taggingDocument = XDocument.Parse(await getTaggingResponse.Content.ReadAsStringAsync());
+        Assert.Equal("copilot", taggingDocument.Root!.Element("TagSet")!.Element("Tag")!.Element("Value")!.Value);
+
+        var wrongVersionResponse = await client.GetAsync("/integrated-s3/versioned-bucket/docs/versioned.txt?versionId=missing-version");
+        Assert.Equal(HttpStatusCode.NotFound, wrongVersionResponse.StatusCode);
+        var errorDocument = XDocument.Parse(await wrongVersionResponse.Content.ReadAsStringAsync());
+        Assert.Equal("NoSuchKey", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task PutObject_WithMismatchedChecksumHeader_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/bad-digest-bucket", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/bad-digest-bucket/docs/bad.txt")
+        {
+            Content = new StringContent("checksum mismatch", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", "bad-digest");
+
+        var response = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(document, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketVersioning_RoundTripsXmlPayload()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/versioning-config-bucket", content: null)).StatusCode);
+
+        var initialGet = await client.GetAsync("/integrated-s3/versioning-config-bucket?versioning");
+        Assert.Equal(HttpStatusCode.OK, initialGet.StatusCode);
+        var initialDocument = XDocument.Parse(await initialGet.Content.ReadAsStringAsync());
+        Assert.Equal("VersioningConfiguration", initialDocument.Root?.Name.LocalName);
+        Assert.Null(initialDocument.Root?.Element("Status"));
+
+        using var putVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/versioning-config-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var putVersioningResponse = await client.SendAsync(putVersioningRequest);
+        Assert.Equal(HttpStatusCode.OK, putVersioningResponse.StatusCode);
+
+        var enabledGet = await client.GetAsync("/integrated-s3/versioning-config-bucket?versioning");
+        Assert.Equal(HttpStatusCode.OK, enabledGet.StatusCode);
+        var enabledDocument = XDocument.Parse(await enabledGet.Content.ReadAsStringAsync());
+        Assert.Equal("Enabled", GetRequiredElementValue(enabledDocument, "Status"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleHistoricalVersionAccess_RoundTripsVersionIdsAfterOverwrite()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/history-http-bucket", content: null)).StatusCode);
+
+        using var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/history-http-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+
+        var v1Response = await client.PutAsync(
+            "/integrated-s3/history-http-bucket/docs/history.txt",
+            new StringContent("http version one", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v1Response.StatusCode);
+        var v1VersionId = Assert.Single(v1Response.Headers.GetValues("x-amz-version-id"));
+
+        var v2Response = await client.PutAsync(
+            "/integrated-s3/history-http-bucket/docs/history.txt",
+            new StringContent("http version two", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v2Response.StatusCode);
+        var v2VersionId = Assert.Single(v2Response.Headers.GetValues("x-amz-version-id"));
+        Assert.NotEqual(v1VersionId, v2VersionId);
+
+        var currentGet = await client.GetAsync("/integrated-s3/history-http-bucket/docs/history.txt");
+        Assert.Equal(HttpStatusCode.OK, currentGet.StatusCode);
+        Assert.Equal(v2VersionId, Assert.Single(currentGet.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal("http version two", await currentGet.Content.ReadAsStringAsync());
+
+        var historicalGet = await client.GetAsync($"/integrated-s3/history-http-bucket/docs/history.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.OK, historicalGet.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(historicalGet.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal("http version one", await historicalGet.Content.ReadAsStringAsync());
+
+        var deleteHistorical = await client.DeleteAsync($"/integrated-s3/history-http-bucket/docs/history.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteHistorical.StatusCode);
+
+        var missingHistorical = await client.GetAsync($"/integrated-s3/history-http-bucket/docs/history.txt?versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.NotFound, missingHistorical.StatusCode);
+
+        var currentStillThere = await client.GetAsync("/integrated-s3/history-http-bucket/docs/history.txt");
+        Assert.Equal(HttpStatusCode.OK, currentStillThere.StatusCode);
+        Assert.Equal("http version two", await currentStillThere.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleDeleteObjectTagging_ClearsCurrentAndHistoricalVersionTagSets()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/tag-delete-bucket", content: null)).StatusCode);
+
+        using var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tag-delete-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+
+        var v1Response = await client.PutAsync(
+            "/integrated-s3/tag-delete-bucket/docs/tagged.txt",
+            new StringContent("http version one", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v1Response.StatusCode);
+        var v1VersionId = Assert.Single(v1Response.Headers.GetValues("x-amz-version-id"));
+
+        using var putV1TaggingRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(v1VersionId)}")
+        {
+            Content = new StringContent("""
+<Tagging>
+  <TagSet>
+    <Tag><Key>generation</Key><Value>one</Value></Tag>
+  </TagSet>
+</Tagging>
+""", Encoding.UTF8, "application/xml")
+        };
+        var putV1TaggingResponse = await client.SendAsync(putV1TaggingRequest);
+        Assert.Equal(HttpStatusCode.OK, putV1TaggingResponse.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(putV1TaggingResponse.Headers.GetValues("x-amz-version-id")));
+
+        var v2Response = await client.PutAsync(
+            "/integrated-s3/tag-delete-bucket/docs/tagged.txt",
+            new StringContent("http version two", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v2Response.StatusCode);
+        var v2VersionId = Assert.Single(v2Response.Headers.GetValues("x-amz-version-id"));
+        Assert.NotEqual(v1VersionId, v2VersionId);
+
+        using var putCurrentTaggingRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging")
+        {
+            Content = new StringContent("""
+<Tagging>
+  <TagSet>
+    <Tag><Key>generation</Key><Value>two</Value></Tag>
+  </TagSet>
+</Tagging>
+""", Encoding.UTF8, "application/xml")
+        };
+        var putCurrentTaggingResponse = await client.SendAsync(putCurrentTaggingRequest);
+        Assert.Equal(HttpStatusCode.OK, putCurrentTaggingResponse.StatusCode);
+        Assert.Equal(v2VersionId, Assert.Single(putCurrentTaggingResponse.Headers.GetValues("x-amz-version-id")));
+
+        var deleteCurrentTags = await client.DeleteAsync("/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging");
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrentTags.StatusCode);
+        Assert.Equal(v2VersionId, Assert.Single(deleteCurrentTags.Headers.GetValues("x-amz-version-id")));
+
+        var currentTagsResponse = await client.GetAsync("/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging");
+        Assert.Equal(HttpStatusCode.OK, currentTagsResponse.StatusCode);
+        Assert.Equal(v2VersionId, Assert.Single(currentTagsResponse.Headers.GetValues("x-amz-version-id")));
+        var currentTagsDocument = XDocument.Parse(await currentTagsResponse.Content.ReadAsStringAsync());
+        Assert.Empty(currentTagsDocument.Root!.Element("TagSet")!.Elements("Tag"));
+
+        var historicalTagsBeforeDelete = await client.GetAsync($"/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.OK, historicalTagsBeforeDelete.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(historicalTagsBeforeDelete.Headers.GetValues("x-amz-version-id")));
+        var historicalTagsDocument = XDocument.Parse(await historicalTagsBeforeDelete.Content.ReadAsStringAsync());
+        Assert.Equal("one", historicalTagsDocument.Root!.Element("TagSet")!.Element("Tag")!.Element("Value")!.Value);
+
+        var deleteHistoricalTags = await client.DeleteAsync($"/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteHistoricalTags.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(deleteHistoricalTags.Headers.GetValues("x-amz-version-id")));
+
+        var historicalTagsAfterDelete = await client.GetAsync($"/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(v1VersionId)}");
+        Assert.Equal(HttpStatusCode.OK, historicalTagsAfterDelete.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(historicalTagsAfterDelete.Headers.GetValues("x-amz-version-id")));
+        var clearedHistoricalTagsDocument = XDocument.Parse(await historicalTagsAfterDelete.Content.ReadAsStringAsync());
+        Assert.Empty(clearedHistoricalTagsDocument.Root!.Element("TagSet")!.Elements("Tag"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleListObjectVersions_ReportsDeleteMarkersAndHistoricalVersions()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/history-versions-bucket", content: null)).StatusCode);
+
+        using var enableVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/history-versions-bucket?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(enableVersioningRequest)).StatusCode);
+
+        var v1Response = await client.PutAsync(
+            "/integrated-s3/history-versions-bucket/docs/history.txt",
+            new StringContent("http version one", Encoding.UTF8, "text/plain"));
+        var v1VersionId = Assert.Single(v1Response.Headers.GetValues("x-amz-version-id"));
+
+        var v2Response = await client.PutAsync(
+            "/integrated-s3/history-versions-bucket/docs/history.txt",
+            new StringContent("http version two", Encoding.UTF8, "text/plain"));
+        var v2VersionId = Assert.Single(v2Response.Headers.GetValues("x-amz-version-id"));
+
+        var deleteCurrent = await client.DeleteAsync("/integrated-s3/history-versions-bucket/docs/history.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteCurrent.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteCurrent.Headers.GetValues("x-amz-version-id"));
+
+        var currentGet = await client.GetAsync("/integrated-s3/history-versions-bucket/docs/history.txt");
+        Assert.Equal(HttpStatusCode.NotFound, currentGet.StatusCode);
+
+        var versionsResponse = await client.GetAsync("/integrated-s3/history-versions-bucket?versions&prefix=docs/history.txt");
+        Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
+        Assert.Equal("application/xml", versionsResponse.Content.Headers.ContentType?.MediaType);
+
+        var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListVersionsResult", versionsDocument.Root?.Name.LocalName);
+        Assert.Equal("history-versions-bucket", GetRequiredElementValue(versionsDocument, "Name"));
+
+        var deleteMarkers = versionsDocument.Root!.Elements("DeleteMarker").ToArray();
+        var versions = versionsDocument.Root!.Elements("Version").ToArray();
+
+        var deleteMarker = Assert.Single(deleteMarkers);
+        Assert.Equal("docs/history.txt", deleteMarker.Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.Element("VersionId")?.Value);
+        Assert.Equal("true", deleteMarker.Element("IsLatest")?.Value);
+
+        Assert.Equal(2, versions.Length);
+        Assert.Contains(versions, version => version.Element("VersionId")?.Value == v1VersionId);
+        Assert.Contains(versions, version => version.Element("VersionId")?.Value == v2VersionId);
+
+        var deleteDeleteMarker = await client.DeleteAsync($"/integrated-s3/history-versions-bucket/docs/history.txt?versionId={Uri.EscapeDataString(deleteMarkerVersionId)}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteDeleteMarker.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteDeleteMarker.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(deleteDeleteMarker.Headers.GetValues("x-amz-version-id")));
+
+        var restoredGet = await client.GetAsync("/integrated-s3/history-versions-bucket/docs/history.txt");
+        Assert.Equal(HttpStatusCode.OK, restoredGet.StatusCode);
+        Assert.Equal(v2VersionId, Assert.Single(restoredGet.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal("http version two", await restoredGet.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -450,6 +764,52 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleObjectTagging_RoundTripsXmlPayload()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/tagging-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt",
+            new StringContent("hello tags", Encoding.UTF8, "text/plain"));
+
+        const string taggingBody = """
+<Tagging>
+  <TagSet>
+    <Tag><Key>environment</Key><Value>test</Value></Tag>
+    <Tag><Key>owner</Key><Value>copilot</Value></Tag>
+  </TagSet>
+</Tagging>
+""";
+
+        using var putTaggingRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-bucket/docs/tagged.txt?tagging")
+        {
+            Content = new StringContent(taggingBody, Encoding.UTF8, "application/xml")
+        };
+
+        var putTaggingResponse = await client.SendAsync(putTaggingRequest);
+        Assert.Equal(HttpStatusCode.OK, putTaggingResponse.StatusCode);
+
+        var getTaggingResponse = await client.GetAsync("/integrated-s3/tagging-bucket/docs/tagged.txt?tagging");
+        Assert.Equal(HttpStatusCode.OK, getTaggingResponse.StatusCode);
+        Assert.Equal("application/xml", getTaggingResponse.Content.Headers.ContentType?.MediaType);
+
+        var taggingDocument = XDocument.Parse(await getTaggingResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Tagging", taggingDocument.Root?.Name.LocalName);
+        var tags = taggingDocument.Root!.Element("TagSet")!.Elements("Tag")
+            .ToDictionary(
+                static tag => tag.Element("Key")?.Value ?? string.Empty,
+                static tag => tag.Element("Value")?.Value ?? string.Empty,
+                StringComparer.Ordinal);
+
+        Assert.Equal("test", tags["environment"]);
+        Assert.Equal("copilot", tags["owner"]);
+
+        var headObjectResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt"));
+        Assert.Equal(HttpStatusCode.OK, headObjectResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task VirtualHostedStyleRequests_ResolveBucketFromHost()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
@@ -722,8 +1082,98 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 var downloadResponse = await client.GetAsync("/integrated-s3/buckets/multipart-bucket/objects/docs/multipart.txt");
                 Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
                 Assert.Equal("http-test", Assert.Single(downloadResponse.Headers.GetValues("x-integrateds3-meta-origin")));
+                var multipartChecksum = Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256"));
+                Assert.False(string.IsNullOrWhiteSpace(multipartChecksum));
                 Assert.Equal("hello world", await downloadResponse.Content.ReadAsStringAsync());
         }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_WithChecksumHeaders_EmitsCompositeChecksumHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-checksum-bucket";
+        const string objectKey = "docs/checksum.txt";
+        const string part1Payload = "hello ";
+        const string part2Payload = "world";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+        var compositeChecksum = ComputeMultipartSha256Base64(part1Checksum, part2Checksum);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var part1Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part1Payload, Encoding.UTF8, "text/plain")
+        };
+        part1Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part1Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part1Checksum);
+
+        var part1Response = await client.SendAsync(part1Request);
+        Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
+        Assert.Equal(part1Checksum, Assert.Single(part1Response.Headers.GetValues("x-amz-checksum-sha256")));
+        var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        using var part2Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part2Payload, Encoding.UTF8, "text/plain")
+        };
+        part2Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part2Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part2Checksum);
+
+        var part2Response = await client.SendAsync(part2Request);
+        Assert.Equal(HttpStatusCode.OK, part2Response.StatusCode);
+        Assert.Equal(part2Checksum, Assert.Single(part2Response.Headers.GetValues("x-amz-checksum-sha256")));
+        var part2ETag = part2Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        var completeBody = $"""
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>{part1ETag}</ETag>
+    </Part>
+    <Part>
+        <PartNumber>2</PartNumber>
+        <ETag>{part2ETag}</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+        Assert.Equal(compositeChecksum, Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CompleteMultipartUploadResult", completeDocument.Root?.Name.LocalName);
+        Assert.Equal(bucketName, GetRequiredElementValue(completeDocument, "Bucket"));
+        Assert.Equal(objectKey, GetRequiredElementValue(completeDocument, "Key"));
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/{objectKey}");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal(compositeChecksum, Assert.Single(headResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var downloadResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal(compositeChecksum, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256")));
+        Assert.Equal(part1Payload + part2Payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
 
     [Fact]
     public async Task Endpoints_RespectClaimsPrincipalDrivenAuthorization()
@@ -771,6 +1221,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
+                StorageOperationType.GetObjectTags => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
                 _ => "storage.write"
             };
@@ -794,6 +1245,21 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         return document.Root?.Element(elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
+    }
+
+    private static string ComputeSha256Base64(string content)
+    {
+        return Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+    }
+
+    private static string ComputeMultipartSha256Base64(params string[] partChecksums)
+    {
+        using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var partChecksum in partChecksums) {
+            checksum.AppendData(Convert.FromBase64String(partChecksum));
+        }
+
+        return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Length}";
     }
 
     private static HttpRequestMessage CreateSigV4HeaderSignedRequest(HttpMethod method, string pathAndQuery, string accessKeyId, string secretAccessKey, string? body = null, string? contentType = null, string host = "localhost")

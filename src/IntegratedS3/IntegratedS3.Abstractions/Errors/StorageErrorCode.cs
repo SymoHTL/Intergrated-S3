@@ -6,6 +6,7 @@ public enum StorageErrorCode
     ObjectNotFound,
     BucketNotFound,
     AccessDenied,
+    InvalidChecksum,
     InvalidRange,
     PreconditionFailed,
     VersionConflict,

@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Services;
@@ -38,8 +39,10 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(putResult.IsSuccess);
+        Assert.False(string.IsNullOrWhiteSpace(putResult.Value!.VersionId));
         Assert.Equal("text/plain", putResult.Value!.ContentType);
         Assert.Equal("copilot", putResult.Value.Metadata!["author"]);
+        Assert.Equal(ComputeSha256Base64("hello integrated s3"), putResult.Value.Checksums!["sha256"]);
 
         var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
         {
@@ -61,7 +64,9 @@ public sealed class DiskStorageServiceTests
             var content = await reader.ReadToEndAsync();
 
             Assert.Equal("hello integrated s3", content);
+            Assert.Equal(putResult.Value.VersionId, response.Object.VersionId);
             Assert.Equal("copilot", response.Object.Metadata!["author"]);
+            Assert.Equal(ComputeSha256Base64("hello integrated s3"), response.Object.Checksums!["sha256"]);
         }
 
         var deleteObject = await storageService.DeleteObjectAsync(new DeleteObjectRequest
@@ -78,6 +83,434 @@ public sealed class DiskStorageServiceTests
         });
 
         Assert.True(deleteBucket.IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ValidatesRequestedChecksumsOnPut()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "checksums"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("checksum payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "checksums",
+            Key = "docs/checksum.txt",
+            Content = uploadStream,
+            ContentType = "text/plain",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sha256"] = "invalid-checksum"
+            }
+        });
+
+        Assert.False(putResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidChecksum, putResult.Error!.Code);
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "checksums",
+            Key = "docs/checksum.txt"
+        });
+
+        Assert.False(headResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CurrentVersionRequests_RespectPersistedVersionId()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "versions"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("versioned payload"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "versions",
+            Key = "docs/versioned.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+        var versionId = Assert.IsType<string>(putResult.Value!.VersionId);
+        Assert.False(string.IsNullOrWhiteSpace(versionId));
+
+        var putTagsResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "versions",
+            Key = "docs/versioned.txt",
+            VersionId = versionId,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["owner"] = "copilot"
+            }
+        });
+
+        Assert.True(putTagsResult.IsSuccess);
+        Assert.Equal(versionId, putTagsResult.Value!.VersionId);
+
+        var getTagsResult = await storageService.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "versions",
+            Key = "docs/versioned.txt",
+            VersionId = versionId
+        });
+
+        Assert.True(getTagsResult.IsSuccess);
+        Assert.Equal(versionId, getTagsResult.Value!.VersionId);
+        Assert.Equal("copilot", getTagsResult.Value.Tags["owner"]);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "versions",
+            Key = "docs/versioned.txt",
+            VersionId = versionId
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using (var response = getResult.Value!) {
+            Assert.Equal(versionId, response.Object.VersionId);
+            Assert.Equal(ComputeSha256Base64("versioned payload"), response.Object.Checksums!["sha256"]);
+        }
+
+        var wrongVersionHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "versions",
+            Key = "docs/versioned.txt",
+            VersionId = "wrong-version"
+        });
+
+        Assert.False(wrongVersionHead.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, wrongVersionHead.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_BucketVersioning_CanBeEnabledAndSuspended()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var createResult = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "bucket-versioning",
+            EnableVersioning = true
+        });
+
+        Assert.True(createResult.IsSuccess);
+        Assert.True(createResult.Value!.VersioningEnabled);
+
+        var initialVersioning = await storageService.GetBucketVersioningAsync("bucket-versioning");
+        Assert.True(initialVersioning.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Enabled, initialVersioning.Value!.Status);
+
+        var suspended = await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = "bucket-versioning",
+            Status = BucketVersioningStatus.Suspended
+        });
+
+        Assert.True(suspended.IsSuccess);
+        Assert.Equal(BucketVersioningStatus.Suspended, suspended.Value!.Status);
+
+        var headBucket = await storageService.HeadBucketAsync("bucket-versioning");
+        Assert.True(headBucket.IsSuccess);
+        Assert.False(headBucket.Value!.VersioningEnabled);
+
+        var listBuckets = await storageService.ListBucketsAsync().ToArrayAsync();
+        Assert.Contains(listBuckets, static bucket => bucket.Name == "bucket-versioning" && !bucket.VersioningEnabled);
+    }
+
+    [Fact]
+    public async Task DiskStorage_VersionedOverwrite_PreservesHistoricalVersionAccess()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "version-history",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-history",
+            Key = "docs/history.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-history",
+            Key = "docs/history.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(v1Put.IsSuccess);
+        Assert.True(v2Put.IsSuccess);
+        Assert.NotEqual(v1Put.Value!.VersionId, v2Put.Value!.VersionId);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-history",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(currentGet.IsSuccess);
+        await using (var currentResponse = currentGet.Value!) {
+            using var reader = new StreamReader(currentResponse.Content, Encoding.UTF8);
+            Assert.Equal("version two", await reader.ReadToEndAsync());
+            Assert.Equal(v2Put.Value.VersionId, currentResponse.Object.VersionId);
+        }
+
+        var historicalGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-history",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+
+        Assert.True(historicalGet.IsSuccess);
+        await using (var historicalResponse = historicalGet.Value!) {
+            using var reader = new StreamReader(historicalResponse.Content, Encoding.UTF8);
+            Assert.Equal("version one", await reader.ReadToEndAsync());
+            Assert.Equal(v1Put.Value.VersionId, historicalResponse.Object.VersionId);
+        }
+
+        var historicalTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "version-history",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value.VersionId,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["generation"] = "one"
+            }
+        });
+
+        Assert.True(historicalTags.IsSuccess);
+
+        var rereadHistoricalTags = await storageService.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "version-history",
+            Key = "docs/history.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+
+        Assert.True(rereadHistoricalTags.IsSuccess);
+        Assert.Equal("one", rereadHistoricalTags.Value!.Tags["generation"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_DeleteSpecificHistoricalVersion_RemovesOnlyThatVersion()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "version-delete",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("delete me first"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete",
+            Key = "docs/delete.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("keep me current"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete",
+            Key = "docs/delete.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(v1Put.IsSuccess);
+        Assert.True(v2Put.IsSuccess);
+
+        var deleteV1 = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "version-delete",
+            Key = "docs/delete.txt",
+            VersionId = v1Put.Value!.VersionId
+        });
+
+        Assert.True(deleteV1.IsSuccess);
+
+        var missingV1 = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-delete",
+            Key = "docs/delete.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+
+        Assert.False(missingV1.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, missingV1.Error!.Code);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-delete",
+            Key = "docs/delete.txt"
+        });
+
+        Assert.True(currentGet.IsSuccess);
+        await using (var currentResponse = currentGet.Value!) {
+            using var reader = new StreamReader(currentResponse.Content, Encoding.UTF8);
+            Assert.Equal("keep me current", await reader.ReadToEndAsync());
+            Assert.Equal(v2Put.Value!.VersionId, currentResponse.Object.VersionId);
+        }
+    }
+
+    [Fact]
+    public async Task DiskStorage_VersionedDelete_CreatesDeleteMarkerAndListsVersions()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "version-delete-marker",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete-marker",
+            Key = "docs/history.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete-marker",
+            Key = "docs/history.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "version-delete-marker",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(deleteCurrent.IsSuccess);
+        Assert.True(deleteCurrent.Value!.IsDeleteMarker);
+        Assert.False(string.IsNullOrWhiteSpace(deleteCurrent.Value.VersionId));
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-delete-marker",
+            Key = "docs/history.txt"
+        });
+
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
+
+        var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "version-delete-marker",
+            Prefix = "docs/history.txt"
+        }).ToArrayAsync();
+
+        Assert.Equal(3, versions.Length);
+        Assert.Equal("docs/history.txt", versions[0].Key);
+        Assert.True(versions[0].IsDeleteMarker);
+        Assert.True(versions[0].IsLatest);
+        Assert.Equal(deleteCurrent.Value.VersionId, versions[0].VersionId);
+        Assert.Contains(versions, static version => !version.IsDeleteMarker && version.VersionId is not null && version.IsLatest is false);
+        Assert.Contains(versions, version => version.VersionId == v2Put.Value!.VersionId && !version.IsDeleteMarker);
+        Assert.Contains(versions, version => version.VersionId == v1Put.Value!.VersionId && !version.IsDeleteMarker);
+    }
+
+    [Fact]
+    public async Task DiskStorage_DeletingCurrentDeleteMarkerByVersionId_RestoresPreviousVersion()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "version-delete-marker-restore",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete-marker-restore",
+            Key = "docs/history.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete-marker-restore",
+            Key = "docs/history.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "version-delete-marker-restore",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(deleteCurrent.IsSuccess);
+        Assert.True(deleteCurrent.Value!.IsDeleteMarker);
+
+        var deleteMarkerVersion = deleteCurrent.Value.VersionId;
+        var deleteMarkerDelete = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "version-delete-marker-restore",
+            Key = "docs/history.txt",
+            VersionId = deleteMarkerVersion
+        });
+
+        Assert.True(deleteMarkerDelete.IsSuccess);
+        Assert.True(deleteMarkerDelete.Value!.IsDeleteMarker);
+        Assert.NotNull(deleteMarkerDelete.Value.CurrentObject);
+        Assert.Equal(v2Put.Value!.VersionId, deleteMarkerDelete.Value.CurrentObject!.VersionId);
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-delete-marker-restore",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(currentGet.IsSuccess);
+        await using var currentResponse = currentGet.Value!;
+        using var reader = new StreamReader(currentResponse.Content, Encoding.UTF8);
+        Assert.Equal("version two", await reader.ReadToEndAsync());
+        Assert.Equal(v2Put.Value.VersionId, currentResponse.Object.VersionId);
+        Assert.NotEqual(v1Put.Value!.VersionId, currentResponse.Object.VersionId);
     }
 
     [Fact]
@@ -302,6 +735,7 @@ public sealed class DiskStorageServiceTests
         Assert.True(copyResult.IsSuccess);
         Assert.Equal("text/plain", copyResult.Value!.ContentType);
         Assert.Equal("tests", copyResult.Value.Metadata!["origin"]);
+        Assert.Equal(ComputeSha256Base64("copy me"), copyResult.Value.Checksums!["sha256"]);
 
         var downloaded = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -314,6 +748,7 @@ public sealed class DiskStorageServiceTests
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
         Assert.Equal("copy me", await reader.ReadToEndAsync());
         Assert.Equal("tests", response.Object.Metadata!["origin"]);
+        Assert.Equal(ComputeSha256Base64("copy me"), response.Object.Checksums!["sha256"]);
         Assert.NotEqual(putResult.Value!.BucketName, copyResult.Value.BucketName);
     }
 
@@ -363,6 +798,162 @@ public sealed class DiskStorageServiceTests
             BucketName = "target",
             Key = "docs/copied.txt"
         })).IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ObjectTags_RoundTripAndFlowThroughHeadObject()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "tags" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("tag me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "tags",
+            Key = "docs/tagged.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var putTagsResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "tags",
+            Key = "docs/tagged.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["owner"] = "copilot"
+            }
+        });
+
+        Assert.True(putTagsResult.IsSuccess);
+        Assert.Equal("test", putTagsResult.Value!.Tags["environment"]);
+
+        var getTagsResult = await storageService.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "tags",
+            Key = "docs/tagged.txt"
+        });
+
+        Assert.True(getTagsResult.IsSuccess);
+        Assert.Equal("copilot", getTagsResult.Value!.Tags["owner"]);
+
+        var headObjectResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "tags",
+            Key = "docs/tagged.txt"
+        });
+
+        Assert.True(headObjectResult.IsSuccess);
+        Assert.Equal("test", headObjectResult.Value!.Tags!["environment"]);
+    }
+
+    [Fact]
+    public async Task DiskStorage_DeleteObjectTags_ClearsCurrentAndHistoricalVersionTagsIndependently()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "delete-tags",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v1Put.IsSuccess);
+
+        var putV1Tags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            VersionId = v1Put.Value!.VersionId,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["generation"] = "one"
+            }
+        });
+        Assert.True(putV1Tags.IsSuccess);
+        Assert.Equal(v1Put.Value.VersionId, putV1Tags.Value!.VersionId);
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+        Assert.True(v2Put.IsSuccess);
+
+        var putCurrentTags = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["generation"] = "two"
+            }
+        });
+        Assert.True(putCurrentTags.IsSuccess);
+        Assert.Equal(v2Put.Value!.VersionId, putCurrentTags.Value!.VersionId);
+
+        var deleteCurrentTags = await storageService.DeleteObjectTagsAsync(new DeleteObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(deleteCurrentTags.IsSuccess);
+        Assert.Equal(v2Put.Value.VersionId, deleteCurrentTags.Value!.VersionId);
+        Assert.Empty(deleteCurrentTags.Value.Tags);
+
+        var currentTags = await storageService.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt"
+        });
+        Assert.True(currentTags.IsSuccess);
+        Assert.Equal(v2Put.Value.VersionId, currentTags.Value!.VersionId);
+        Assert.Empty(currentTags.Value.Tags);
+
+        var historicalTagsBeforeDelete = await storageService.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+        Assert.True(historicalTagsBeforeDelete.IsSuccess);
+        Assert.Equal("one", historicalTagsBeforeDelete.Value!.Tags["generation"]);
+
+        var deleteHistoricalTags = await storageService.DeleteObjectTagsAsync(new DeleteObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+        Assert.True(deleteHistoricalTags.IsSuccess);
+        Assert.Equal(v1Put.Value.VersionId, deleteHistoricalTags.Value!.VersionId);
+        Assert.Empty(deleteHistoricalTags.Value.Tags);
+
+        var historicalTagsAfterDelete = await storageService.GetObjectTagsAsync(new GetObjectTagsRequest
+        {
+            BucketName = "delete-tags",
+            Key = "docs/tagged.txt",
+            VersionId = v1Put.Value.VersionId
+        });
+        Assert.True(historicalTagsAfterDelete.IsSuccess);
+        Assert.Equal(v1Put.Value.VersionId, historicalTagsAfterDelete.Value!.VersionId);
+        Assert.Empty(historicalTagsAfterDelete.Value.Tags);
     }
 
     [Fact]
@@ -419,6 +1010,8 @@ public sealed class DiskStorageServiceTests
         Assert.True(completeResult.IsSuccess);
         Assert.Equal("text/plain", completeResult.Value!.ContentType);
         Assert.Equal("multipart", completeResult.Value.Metadata!["source"]);
+        var multipartChecksum = Assert.IsType<string>(completeResult.Value.Checksums!["sha256"]);
+        Assert.False(string.IsNullOrWhiteSpace(multipartChecksum));
 
         var getResult = await storageService.GetObjectAsync(new GetObjectRequest
         {
@@ -431,6 +1024,7 @@ public sealed class DiskStorageServiceTests
         using var reader = new StreamReader(response.Content, Encoding.UTF8);
         Assert.Equal("hello world", await reader.ReadToEndAsync());
         Assert.Equal("multipart", response.Object.Metadata!["source"]);
+        Assert.Equal(multipartChecksum, response.Object.Checksums!["sha256"]);
     }
 
     [Fact]
@@ -481,13 +1075,208 @@ public sealed class DiskStorageServiceTests
         Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.MultipartConflict, completeResult.Error!.Code);
     }
 
+    [Fact]
+    public async Task DiskStorage_UsesRegisteredPlatformObjectStateStoreForMetadataAndTags()
+    {
+        await using var fixture = new DiskStorageFixture(services => {
+            services.AddSingleton<IStorageObjectStateStore, InMemoryObjectStateStore>();
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "external-state" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("hello external state"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "external-state",
+            Key = "docs/external.txt",
+            Content = uploadStream,
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>
+            {
+                ["owner"] = "platform-store"
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+
+        var putTagsResult = await storageService.PutObjectTagsAsync(new PutObjectTagsRequest
+        {
+            BucketName = "external-state",
+            Key = "docs/external.txt",
+            Tags = new Dictionary<string, string>
+            {
+                ["environment"] = "test"
+            }
+        });
+
+        Assert.True(putTagsResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "external-state",
+            Key = "docs/external.txt"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using (var response = getResult.Value!) {
+            Assert.Equal("platform-store", response.Object.Metadata!["owner"]);
+            Assert.Equal("test", response.Object.Tags!["environment"]);
+            Assert.Equal(ComputeSha256Base64("hello external state"), response.Object.Checksums!["sha256"]);
+        }
+
+        var supportState = await storageService.GetSupportStateDescriptorAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.ObjectMetadata);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.ObjectTags);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.Checksums);
+
+        var sidecarPath = Path.Combine(fixture.RootPath, "external-state", "docs", "external.txt.integrateds3.json");
+        Assert.False(File.Exists(sidecarPath));
+    }
+
+    [Fact]
+    public async Task DiskStorage_UsesRegisteredPlatformObjectStateStoreForHistoricalVersionsAndDeleteMarkers()
+    {
+        await using var fixture = new DiskStorageFixture(services => {
+            services.AddSingleton<IStorageObjectStateStore, InMemoryObjectStateStore>();
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "external-version-state",
+            EnableVersioning = true
+        });
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "external-version-state",
+            Key = "docs/history.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "external-version-state",
+            Key = "docs/history.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "external-version-state",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(deleteCurrent.IsSuccess);
+        Assert.True(deleteCurrent.Value!.IsDeleteMarker);
+
+        var versions = await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "external-version-state",
+            Prefix = "docs/history.txt"
+        }).ToArrayAsync();
+
+        Assert.Equal(3, versions.Length);
+        Assert.Contains(versions, version => version.VersionId == v1Put.Value!.VersionId);
+        Assert.Contains(versions, version => version.VersionId == v2Put.Value!.VersionId);
+        Assert.Contains(versions, static version => version.IsDeleteMarker && version.IsLatest);
+
+        var versionMetadataFiles = Directory.Exists(Path.Combine(fixture.RootPath, "external-version-state", ".integrateds3-versions"))
+            ? Directory.EnumerateFiles(Path.Combine(fixture.RootPath, "external-version-state", ".integrateds3-versions"), "*.integrateds3.json", SearchOption.AllDirectories).ToArray()
+            : [];
+
+        Assert.Empty(versionMetadataFiles);
+    }
+
+    [Fact]
+    public async Task DiskStorage_UsesRegisteredPlatformMultipartStateStoreForUploadState()
+    {
+        await using var fixture = new DiskStorageFixture(services => {
+            services.AddSingleton<InMemoryMultipartStateStore>();
+            services.AddSingleton<IStorageMultipartStateStore>(static serviceProvider => serviceProvider.GetRequiredService<InMemoryMultipartStateStore>());
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var multipartStateStore = fixture.Services.GetRequiredService<InMemoryMultipartStateStore>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-external" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-external",
+            Key = "docs/assembled.txt",
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>
+            {
+                ["source"] = "external-multipart"
+            }
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        var uploadId = initiateResult.Value!.UploadId;
+        var uploadState = await multipartStateStore.GetMultipartUploadStateAsync("test-disk", "multipart-external", "docs/assembled.txt", uploadId);
+        Assert.NotNull(uploadState);
+        Assert.Equal("text/plain", uploadState!.ContentType);
+        Assert.Equal("external-multipart", uploadState.Metadata!["source"]);
+
+        var uploadStatePath = Path.Combine(fixture.RootPath, ".integrateds3-multipart", "multipart-external", uploadId, "upload.json");
+        Assert.False(File.Exists(uploadStatePath));
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        var part1 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-external",
+            Key = "docs/assembled.txt",
+            UploadId = uploadId,
+            PartNumber = 1,
+            Content = part1Stream
+        });
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes("world"));
+        var part2 = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-external",
+            Key = "docs/assembled.txt",
+            UploadId = uploadId,
+            PartNumber = 2,
+            Content = part2Stream
+        });
+
+        Assert.True(part1.IsSuccess);
+        Assert.True(part2.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-external",
+            Key = "docs/assembled.txt",
+            UploadId = uploadId,
+            Parts = [part1.Value!, part2.Value!]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+        Assert.Equal("text/plain", completeResult.Value!.ContentType);
+        Assert.Equal("external-multipart", completeResult.Value.Metadata!["source"]);
+
+        var removedState = await multipartStateStore.GetMultipartUploadStateAsync("test-disk", "multipart-external", "docs/assembled.txt", uploadId);
+        Assert.Null(removedState);
+
+        var supportState = await storageService.GetSupportStateDescriptorAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.MultipartState);
+    }
+
     private sealed class DiskStorageFixture : IAsyncDisposable
     {
-        public DiskStorageFixture()
+        public DiskStorageFixture(Action<IServiceCollection>? configureServices = null)
         {
             RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Tests", Guid.NewGuid().ToString("N"));
 
             var services = new ServiceCollection();
+            configureServices?.Invoke(services);
             services.AddDiskStorage(new DiskStorageOptions
             {
                 ProviderName = "test-disk",
@@ -510,5 +1299,116 @@ public sealed class DiskStorageServiceTests
                 Directory.Delete(RootPath, recursive: true);
             }
         }
+    }
+
+    private sealed class InMemoryObjectStateStore : IStorageObjectStateStore
+    {
+        private readonly Dictionary<(string ProviderName, string BucketName, string Key, string? VersionId), ObjectInfo> _objects = new();
+
+        public IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership Ownership
+            => IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged;
+
+        public ValueTask<ObjectInfo?> GetObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!string.IsNullOrWhiteSpace(versionId)) {
+                return ValueTask.FromResult(_objects.TryGetValue((providerName, bucketName, key, versionId), out var byVersion) ? byVersion : null);
+            }
+
+            var current = _objects.Values.FirstOrDefault(existing => string.Equals(existing.BucketName, bucketName, StringComparison.Ordinal)
+                && string.Equals(existing.Key, key, StringComparison.Ordinal)
+                && existing.IsLatest);
+            return ValueTask.FromResult(current);
+        }
+
+        public async IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(string providerName, string bucketName, string? prefix = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            foreach (var value in _objects.Values
+                         .Where(existing => string.Equals(existing.BucketName, bucketName, StringComparison.Ordinal)
+                             && (string.IsNullOrWhiteSpace(prefix) || existing.Key.StartsWith(prefix, StringComparison.Ordinal)))
+                         .OrderBy(existing => existing.Key, StringComparer.Ordinal)
+                         .ThenByDescending(existing => existing.IsLatest)
+                         .ThenByDescending(existing => existing.VersionId, StringComparer.Ordinal)) {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return value;
+                await Task.Yield();
+            }
+        }
+
+        public ValueTask UpsertObjectInfoAsync(string providerName, ObjectInfo @object, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (@object.IsLatest) {
+                foreach (var existingKey in _objects.Keys.Where(existing => existing.ProviderName == providerName && existing.BucketName == @object.BucketName && existing.Key == @object.Key).ToArray()) {
+                    var existing = _objects[existingKey];
+                    _objects[existingKey] = new ObjectInfo
+                    {
+                        BucketName = existing.BucketName,
+                        Key = existing.Key,
+                        VersionId = existing.VersionId,
+                        IsLatest = false,
+                        IsDeleteMarker = existing.IsDeleteMarker,
+                        ContentLength = existing.ContentLength,
+                        ContentType = existing.ContentType,
+                        ETag = existing.ETag,
+                        LastModifiedUtc = existing.LastModifiedUtc,
+                        Metadata = existing.Metadata,
+                        Tags = existing.Tags,
+                        Checksums = existing.Checksums
+                    };
+                }
+            }
+
+            _objects[(providerName, @object.BucketName, @object.Key, @object.VersionId)] = @object;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask RemoveObjectInfoAsync(string providerName, string bucketName, string key, string? versionId = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            foreach (var existingKey in _objects.Keys.Where(existing => existing.ProviderName == providerName
+                && existing.BucketName == bucketName
+                && existing.Key == key
+                && (string.IsNullOrWhiteSpace(versionId) || string.Equals(existing.VersionId, versionId, StringComparison.Ordinal))).ToArray()) {
+                _objects.Remove(existingKey);
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class InMemoryMultipartStateStore : IStorageMultipartStateStore
+    {
+        private readonly Dictionary<(string ProviderName, string BucketName, string Key, string UploadId), MultipartUploadState> _states = new();
+
+        public IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership Ownership
+            => IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged;
+
+        public ValueTask<MultipartUploadState?> GetMultipartUploadStateAsync(string providerName, string bucketName, string key, string uploadId, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_states.TryGetValue((providerName, bucketName, key, uploadId), out var value) ? value : null);
+        }
+
+        public ValueTask UpsertMultipartUploadStateAsync(string providerName, MultipartUploadState state, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _states[(providerName, state.BucketName, state.Key, state.UploadId)] = state;
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask RemoveMultipartUploadStateAsync(string providerName, string bucketName, string key, string uploadId, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _states.Remove((providerName, bucketName, key, uploadId));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private static string ComputeSha256Base64(string content)
+    {
+        return Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
     }
 }

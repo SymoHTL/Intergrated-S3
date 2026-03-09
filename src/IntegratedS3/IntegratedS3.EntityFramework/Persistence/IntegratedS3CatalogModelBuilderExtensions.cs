@@ -27,7 +27,18 @@ public static class IntegratedS3CatalogModelBuilderExtensions
             entity.Property(static @object => @object.ProviderName).IsRequired();
             entity.Property(static @object => @object.BucketName).IsRequired();
             entity.Property(static @object => @object.Key).IsRequired();
-            entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key }).IsUnique();
+            entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.VersionId }).IsUnique();
+            entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.IsLatest });
+        });
+
+        modelBuilder.Entity<MultipartUploadCatalogRecord>(entity => {
+            entity.ToTable("IntegratedS3MultipartUploads");
+            entity.HasKey(static upload => upload.Id);
+            entity.Property(static upload => upload.ProviderName).IsRequired();
+            entity.Property(static upload => upload.BucketName).IsRequired();
+            entity.Property(static upload => upload.Key).IsRequired();
+            entity.Property(static upload => upload.UploadId).IsRequired();
+            entity.HasIndex(static upload => new { upload.ProviderName, upload.BucketName, upload.Key, upload.UploadId }).IsUnique();
         });
 
         return modelBuilder;

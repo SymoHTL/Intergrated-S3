@@ -6,6 +6,28 @@ namespace IntegratedS3.Protocol;
 
 public static class S3XmlResponseWriter
 {
+    public static string WriteBucketVersioningConfiguration(S3BucketVersioningConfiguration response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("VersioningConfiguration");
+
+        if (!string.IsNullOrWhiteSpace(response.Status)) {
+            xmlWriter.WriteElementString("Status", response.Status);
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteError(S3ErrorResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -74,6 +96,9 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteElementString("Bucket", response.Bucket);
         xmlWriter.WriteElementString("Key", response.Key);
         xmlWriter.WriteElementString("UploadId", response.UploadId);
+        if (!string.IsNullOrWhiteSpace(response.ChecksumAlgorithm)) {
+            xmlWriter.WriteElementString("ChecksumAlgorithm", response.ChecksumAlgorithm);
+        }
         xmlWriter.WriteEndElement();
         xmlWriter.WriteEndDocument();
         xmlWriter.Flush();
@@ -99,6 +124,19 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteElementString("Bucket", response.Bucket);
         xmlWriter.WriteElementString("Key", response.Key);
         xmlWriter.WriteElementString("ETag", QuoteETag(response.ETag));
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32)) {
+            xmlWriter.WriteElementString("ChecksumCRC32", response.ChecksumCrc32);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumSha256)) {
+            xmlWriter.WriteElementString("ChecksumSHA256", response.ChecksumSha256);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumType)) {
+            xmlWriter.WriteElementString("ChecksumType", response.ChecksumType);
+        }
+
         xmlWriter.WriteEndElement();
         xmlWriter.WriteEndDocument();
         xmlWriter.Flush();
@@ -146,6 +184,71 @@ public static class S3XmlResponseWriter
             xmlWriter.WriteElementString("ETag", QuoteETag(content.ETag ?? string.Empty));
             xmlWriter.WriteElementString("Size", content.Size.ToString(CultureInfo.InvariantCulture));
             xmlWriter.WriteElementString("StorageClass", content.StorageClass);
+            xmlWriter.WriteEndElement();
+        }
+
+        foreach (var commonPrefix in response.CommonPrefixes) {
+            xmlWriter.WriteStartElement("CommonPrefixes");
+            xmlWriter.WriteElementString("Prefix", commonPrefix.Prefix);
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteListObjectVersionsResult(S3ListObjectVersionsResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("ListVersionsResult");
+        xmlWriter.WriteElementString("Name", response.Name);
+        xmlWriter.WriteElementString("Prefix", response.Prefix ?? string.Empty);
+
+        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+            xmlWriter.WriteElementString("Delimiter", response.Delimiter);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.KeyMarker)) {
+            xmlWriter.WriteElementString("KeyMarker", response.KeyMarker);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.VersionIdMarker)) {
+            xmlWriter.WriteElementString("VersionIdMarker", response.VersionIdMarker);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
+            xmlWriter.WriteElementString("NextKeyMarker", response.NextKeyMarker);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.NextVersionIdMarker)) {
+            xmlWriter.WriteElementString("NextVersionIdMarker", response.NextVersionIdMarker);
+        }
+
+        xmlWriter.WriteElementString("MaxKeys", response.MaxKeys.ToString(CultureInfo.InvariantCulture));
+        xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
+
+        foreach (var version in response.Versions) {
+            xmlWriter.WriteStartElement(version.IsDeleteMarker ? "DeleteMarker" : "Version");
+            xmlWriter.WriteElementString("Key", version.Key);
+            xmlWriter.WriteElementString("VersionId", version.VersionId);
+            xmlWriter.WriteElementString("IsLatest", version.IsLatest ? "true" : "false");
+            xmlWriter.WriteElementString("LastModified", FormatTimestamp(version.LastModifiedUtc));
+
+            if (!version.IsDeleteMarker) {
+                xmlWriter.WriteElementString("ETag", QuoteETag(version.ETag ?? string.Empty));
+                xmlWriter.WriteElementString("Size", version.Size.ToString(CultureInfo.InvariantCulture));
+                xmlWriter.WriteElementString("StorageClass", version.StorageClass);
+            }
+
             xmlWriter.WriteEndElement();
         }
 
@@ -213,6 +316,14 @@ public static class S3XmlResponseWriter
                 xmlWriter.WriteElementString("VersionId", deleted.VersionId);
             }
 
+            if (deleted.DeleteMarker) {
+                xmlWriter.WriteElementString("DeleteMarker", "true");
+            }
+
+            if (!string.IsNullOrWhiteSpace(deleted.DeleteMarkerVersionId)) {
+                xmlWriter.WriteElementString("DeleteMarkerVersionId", deleted.DeleteMarkerVersionId);
+            }
+
             xmlWriter.WriteEndElement();
         }
 
@@ -229,6 +340,33 @@ public static class S3XmlResponseWriter
             xmlWriter.WriteEndElement();
         }
 
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteObjectTagging(S3ObjectTagging response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("Tagging");
+        xmlWriter.WriteStartElement("TagSet");
+
+        foreach (var tag in response.TagSet.OrderBy(static tag => tag.Key, StringComparer.Ordinal)) {
+            xmlWriter.WriteStartElement("Tag");
+            xmlWriter.WriteElementString("Key", tag.Key);
+            xmlWriter.WriteElementString("Value", tag.Value);
+            xmlWriter.WriteEndElement();
+        }
+
+        xmlWriter.WriteEndElement();
         xmlWriter.WriteEndElement();
         xmlWriter.WriteEndDocument();
         xmlWriter.Flush();

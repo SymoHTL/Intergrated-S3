@@ -1,6 +1,6 @@
 namespace IntegratedS3.Core.Persistence;
 
-public sealed class ObjectCatalogRecord
+public sealed class MultipartUploadCatalogRecord
 {
     public int Id { get; set; }
 
@@ -10,25 +10,15 @@ public sealed class ObjectCatalogRecord
 
     public string Key { get; set; } = string.Empty;
 
-    public string? VersionId { get; set; }
+    public string UploadId { get; set; } = string.Empty;
 
-    public bool IsLatest { get; set; }
-
-    public bool IsDeleteMarker { get; set; }
-
-    public long ContentLength { get; set; }
+    public DateTimeOffset InitiatedAtUtc { get; set; }
 
     public string? ContentType { get; set; }
 
-    public string? ETag { get; set; }
-
-    public DateTimeOffset LastModifiedUtc { get; set; }
-
     public string? MetadataJson { get; set; }
 
-    public string? TagsJson { get; set; }
-
-    public string? ChecksumsJson { get; set; }
+    public string? ChecksumAlgorithm { get; set; }
 
     public DateTimeOffset LastSyncedAtUtc { get; set; }
 }

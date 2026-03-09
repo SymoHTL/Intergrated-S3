@@ -27,6 +27,8 @@ public static class EntityFrameworkStorageCatalogServiceCollectionExtensions
             .Configure(configure);
 
         services.Replace(ServiceDescriptor.Singleton<IStorageCatalogStore, EntityFrameworkStorageCatalogStore<TDbContext>>());
+        services.Replace(ServiceDescriptor.Singleton<IStorageObjectStateStore, CatalogStorageObjectStateStore>());
+        services.Replace(ServiceDescriptor.Singleton<IStorageMultipartStateStore, EntityFrameworkStorageMultipartStateStore<TDbContext>>());
 
         return services;
     }

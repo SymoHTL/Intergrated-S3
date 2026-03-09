@@ -12,6 +12,10 @@ public sealed class S3DeletedObjectResult
     public required string Key { get; init; }
 
     public string? VersionId { get; init; }
+
+    public bool DeleteMarker { get; init; }
+
+    public string? DeleteMarkerVersionId { get; init; }
 }
 
 public sealed class S3DeleteObjectError

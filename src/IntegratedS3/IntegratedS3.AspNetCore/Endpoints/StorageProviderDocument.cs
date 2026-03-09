@@ -15,6 +15,8 @@ public sealed class StorageProviderDocument
 
     public StorageCapabilities Capabilities { get; init; } = new();
 
+    public StorageSupportStateDescriptor SupportState { get; init; } = new();
+
     public static StorageProviderDocument FromDescriptor(StorageProviderDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
@@ -25,7 +27,8 @@ public sealed class StorageProviderDocument
             Kind = descriptor.Kind,
             IsPrimary = descriptor.IsPrimary,
             Description = descriptor.Description,
-            Capabilities = descriptor.Capabilities
+            Capabilities = descriptor.Capabilities,
+            SupportState = descriptor.SupportState
         };
     }
 }

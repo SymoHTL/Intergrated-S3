@@ -7,4 +7,6 @@ public sealed class S3InitiateMultipartUploadResult
     public required string Key { get; init; }
 
     public required string UploadId { get; init; }
+
+    public string? ChecksumAlgorithm { get; init; }
 }

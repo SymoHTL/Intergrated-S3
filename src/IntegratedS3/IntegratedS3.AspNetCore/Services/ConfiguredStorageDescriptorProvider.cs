@@ -52,7 +52,8 @@ internal sealed class ConfiguredStorageDescriptorProvider(
                 Kind = backend.Kind,
                 IsPrimary = backend.IsPrimary,
                 Description = backend.Description,
-                Capabilities = CloneCapabilities(await backend.GetCapabilitiesAsync(cancellationToken))
+                Capabilities = CloneCapabilities(await backend.GetCapabilitiesAsync(cancellationToken)),
+                SupportState = CloneSupportState(await backend.GetSupportStateDescriptorAsync(cancellationToken))
             };
         }
 
@@ -73,7 +74,22 @@ internal sealed class ConfiguredStorageDescriptorProvider(
             Kind = provider.Kind,
             IsPrimary = provider.IsPrimary,
             Description = provider.Description,
-            Capabilities = CloneCapabilities(provider.Capabilities)
+            Capabilities = CloneCapabilities(provider.Capabilities),
+            SupportState = CloneSupportState(provider.SupportState)
+        };
+    }
+
+    private static StorageSupportStateDescriptor CloneSupportState(StorageSupportStateDescriptor supportState)
+    {
+        return new StorageSupportStateDescriptor
+        {
+            ObjectMetadata = supportState.ObjectMetadata,
+            ObjectTags = supportState.ObjectTags,
+            MultipartState = supportState.MultipartState,
+            Versioning = supportState.Versioning,
+            Checksums = supportState.Checksums,
+            Retention = supportState.Retention,
+            RedirectLocations = supportState.RedirectLocations
         };
     }
 

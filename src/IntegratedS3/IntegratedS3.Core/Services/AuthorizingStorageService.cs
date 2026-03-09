@@ -32,6 +32,24 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.CreateBucketAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public ValueTask<StorageResult<BucketVersioningInfo>> GetBucketVersioningAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetBucketVersioning,
+            BucketName = bucketName
+        }, innerCancellationToken => inner.GetBucketVersioningAsync(bucketName, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<BucketVersioningInfo>> PutBucketVersioningAsync(PutBucketVersioningRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutBucketVersioning,
+            BucketName = request.BucketName
+        }, innerCancellationToken => inner.PutBucketVersioningAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
@@ -60,6 +78,16 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.ListObjectsAsync(request, innerCancellationToken), cancellationToken);
     }
 
+    public IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedEnumerableAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.ListObjects,
+            BucketName = request.BucketName,
+            Key = request.Prefix
+        }, innerCancellationToken => inner.ListObjectVersionsAsync(request, innerCancellationToken), cancellationToken);
+    }
+
     public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
@@ -69,6 +97,17 @@ internal sealed class AuthorizingStorageService(
             Key = request.Key,
             VersionId = request.VersionId
         }, innerCancellationToken => inner.GetObjectAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.GetObjectTags,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.GetObjectTagsAsync(request, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
@@ -94,6 +133,28 @@ internal sealed class AuthorizingStorageService(
             Key = request.Key,
             IncludesMetadata = request.Metadata is not null
         }, innerCancellationToken => inner.PutObjectAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.PutObjectTags,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.PutObjectTagsAsync(request, innerCancellationToken), cancellationToken);
+    }
+
+    public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default)
+    {
+        return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
+        {
+            Operation = StorageOperationType.DeleteObjectTags,
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = request.VersionId
+        }, innerCancellationToken => inner.DeleteObjectTagsAsync(request, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
@@ -148,7 +209,7 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.HeadObjectAsync(request, innerCancellationToken), cancellationToken);
     }
 
-    public ValueTask<StorageResult> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
+    public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedAsync(new StorageAuthorizationRequest
         {
