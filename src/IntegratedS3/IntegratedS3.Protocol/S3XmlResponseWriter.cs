@@ -76,6 +76,27 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteStartElement("CopyObjectResult");
         xmlWriter.WriteElementString("LastModified", FormatTimestamp(response.LastModifiedUtc));
         xmlWriter.WriteElementString("ETag", QuoteETag(response.ETag));
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32)) {
+            xmlWriter.WriteElementString("ChecksumCRC32", response.ChecksumCrc32);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32c)) {
+            xmlWriter.WriteElementString("ChecksumCRC32C", response.ChecksumCrc32c);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumSha1)) {
+            xmlWriter.WriteElementString("ChecksumSHA1", response.ChecksumSha1);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumSha256)) {
+            xmlWriter.WriteElementString("ChecksumSHA256", response.ChecksumSha256);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumType)) {
+            xmlWriter.WriteElementString("ChecksumType", response.ChecksumType);
+        }
+
         xmlWriter.WriteEndElement();
         xmlWriter.WriteEndDocument();
         xmlWriter.Flush();
@@ -127,6 +148,14 @@ public static class S3XmlResponseWriter
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32)) {
             xmlWriter.WriteElementString("ChecksumCRC32", response.ChecksumCrc32);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32c)) {
+            xmlWriter.WriteElementString("ChecksumCRC32C", response.ChecksumCrc32c);
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.ChecksumSha1)) {
+            xmlWriter.WriteElementString("ChecksumSHA1", response.ChecksumSha1);
         }
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumSha256)) {

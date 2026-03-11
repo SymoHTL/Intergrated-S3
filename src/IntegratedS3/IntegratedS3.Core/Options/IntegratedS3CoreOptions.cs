@@ -5,4 +5,6 @@ public sealed class IntegratedS3CoreOptions
 	public StorageConsistencyMode ConsistencyMode { get; set; } = StorageConsistencyMode.PrimaryOnly;
 
 	public StorageReadRoutingMode ReadRoutingMode { get; set; } = StorageReadRoutingMode.PrimaryOnly;
+
+	public StorageBackendHealthOptions BackendHealth { get; set; } = new();
 }

@@ -186,6 +186,16 @@ public static class S3XmlRequestReader
             checksums["crc32"] = checksumCrc32;
         }
 
+        var checksumCrc32c = element.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "ChecksumCRC32C", StringComparison.Ordinal))?.Value;
+        if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
+            checksums["crc32c"] = checksumCrc32c;
+        }
+
+        var checksumSha1 = element.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "ChecksumSHA1", StringComparison.Ordinal))?.Value;
+        if (!string.IsNullOrWhiteSpace(checksumSha1)) {
+            checksums["sha1"] = checksumSha1;
+        }
+
         return new S3CompleteMultipartUploadPart
         {
             PartNumber = int.TryParse(

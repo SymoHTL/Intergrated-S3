@@ -14,7 +14,7 @@ internal sealed class OrchestratedStorageService(
     IEnumerable<IStorageBackend> backends,
     IStorageCatalogStore catalogStore,
     IOptions<IntegratedS3CoreOptions> options,
-    IStorageBackendHealthEvaluator backendHealthEvaluator) : IStorageService
+    StorageBackendHealthMonitor backendHealthMonitor) : IStorageService
 {
     private readonly IStorageBackend[] _backends = backends.ToArray();
     private readonly Lazy<IStorageBackend> _primaryBackend = new(() => ResolvePrimaryBackend(backends.ToArray()));
@@ -328,7 +328,7 @@ internal sealed class OrchestratedStorageService(
 
         var candidates = new List<ReadBackendCandidate>(_backends.Length);
         foreach (var backend in _backends) {
-            var healthStatus = await backendHealthEvaluator.GetStatusAsync(backend, cancellationToken);
+            var healthStatus = await backendHealthMonitor.GetStatusAsync(backend, cancellationToken);
             candidates.Add(new ReadBackendCandidate(backend, healthStatus));
         }
 
@@ -349,6 +349,7 @@ internal sealed class OrchestratedStorageService(
         foreach (var backend in await GetOrderedReadBackendsAsync(cancellationToken)) {
             var result = await operation(backend, cancellationToken);
             if (result.IsSuccess) {
+                backendHealthMonitor.ReportSuccess(backend);
                 if (onSuccess is not null) {
                     await onSuccess(backend, result, cancellationToken);
                 }
@@ -356,6 +357,7 @@ internal sealed class OrchestratedStorageService(
                 return result;
             }
 
+            backendHealthMonitor.ReportFailure(backend, result.Error);
             lastFailure = result;
             if (!ShouldFailoverRead(result.Error)) {
                 return result;

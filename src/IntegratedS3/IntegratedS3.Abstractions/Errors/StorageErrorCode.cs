@@ -9,6 +9,7 @@ public enum StorageErrorCode
     InvalidChecksum,
     InvalidRange,
     PreconditionFailed,
+    MethodNotAllowed,
     VersionConflict,
     BucketAlreadyExists,
     MultipartConflict,

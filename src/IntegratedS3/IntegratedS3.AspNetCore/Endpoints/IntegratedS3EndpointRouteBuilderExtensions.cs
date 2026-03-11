@@ -35,8 +35,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string SdkChecksumAlgorithmHeaderName = "x-amz-sdk-checksum-algorithm";
     private const string ChecksumAlgorithmHeaderName = "x-amz-checksum-algorithm";
     private const string ChecksumCrc32HeaderName = "x-amz-checksum-crc32";
+    private const string ChecksumCrc32cHeaderName = "x-amz-checksum-crc32c";
+    private const string ChecksumSha1HeaderName = "x-amz-checksum-sha1";
     private const string ChecksumSha256HeaderName = "x-amz-checksum-sha256";
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
+    private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
     private const string VersionIdHeaderName = "x-amz-version-id";
     private const string XmlContentType = "application/xml";
     private const string ListTypeQueryParameterName = "list-type";
@@ -1068,6 +1071,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Key = key,
                         ETag = completedObject.ETag ?? string.Empty,
                         ChecksumCrc32 = GetChecksumValue(completedObject.Checksums, "crc32"),
+                        ChecksumCrc32c = GetChecksumValue(completedObject.Checksums, "crc32c"),
+                        ChecksumSha1 = GetChecksumValue(completedObject.Checksums, "sha1"),
                         ChecksumSha256 = GetChecksumValue(completedObject.Checksums, "sha256"),
                         ChecksumType = GetChecksumType(completedObject.Checksums)
                     }),
@@ -1335,6 +1340,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, StatusCodes.Status500InternalServerError, "InternalError", "Storage operation failed.", resourceOverride);
         }
 
+        ApplyStorageErrorHeaders(httpContext.Response, error);
+
         return ToErrorResult(
             httpContext,
             error.SuggestedHttpStatusCode ?? ToStatusCode(error.Code),
@@ -1376,7 +1383,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             S3XmlResponseWriter.WriteCopyObjectResult(new S3CopyObjectResult
             {
                 ETag = @object.ETag ?? string.Empty,
-                LastModifiedUtc = @object.LastModifiedUtc
+                LastModifiedUtc = @object.LastModifiedUtc,
+                ChecksumCrc32 = GetChecksumValue(@object.Checksums, "crc32"),
+                ChecksumCrc32c = GetChecksumValue(@object.Checksums, "crc32c"),
+                ChecksumSha1 = GetChecksumValue(@object.Checksums, "sha1"),
+                ChecksumSha256 = GetChecksumValue(@object.Checksums, "sha256"),
+                ChecksumType = GetChecksumType(@object.Checksums)
             }),
             StatusCodes.Status200OK,
             XmlContentType);
@@ -1392,6 +1404,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.InvalidChecksum => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidRange => StatusCodes.Status416RangeNotSatisfiable,
             StorageErrorCode.PreconditionFailed => StatusCodes.Status412PreconditionFailed,
+            StorageErrorCode.MethodNotAllowed => StatusCodes.Status405MethodNotAllowed,
             StorageErrorCode.VersionConflict => StatusCodes.Status409Conflict,
             StorageErrorCode.BucketAlreadyExists => StatusCodes.Status409Conflict,
             StorageErrorCode.MultipartConflict => StatusCodes.Status409Conflict,
@@ -1413,6 +1426,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.InvalidChecksum => "BadDigest",
             StorageErrorCode.InvalidRange => "InvalidRange",
             StorageErrorCode.PreconditionFailed => "PreconditionFailed",
+            StorageErrorCode.MethodNotAllowed => "MethodNotAllowed",
             StorageErrorCode.VersionConflict => "OperationAborted",
             StorageErrorCode.BucketAlreadyExists => "BucketAlreadyExists",
             StorageErrorCode.MultipartConflict => "InvalidRequest",
@@ -2260,9 +2274,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             parsedChecksums["sha256"] = checksumSha256.Trim();
         }
 
+        var checksumSha1 = request.Headers[ChecksumSha1HeaderName].ToString();
+        if (!string.IsNullOrWhiteSpace(checksumSha1)) {
+            parsedChecksums["sha1"] = checksumSha1.Trim();
+        }
+
         var checksumCrc32 = request.Headers[ChecksumCrc32HeaderName].ToString();
         if (!string.IsNullOrWhiteSpace(checksumCrc32)) {
             parsedChecksums["crc32"] = checksumCrc32.Trim();
+        }
+
+        var checksumCrc32c = request.Headers[ChecksumCrc32cHeaderName].ToString();
+        if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
+            parsedChecksums["crc32c"] = checksumCrc32c.Trim();
         }
 
         if (requireChecksumValueForDeclaredAlgorithm
@@ -2279,6 +2303,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         if (requireChecksumValueForDeclaredAlgorithm
+            && string.Equals(checksumAlgorithm, "sha1", StringComparison.OrdinalIgnoreCase)
+            && !parsedChecksums.ContainsKey("sha1")) {
+            checksums = null;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{ChecksumSha1HeaderName}' header is required when either '{SdkChecksumAlgorithmHeaderName}=SHA1' or '{ChecksumAlgorithmHeaderName}=SHA1' is supplied.",
+                resource: null);
+            return false;
+        }
+
+        if (requireChecksumValueForDeclaredAlgorithm
             && string.Equals(checksumAlgorithm, "crc32", StringComparison.OrdinalIgnoreCase)
             && !parsedChecksums.ContainsKey("crc32")) {
             checksums = null;
@@ -2287,6 +2324,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 StatusCodes.Status400BadRequest,
                 "InvalidRequest",
                 $"The '{ChecksumCrc32HeaderName}' header is required when either '{SdkChecksumAlgorithmHeaderName}=CRC32' or '{ChecksumAlgorithmHeaderName}=CRC32' is supplied.",
+                resource: null);
+            return false;
+        }
+
+        if (requireChecksumValueForDeclaredAlgorithm
+            && string.Equals(checksumAlgorithm, "crc32c", StringComparison.OrdinalIgnoreCase)
+            && !parsedChecksums.ContainsKey("crc32c")) {
+            checksums = null;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{ChecksumCrc32cHeaderName}' header is required when either '{SdkChecksumAlgorithmHeaderName}=CRC32C' or '{ChecksumAlgorithmHeaderName}=CRC32C' is supplied.",
                 resource: null);
             return false;
         }
@@ -2349,8 +2399,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return true;
         }
 
+        if (string.Equals(rawValue, "SHA1", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = "sha1";
+            return true;
+        }
+
         if (string.Equals(rawValue, "CRC32", StringComparison.OrdinalIgnoreCase)) {
             checksumAlgorithm = "crc32";
+            return true;
+        }
+
+        if (string.Equals(rawValue, "CRC32C", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = "crc32c";
             return true;
         }
 
@@ -2376,13 +2436,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ApplyVersionIdHeader(httpResponse, result.VersionId);
 
         if (result.IsDeleteMarker) {
-            httpResponse.Headers["x-amz-delete-marker"] = "true";
+            httpResponse.Headers[DeleteMarkerHeaderName] = "true";
         }
     }
 
     private static void ApplyObjectTaggingHeaders(HttpResponse httpResponse, ObjectTagSet tagSet)
     {
         ApplyVersionIdHeader(httpResponse, tagSet.VersionId);
+    }
+
+    private static void ApplyStorageErrorHeaders(HttpResponse httpResponse, StorageError error)
+    {
+        if (error.LastModifiedUtc is { } lastModifiedUtc) {
+            httpResponse.Headers.LastModified = lastModifiedUtc.ToString("R");
+        }
+
+        ApplyVersionIdHeader(httpResponse, error.VersionId);
+
+        if (error.IsDeleteMarker) {
+            httpResponse.Headers[DeleteMarkerHeaderName] = "true";
+        }
     }
 
     private static void ApplyObjectHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
@@ -2419,6 +2492,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var checksumCrc32 = GetChecksumValue(checksums, "crc32");
         if (!string.IsNullOrWhiteSpace(checksumCrc32)) {
             httpResponse.Headers[ChecksumCrc32HeaderName] = checksumCrc32;
+        }
+
+        var checksumCrc32c = GetChecksumValue(checksums, "crc32c");
+        if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
+            httpResponse.Headers[ChecksumCrc32cHeaderName] = checksumCrc32c;
+        }
+
+        var checksumSha1 = GetChecksumValue(checksums, "sha1");
+        if (!string.IsNullOrWhiteSpace(checksumSha1)) {
+            httpResponse.Headers[ChecksumSha1HeaderName] = checksumSha1;
         }
 
         var checksumSha256 = GetChecksumValue(checksums, "sha256");
@@ -2495,7 +2578,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return checksumAlgorithm switch
         {
             "sha256" => "SHA256",
+            "sha1" => "SHA1",
             "crc32" => "CRC32",
+            "crc32c" => "CRC32C",
             _ => null
         };
     }

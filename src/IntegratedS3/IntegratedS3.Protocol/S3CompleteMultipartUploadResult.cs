@@ -12,6 +12,10 @@ public sealed class S3CompleteMultipartUploadResult
 
     public string? ChecksumCrc32 { get; init; }
 
+    public string? ChecksumCrc32c { get; init; }
+
+    public string? ChecksumSha1 { get; init; }
+
     public string? ChecksumSha256 { get; init; }
 
     public string? ChecksumType { get; init; }

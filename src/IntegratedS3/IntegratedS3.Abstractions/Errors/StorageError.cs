@@ -10,6 +10,12 @@ public sealed class StorageError
 
     public string? ObjectKey { get; init; }
 
+    public string? VersionId { get; init; }
+
+    public bool IsDeleteMarker { get; init; }
+
+    public DateTimeOffset? LastModifiedUtc { get; init; }
+
     public string? ProviderName { get; init; }
 
     public int? SuggestedHttpStatusCode { get; init; }

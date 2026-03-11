@@ -124,9 +124,13 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
         {
             BucketName = sourceBucketName,
-            Key = sourceKey
+            Key = sourceKey,
+            ChecksumMode = ChecksumMode.ENABLED
         });
         Assert.Equal(HttpStatusCode.OK, metadataResponse.HttpStatusCode);
+        Assert.False(string.IsNullOrWhiteSpace(metadataResponse.ChecksumCRC32));
+        Assert.False(string.IsNullOrWhiteSpace(metadataResponse.ChecksumCRC32C));
+        Assert.False(string.IsNullOrWhiteSpace(metadataResponse.ChecksumSHA256));
 
         var copyResponse = await s3Client.CopyObjectAsync(new CopyObjectRequest
         {
@@ -137,6 +141,9 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             ETagToMatch = metadataResponse.ETag
         });
         Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
+        Assert.Equal(metadataResponse.ChecksumCRC32, copyResponse.ChecksumCRC32);
+        Assert.Equal(metadataResponse.ChecksumCRC32C, copyResponse.ChecksumCRC32C);
+        Assert.Equal(metadataResponse.ChecksumSHA256, copyResponse.ChecksumSHA256);
 
         var copiedObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
         {
@@ -184,6 +191,154 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             EtagToNotMatch = metadataResponse.ETag
         }));
         Assert.Equal(HttpStatusCode.NotModified, notModifiedGetException.StatusCode);
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_PutObject_WithSha1Checksum_ExposesSdkChecksumFieldsAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-sha1-access";
+        const string secretAccessKey = "aws-sdk-sha1-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-sha1-bucket";
+        const string objectKey = "docs/sha1.txt";
+        const string copiedObjectKey = "docs/sha1-copy.txt";
+        const string payload = "hello sha1 from amazon sdk";
+        var checksum = ComputeSha1Base64(payload);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var putObjectResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = payload,
+            ContentType = "text/plain",
+            UseChunkEncoding = false,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA1,
+            ChecksumSHA1 = checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.HttpStatusCode);
+        Assert.Equal(checksum, putObjectResponse.ChecksumSHA1);
+
+        var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.HttpStatusCode);
+        Assert.Equal(checksum, metadataResponse.ChecksumSHA1);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        Assert.Equal(checksum, getObjectResponse.ChecksumSHA1);
+        using (var reader = new StreamReader(getObjectResponse.ResponseStream)) {
+            Assert.Equal(payload, await reader.ReadToEndAsync());
+        }
+
+        var copyResponse = await s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = bucketName,
+            SourceKey = objectKey,
+            DestinationBucket = bucketName,
+            DestinationKey = copiedObjectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
+        Assert.Equal(checksum, copyResponse.ChecksumSHA1);
+
+        var copiedMetadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = copiedObjectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedMetadataResponse.HttpStatusCode);
+        Assert.Equal(checksum, copiedMetadataResponse.ChecksumSHA1);
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_PutObject_WithCrc32cChecksum_ExposesSdkChecksumFieldsAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-crc32c-access";
+        const string secretAccessKey = "aws-sdk-crc32c-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-crc32c-bucket";
+        const string objectKey = "docs/crc32c.txt";
+        const string copiedObjectKey = "docs/crc32c-copy.txt";
+        const string payload = "hello crc32c from amazon sdk";
+        var checksum = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var putObjectResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = payload,
+            ContentType = "text/plain",
+            UseChunkEncoding = false,
+            ChecksumAlgorithm = ChecksumAlgorithm.CRC32C,
+            ChecksumCRC32C = checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.HttpStatusCode);
+        Assert.Equal(checksum, putObjectResponse.ChecksumCRC32C);
+
+        var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.HttpStatusCode);
+        Assert.Equal(checksum, metadataResponse.ChecksumCRC32C);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        Assert.Equal(checksum, getObjectResponse.ChecksumCRC32C);
+        using (var reader = new StreamReader(getObjectResponse.ResponseStream)) {
+            Assert.Equal(payload, await reader.ReadToEndAsync());
+        }
+
+        var copyResponse = await s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = bucketName,
+            SourceKey = objectKey,
+            DestinationBucket = bucketName,
+            DestinationKey = copiedObjectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
+        Assert.Equal(checksum, copyResponse.ChecksumCRC32C);
+
+        var copiedMetadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = copiedObjectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedMetadataResponse.HttpStatusCode);
+        Assert.Equal(checksum, copiedMetadataResponse.ChecksumCRC32C);
     }
 
     [Fact]
@@ -630,7 +785,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     }
 
     [Fact]
-    public async Task AmazonS3Client_MultipartUpload_WithChecksumAlgorithm_ExposesCompositeChecksumMetadataAgainstIntegratedS3()
+    public async Task AmazonS3Client_MultipartUploadAndCopy_WithChecksumAlgorithm_ExposesCompositeChecksumMetadataAgainstIntegratedS3()
     {
         const string accessKeyId = "aws-sdk-multipart-checksum-access";
         const string secretAccessKey = "aws-sdk-multipart-checksum-secret";
@@ -640,6 +795,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
 
         const string bucketName = "aws-sdk-multipart-checksum-bucket";
         const string objectKey = "docs/multipart-checksum.txt";
+        const string copiedObjectKey = "docs/multipart-checksum-copy.txt";
         const string part1Payload = "hello ";
         const string part2Payload = "world";
 
@@ -709,6 +865,17 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(compositeChecksum, completeResponse.ChecksumSHA256);
         Assert.Equal(ChecksumType.COMPOSITE, completeResponse.ChecksumType);
 
+        var copyResponse = await s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = bucketName,
+            SourceKey = objectKey,
+            DestinationBucket = bucketName,
+            DestinationKey = copiedObjectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, copyResponse.ChecksumSHA256);
+        Assert.Equal(ChecksumType.COMPOSITE, copyResponse.ChecksumType);
+
         var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
         {
             BucketName = bucketName,
@@ -719,12 +886,281 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(compositeChecksum, metadataResponse.ChecksumSHA256);
         Assert.Equal(ChecksumType.COMPOSITE, metadataResponse.ChecksumType);
 
+        var copiedMetadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = copiedObjectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedMetadataResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, copiedMetadataResponse.ChecksumSHA256);
+        Assert.Equal(ChecksumType.COMPOSITE, copiedMetadataResponse.ChecksumType);
+
         var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
         {
             BucketName = bucketName,
             Key = objectKey
         });
         Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal(part1Payload + part2Payload, await reader.ReadToEndAsync());
+
+        var copiedObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = copiedObjectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedObjectResponse.HttpStatusCode);
+        using var copiedReader = new StreamReader(copiedObjectResponse.ResponseStream);
+        Assert.Equal(part1Payload + part2Payload, await copiedReader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_MultipartUpload_WithSha1ChecksumAlgorithm_ExposesCompositeChecksumMetadataAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-multipart-sha1-access";
+        const string secretAccessKey = "aws-sdk-multipart-sha1-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-multipart-sha1-bucket";
+        const string objectKey = "docs/multipart-sha1.txt";
+        const string copiedObjectKey = "docs/multipart-sha1-copy.txt";
+        const string part1Payload = "hello ";
+        const string part2Payload = "world";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var part1Checksum = ComputeSha1Base64(part1Payload);
+        var part2Checksum = ComputeSha1Base64(part2Payload);
+        var compositeChecksum = ComputeMultipartSha1Base64(part1Checksum, part2Checksum);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA1
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+        Assert.Equal(ChecksumAlgorithm.SHA1, initiateResponse.ChecksumAlgorithm);
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
+        var part1Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            InputStream = part1Stream,
+            PartSize = part1Stream.Length,
+            IsLastPart = false,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA1,
+            ChecksumSHA1 = part1Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part1Response.HttpStatusCode);
+        Assert.Equal(part1Checksum, part1Response.ChecksumSHA1);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes(part2Payload));
+        var part2Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 2,
+            InputStream = part2Stream,
+            PartSize = part2Stream.Length,
+            IsLastPart = true,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA1,
+            ChecksumSHA1 = part2Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part2Response.HttpStatusCode);
+        Assert.Equal(part2Checksum, part2Response.ChecksumSHA1);
+
+        var completeResponse = await s3Client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartETags =
+            [
+                new PartETag(1, part1Response.ETag),
+                new PartETag(2, part2Response.ETag)
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, completeResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, completeResponse.ChecksumSHA1);
+        Assert.Equal(ChecksumType.COMPOSITE, completeResponse.ChecksumType);
+
+        var copyResponse = await s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = bucketName,
+            SourceKey = objectKey,
+            DestinationBucket = bucketName,
+            DestinationKey = copiedObjectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, copyResponse.ChecksumSHA1);
+        Assert.Equal(ChecksumType.COMPOSITE, copyResponse.ChecksumType);
+
+        var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, metadataResponse.ChecksumSHA1);
+        Assert.Equal(ChecksumType.COMPOSITE, metadataResponse.ChecksumType);
+
+        var copiedMetadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = copiedObjectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedMetadataResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, copiedMetadataResponse.ChecksumSHA1);
+        Assert.Equal(ChecksumType.COMPOSITE, copiedMetadataResponse.ChecksumType);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, getObjectResponse.ChecksumSHA1);
+        Assert.Equal(ChecksumType.COMPOSITE, getObjectResponse.ChecksumType);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal(part1Payload + part2Payload, await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_MultipartUpload_WithCrc32cChecksumAlgorithm_ExposesCompositeChecksumMetadataAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-multipart-crc32c-access";
+        const string secretAccessKey = "aws-sdk-multipart-crc32c-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-multipart-crc32c-bucket";
+        const string objectKey = "docs/multipart-crc32c.txt";
+        const string copiedObjectKey = "docs/multipart-crc32c-copy.txt";
+        const string part1Payload = "hello ";
+        const string part2Payload = "world";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var part1Checksum = ChecksumTestAlgorithms.ComputeCrc32cBase64(part1Payload);
+        var part2Checksum = ChecksumTestAlgorithms.ComputeCrc32cBase64(part2Payload);
+        var compositeChecksum = ChecksumTestAlgorithms.ComputeMultipartCrc32cBase64(part1Checksum, part2Checksum);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.CRC32C
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+        Assert.Equal(ChecksumAlgorithm.CRC32C, initiateResponse.ChecksumAlgorithm);
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
+        var part1Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            InputStream = part1Stream,
+            PartSize = part1Stream.Length,
+            IsLastPart = false,
+            ChecksumAlgorithm = ChecksumAlgorithm.CRC32C,
+            ChecksumCRC32C = part1Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part1Response.HttpStatusCode);
+        Assert.Equal(part1Checksum, part1Response.ChecksumCRC32C);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes(part2Payload));
+        var part2Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 2,
+            InputStream = part2Stream,
+            PartSize = part2Stream.Length,
+            IsLastPart = true,
+            ChecksumAlgorithm = ChecksumAlgorithm.CRC32C,
+            ChecksumCRC32C = part2Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part2Response.HttpStatusCode);
+        Assert.Equal(part2Checksum, part2Response.ChecksumCRC32C);
+
+        var completeResponse = await s3Client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartETags =
+            [
+                new PartETag(1, part1Response.ETag),
+                new PartETag(2, part2Response.ETag)
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, completeResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, completeResponse.ChecksumCRC32C);
+        Assert.Equal(ChecksumType.COMPOSITE, completeResponse.ChecksumType);
+
+        var copyResponse = await s3Client.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucket = bucketName,
+            SourceKey = objectKey,
+            DestinationBucket = bucketName,
+            DestinationKey = copiedObjectKey
+        });
+        Assert.Equal(HttpStatusCode.OK, copyResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, copyResponse.ChecksumCRC32C);
+        Assert.Equal(ChecksumType.COMPOSITE, copyResponse.ChecksumType);
+
+        var metadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, metadataResponse.ChecksumCRC32C);
+        Assert.Equal(ChecksumType.COMPOSITE, metadataResponse.ChecksumType);
+
+        var copiedMetadataResponse = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = copiedObjectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, copiedMetadataResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, copiedMetadataResponse.ChecksumCRC32C);
+        Assert.Equal(ChecksumType.COMPOSITE, copiedMetadataResponse.ChecksumType);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ChecksumMode = ChecksumMode.ENABLED
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        Assert.Equal(compositeChecksum, getObjectResponse.ChecksumCRC32C);
+        Assert.Equal(ChecksumType.COMPOSITE, getObjectResponse.ChecksumType);
         using var reader = new StreamReader(getObjectResponse.ResponseStream);
         Assert.Equal(part1Payload + part2Payload, await reader.ReadToEndAsync());
     }
@@ -821,6 +1257,84 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(HttpStatusCode.OK, restoredGet.HttpStatusCode);
         using var reader = new StreamReader(restoredGet.ResponseStream);
         Assert.Equal("version two", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_DeleteMarkerGetAndHeadBehavior_MatchesS3Semantics()
+    {
+        const string accessKeyId = "aws-sdk-delete-marker-read-access";
+        const string secretAccessKey = "aws-sdk-delete-marker-read-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-delete-marker-read-bucket";
+        const string objectKey = "docs/deleted.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = bucketName,
+            VersioningConfig = new S3BucketVersioningConfig
+            {
+                Status = VersionStatus.Enabled
+            }
+        })).HttpStatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentBody = "delete marker reads",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        })).HttpStatusCode);
+
+        var deleteCurrent = await s3Client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.HttpStatusCode);
+        Assert.Equal("true", deleteCurrent.DeleteMarker);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteCurrent.VersionId);
+
+        var currentGetException = await Assert.ThrowsAsync<NoSuchKeyException>(() => s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, currentGetException.StatusCode);
+        Assert.Equal("NoSuchKey", currentGetException.ErrorCode);
+
+        var currentHeadException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        }));
+        Assert.Equal(HttpStatusCode.NotFound, currentHeadException.StatusCode);
+
+        var explicitGetException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            VersionId = deleteMarkerVersionId
+        }));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, explicitGetException.StatusCode);
+        Assert.Equal("MethodNotAllowed", explicitGetException.ErrorCode);
+
+        var explicitHeadException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            VersionId = deleteMarkerVersionId
+        }));
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, explicitHeadException.StatusCode);
     }
 
     [Fact]
@@ -1086,6 +1600,21 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             });
             builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
         });
+    }
+
+    private static string ComputeSha1Base64(string content)
+    {
+        return Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(content)));
+    }
+
+    private static string ComputeMultipartSha1Base64(params string[] partChecksums)
+    {
+        using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+        foreach (var partChecksum in partChecksums) {
+            checksum.AppendData(Convert.FromBase64String(partChecksum));
+        }
+
+        return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Length}";
     }
 
     private static string ComputeSha256Base64(string content)

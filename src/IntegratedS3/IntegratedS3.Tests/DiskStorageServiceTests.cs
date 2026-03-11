@@ -43,6 +43,7 @@ public sealed class DiskStorageServiceTests
         Assert.Equal("text/plain", putResult.Value!.ContentType);
         Assert.Equal("copilot", putResult.Value.Metadata!["author"]);
         Assert.Equal(ComputeSha256Base64("hello integrated s3"), putResult.Value.Checksums!["sha256"]);
+        Assert.Equal(ChecksumTestAlgorithms.ComputeCrc32cBase64("hello integrated s3"), putResult.Value.Checksums["crc32c"]);
 
         var objects = await storageService.ListObjectsAsync(new ListObjectsRequest
         {
@@ -67,6 +68,7 @@ public sealed class DiskStorageServiceTests
             Assert.Equal(putResult.Value.VersionId, response.Object.VersionId);
             Assert.Equal("copilot", response.Object.Metadata!["author"]);
             Assert.Equal(ComputeSha256Base64("hello integrated s3"), response.Object.Checksums!["sha256"]);
+            Assert.Equal(ChecksumTestAlgorithms.ComputeCrc32cBase64("hello integrated s3"), response.Object.Checksums["crc32c"]);
         }
 
         var deleteObject = await storageService.DeleteObjectAsync(new DeleteObjectRequest
@@ -120,6 +122,162 @@ public sealed class DiskStorageServiceTests
 
         Assert.False(headResult.IsSuccess);
         Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, headResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObject_WithSha1Checksum_RoundTripsAndRejectsMismatch()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "sha1-checksums"
+        })).IsSuccess);
+
+        const string payload = "sha1 checksum payload";
+        var checksum = ComputeSha1Base64(payload);
+
+        await using var validUploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "sha1-checksums",
+            Key = "docs/sha1.txt",
+            Content = validUploadStream,
+            ContentType = "text/plain",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sha1"] = checksum
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+        Assert.Equal(checksum, putResult.Value!.Checksums!["sha1"]);
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "sha1-checksums",
+            Key = "docs/sha1.txt"
+        });
+
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(checksum, headResult.Value!.Checksums!["sha1"]);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "sha1-checksums",
+            Key = "docs/sha1.txt"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using (var response = getResult.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal(payload, await reader.ReadToEndAsync());
+            Assert.Equal(checksum, response.Object.Checksums!["sha1"]);
+        }
+
+        await using var invalidUploadStream = new MemoryStream(Encoding.UTF8.GetBytes("sha1 checksum mismatch"));
+        var invalidPutResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "sha1-checksums",
+            Key = "docs/invalid-sha1.txt",
+            Content = invalidUploadStream,
+            ContentType = "text/plain",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["sha1"] = "invalid-checksum"
+            }
+        });
+
+        Assert.False(invalidPutResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidChecksum, invalidPutResult.Error!.Code);
+
+        var invalidHeadResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "sha1-checksums",
+            Key = "docs/invalid-sha1.txt"
+        });
+
+        Assert.False(invalidHeadResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, invalidHeadResult.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_PutObject_WithCrc32cChecksum_RoundTripsAndRejectsMismatch()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "crc32c-checksums"
+        })).IsSuccess);
+
+        const string payload = "crc32c checksum payload";
+        var checksum = ChecksumTestAlgorithms.ComputeCrc32cBase64(payload);
+
+        await using var validUploadStream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "crc32c-checksums",
+            Key = "docs/crc32c.txt",
+            Content = validUploadStream,
+            ContentType = "text/plain",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = checksum
+            }
+        });
+
+        Assert.True(putResult.IsSuccess);
+        Assert.Equal(checksum, putResult.Value!.Checksums!["crc32c"]);
+
+        var headResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "crc32c-checksums",
+            Key = "docs/crc32c.txt"
+        });
+
+        Assert.True(headResult.IsSuccess);
+        Assert.Equal(checksum, headResult.Value!.Checksums!["crc32c"]);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "crc32c-checksums",
+            Key = "docs/crc32c.txt"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using (var response = getResult.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8, leaveOpen: false);
+            Assert.Equal(payload, await reader.ReadToEndAsync());
+            Assert.Equal(checksum, response.Object.Checksums!["crc32c"]);
+        }
+
+        await using var invalidUploadStream = new MemoryStream(Encoding.UTF8.GetBytes("crc32c checksum mismatch"));
+        var invalidPutResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "crc32c-checksums",
+            Key = "docs/invalid-crc32c.txt",
+            Content = invalidUploadStream,
+            ContentType = "text/plain",
+            Checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["crc32c"] = "invalid-checksum"
+            }
+        });
+
+        Assert.False(invalidPutResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.InvalidChecksum, invalidPutResult.Error!.Code);
+
+        var invalidHeadResult = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "crc32c-checksums",
+            Key = "docs/invalid-crc32c.txt"
+        });
+
+        Assert.False(invalidHeadResult.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, invalidHeadResult.Error!.Code);
     }
 
     [Fact]
@@ -445,6 +603,95 @@ public sealed class DiskStorageServiceTests
         Assert.Contains(versions, static version => !version.IsDeleteMarker && version.VersionId is not null && version.IsLatest is false);
         Assert.Contains(versions, version => version.VersionId == v2Put.Value!.VersionId && !version.IsDeleteMarker);
         Assert.Contains(versions, version => version.VersionId == v1Put.Value!.VersionId && !version.IsDeleteMarker);
+    }
+
+    [Fact]
+    public async Task DiskStorage_DeleteMarkerGetAndHeadRequestsPreserveDeleteMarkerFidelity()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            EnableVersioning = true
+        })).IsSuccess);
+
+        await using var putStream = new MemoryStream(Encoding.UTF8.GetBytes("current version"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Key = "docs/history.txt",
+            Content = putStream,
+            ContentType = "text/plain"
+        });
+        Assert.True(putResult.IsSuccess);
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Key = "docs/history.txt"
+        });
+
+        Assert.True(deleteCurrent.IsSuccess);
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteCurrent.Value!.VersionId);
+
+        var deleteMarkerVersion = Assert.Single(await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Prefix = "docs/history.txt"
+        }).Where(static version => version.IsDeleteMarker).ToArrayAsync());
+
+        var currentGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Key = "docs/history.txt"
+        });
+
+        Assert.False(currentGet.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, currentGet.Error!.Code);
+        Assert.True(currentGet.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentGet.Error.VersionId);
+        Assert.Null(currentGet.Error.LastModifiedUtc);
+
+        var currentHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Key = "docs/history.txt"
+        });
+
+        Assert.False(currentHead.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, currentHead.Error!.Code);
+        Assert.True(currentHead.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentHead.Error.VersionId);
+        Assert.Null(currentHead.Error.LastModifiedUtc);
+
+        var explicitGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Key = "docs/history.txt",
+            VersionId = deleteMarkerVersionId
+        });
+
+        Assert.False(explicitGet.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.MethodNotAllowed, explicitGet.Error!.Code);
+        Assert.True(explicitGet.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, explicitGet.Error.VersionId);
+        Assert.Equal(deleteMarkerVersion.LastModifiedUtc, explicitGet.Error.LastModifiedUtc);
+
+        var explicitHead = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "version-delete-marker-fidelity",
+            Key = "docs/history.txt",
+            VersionId = deleteMarkerVersionId
+        });
+
+        Assert.False(explicitHead.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.MethodNotAllowed, explicitHead.Error!.Code);
+        Assert.True(explicitHead.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, explicitHead.Error.VersionId);
+        Assert.Equal(deleteMarkerVersion.LastModifiedUtc, explicitHead.Error.LastModifiedUtc);
+        Assert.Equal(deleteMarkerVersionId, deleteMarkerVersion.VersionId);
     }
 
     [Fact]
@@ -1714,6 +1961,11 @@ public sealed class DiskStorageServiceTests
             _states.Remove((providerName, bucketName, key, uploadId));
             return ValueTask.CompletedTask;
         }
+    }
+
+    private static string ComputeSha1Base64(string content)
+    {
+        return Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(content)));
     }
 
     private static string ComputeSha256Base64(string content)

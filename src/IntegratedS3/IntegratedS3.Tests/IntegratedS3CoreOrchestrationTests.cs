@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Security.Claims;
 using IntegratedS3.Abstractions.Errors;
@@ -312,6 +313,164 @@ public sealed class IntegratedS3CoreOrchestrationTests
         await using var response = getObject.Value!;
         Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
         Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_PreferPrimary_CachesTransientReadFailures_ToAvoidRepeatedPrimaryAttempts()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true)
+        {
+            FailGetObjectWithProviderUnavailable = true
+        };
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+                options.BackendHealth.UnhealthySnapshotTtl = TimeSpan.FromMinutes(5);
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var firstRead = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(firstRead.IsSuccess);
+        await using (var response = firstRead.Value!) {
+            Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        }
+
+        Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+
+        primaryBackend.FailGetObjectWithProviderUnavailable = false;
+
+        var secondRead = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(secondRead.IsSuccess);
+        await using (var response = secondRead.Value!) {
+            Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        }
+
+        Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(2, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_ActiveProbes_CanDriveReadRoutingAndRecovery()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        var healthProbe = new ConfigurableStorageBackendHealthProbe(new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+        {
+            [primaryBackend.Name] = StorageBackendHealthStatus.Unhealthy,
+            [replicaBackend.Name] = StorageBackendHealthStatus.Healthy
+        });
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+                options.BackendHealth.EnableActiveProbing = true;
+                options.BackendHealth.HealthySnapshotTtl = TimeSpan.Zero;
+                options.BackendHealth.UnhealthySnapshotTtl = TimeSpan.Zero;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+            services.AddSingleton<IStorageBackendHealthProbe>(healthProbe);
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var firstRead = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(firstRead.IsSuccess);
+        await using (var response = firstRead.Value!) {
+            Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        }
+
+        Assert.Equal(0, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+
+        healthProbe.SetStatus(primaryBackend.Name, StorageBackendHealthStatus.Healthy);
+
+        var secondRead = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(secondRead.IsSuccess);
+        await using (var response = secondRead.Value!) {
+            Assert.Equal("primary payload", await ReadContentAsStringAsync(response.Content));
+        }
+
+        Assert.Equal(1, primaryBackend.GetObjectCallCount);
+        Assert.Equal(1, replicaBackend.GetObjectCallCount);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_ActiveProbes_DoNotOverrideStaticHealthEvaluators()
+    {
+        var primaryBackend = new InMemoryStorageBackend("primary-memory", isPrimary: true);
+        primaryBackend.AddObject("read-bucket", "docs/read.txt", "primary payload");
+
+        var replicaBackend = new InMemoryStorageBackend("replica-memory");
+        replicaBackend.AddObject("read-bucket", "docs/read.txt", "replica payload");
+
+        var healthProbe = new ConfigurableStorageBackendHealthProbe(new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+        {
+            [primaryBackend.Name] = StorageBackendHealthStatus.Healthy,
+            [replicaBackend.Name] = StorageBackendHealthStatus.Healthy
+        });
+
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, addDefaultDiskStorage: false, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferPrimary;
+                options.BackendHealth.EnableActiveProbing = true;
+                options.BackendHealth.HealthySnapshotTtl = TimeSpan.Zero;
+                options.BackendHealth.UnhealthySnapshotTtl = TimeSpan.Zero;
+            });
+            services.AddSingleton<IStorageBackend>(primaryBackend);
+            services.AddSingleton<IStorageBackend>(replicaBackend);
+            services.AddSingleton<IStorageBackendHealthProbe>(healthProbe);
+            services.AddSingleton<IStorageBackendHealthEvaluator>(new ConfigurableStorageBackendHealthEvaluator(new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+            {
+                [primaryBackend.Name] = StorageBackendHealthStatus.Unhealthy,
+                [replicaBackend.Name] = StorageBackendHealthStatus.Healthy
+            }));
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var getObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "read-bucket",
+            Key = "docs/read.txt"
+        });
+
+        Assert.True(getObject.IsSuccess);
+        await using var response = getObject.Value!;
+        Assert.Equal("replica payload", await ReadContentAsStringAsync(response.Content));
+        Assert.Equal(0, primaryBackend.GetObjectCallCount);
         Assert.Equal(1, replicaBackend.GetObjectCallCount);
     }
 
@@ -701,6 +860,24 @@ public sealed class IntegratedS3CoreOrchestrationTests
             return ValueTask.FromResult(statuses.TryGetValue(backend.Name, out var status)
                 ? status
                 : StorageBackendHealthStatus.Healthy);
+        }
+    }
+
+    private sealed class ConfigurableStorageBackendHealthProbe(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthProbe
+    {
+        private readonly ConcurrentDictionary<string, StorageBackendHealthStatus> _statuses = new(statuses, StringComparer.Ordinal);
+
+        public ValueTask<StorageBackendHealthStatus> ProbeAsync(IStorageBackend backend, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(_statuses.TryGetValue(backend.Name, out var status)
+                ? status
+                : StorageBackendHealthStatus.Unknown);
+        }
+
+        public void SetStatus(string backendName, StorageBackendHealthStatus status)
+        {
+            _statuses[backendName] = status;
         }
     }
 

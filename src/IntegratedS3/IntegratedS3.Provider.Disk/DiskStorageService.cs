@@ -23,7 +23,9 @@ internal sealed class DiskStorageService(
     private const string MultipartUploadsDirectoryName = ".integrateds3-multipart";
     private const string MultipartStateFileName = "upload.json";
     private const string Sha256ChecksumAlgorithm = "sha256";
+    private const string Sha1ChecksumAlgorithm = "sha1";
     private const string Crc32ChecksumAlgorithm = "crc32";
+    private const string Crc32cChecksumAlgorithm = "crc32c";
 
     private readonly string _rootPath = InitializeRootPath(options);
     private readonly IStorageObjectStateStore? _objectStateStore = objectStateStore;
@@ -311,7 +313,11 @@ internal sealed class DiskStorageService(
         }
 
         var storedObject = storedObjectResult.Value!;
-        if (storedObject.IsDeleteMarker || string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<GetObjectResponse>.Failure(GetDeleteMarkerReadError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        if (string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
             return StorageResult<GetObjectResponse>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
         }
 
@@ -646,7 +652,9 @@ internal sealed class DiskStorageService(
         }
 
         if (!string.IsNullOrWhiteSpace(checksumAlgorithm)
-            && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            && !string.Equals(checksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(checksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(checksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return ValueTask.FromResult(StorageResult<MultipartUploadInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{request.ChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -695,7 +703,9 @@ internal sealed class DiskStorageService(
         var uploadDirectoryPath = uploadStateResult.Value!.UploadDirectoryPath;
         var uploadChecksumAlgorithm = uploadStateResult.Value.State.ChecksumAlgorithm;
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return StorageResult<MultipartUploadPart>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -783,7 +793,9 @@ internal sealed class DiskStorageService(
         var uploadState = uploadStateResult.Value!;
         var uploadChecksumAlgorithm = uploadState.State.ChecksumAlgorithm;
         if (!string.IsNullOrWhiteSpace(uploadChecksumAlgorithm)
-            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            && !string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
             return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
                 $"Checksum algorithm '{uploadChecksumAlgorithm}' is not currently supported for multipart uploads.",
                 request.BucketName,
@@ -795,7 +807,9 @@ internal sealed class DiskStorageService(
         Directory.CreateDirectory(objectDirectoryPath);
 
         var tempObjectPath = $"{objectPath}.{Guid.NewGuid():N}.tmp";
-        List<string>? compositePartChecksums = string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+        List<string>? compositePartChecksums = (string.Equals(uploadChecksumAlgorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uploadChecksumAlgorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(uploadChecksumAlgorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase))
             ? new List<string>(request.Parts.Count)
             : null;
         try {
@@ -836,9 +850,10 @@ internal sealed class DiskStorageService(
                     }
 
                     if (compositePartChecksums is not null) {
-                        if (!TryGetChecksumValue(actualPartChecksums, Sha256ChecksumAlgorithm, out var actualPartChecksum)) {
+                        var compositeChecksumAlgorithm = uploadChecksumAlgorithm!;
+                        if (!TryGetChecksumValue(actualPartChecksums, compositeChecksumAlgorithm, out var actualPartChecksum)) {
                             return StorageResult<ObjectInfo>.Failure(StorageError.Unsupported(
-                                "Multipart SHA256 checksum synthesis requires per-part SHA256 digests.",
+                                $"Multipart {compositeChecksumAlgorithm.ToUpperInvariant()} checksum synthesis requires per-part {compositeChecksumAlgorithm.ToUpperInvariant()} digests.",
                                 request.BucketName,
                                 request.Key));
                         }
@@ -860,7 +875,7 @@ internal sealed class DiskStorageService(
             IReadOnlyDictionary<string, string> checksums = compositePartChecksums is not null
                 ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
-                    [Sha256ChecksumAlgorithm] = BuildCompositeSha256Checksum(compositePartChecksums)
+                    [uploadChecksumAlgorithm!] = BuildCompositeChecksum(uploadChecksumAlgorithm!, compositePartChecksums)
                 }
                 : await ComputeChecksumsAsync(objectPath, cancellationToken);
             var versionId = CreateVersionId();
@@ -918,7 +933,11 @@ internal sealed class DiskStorageService(
         }
 
         var storedObject = storedObjectResult.Value!;
-        if (storedObject.IsDeleteMarker || string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectInfo>.Failure(GetDeleteMarkerReadError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        if (string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
             return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.BucketName, request.Key, request.VersionId));
         }
 
@@ -1491,7 +1510,7 @@ internal sealed class DiskStorageService(
         var currentResolution = await TryResolveCurrentStoredObjectAsync(bucketName, key, currentPath, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(versionId)) {
-            if (currentResolution is null || currentResolution.IsDeleteMarker) {
+            if (currentResolution is null) {
                 return StorageResult<ResolvedStoredObject>.Failure(ObjectNotFound(bucketName, key));
             }
 
@@ -2099,7 +2118,9 @@ internal sealed class DiskStorageService(
     {
         await using var stream = new FileStream(objectPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
         var crc32 = Crc32Accumulator.Create();
+        var crc32c = Crc32Accumulator.CreateCastagnoli();
         var buffer = new byte[81920];
 
         while (true) {
@@ -2109,13 +2130,17 @@ internal sealed class DiskStorageService(
             }
 
             sha256.AppendData(buffer, 0, read);
+            sha1.AppendData(buffer, 0, read);
             crc32.Append(buffer.AsSpan(0, read));
+            crc32c.Append(buffer.AsSpan(0, read));
         }
 
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["sha256"] = Convert.ToBase64String(sha256.GetHashAndReset()),
-            ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes())
+            ["sha1"] = Convert.ToBase64String(sha1.GetHashAndReset()),
+            ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
+            ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
         };
     }
 
@@ -2131,7 +2156,9 @@ internal sealed class DiskStorageService(
 
         foreach (var requestedChecksum in requestedChecksums) {
             if (!string.Equals(requestedChecksum.Key, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(requestedChecksum.Key, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+                && !string.Equals(requestedChecksum.Key, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(requestedChecksum.Key, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(requestedChecksum.Key, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
                 return StorageError.Unsupported(
                     $"Checksum algorithm '{requestedChecksum.Key}' is not currently supported for request validation.",
                     bucketName,
@@ -2169,9 +2196,21 @@ internal sealed class DiskStorageService(
             return true;
         }
 
+        if (string.Equals(value, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "SHA1", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = Sha1ChecksumAlgorithm;
+            return true;
+        }
+
         if (string.Equals(value, Crc32ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "CRC32", StringComparison.OrdinalIgnoreCase)) {
             checksumAlgorithm = Crc32ChecksumAlgorithm;
+            return true;
+        }
+
+        if (string.Equals(value, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "CRC32C", StringComparison.OrdinalIgnoreCase)) {
+            checksumAlgorithm = Crc32cChecksumAlgorithm;
             return true;
         }
 
@@ -2232,6 +2271,23 @@ internal sealed class DiskStorageService(
             : responseChecksums;
     }
 
+    private static string BuildCompositeChecksum(string algorithm, IReadOnlyList<string> partChecksums)
+    {
+        if (string.Equals(algorithm, Sha256ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return BuildCompositeSha256Checksum(partChecksums);
+        }
+
+        if (string.Equals(algorithm, Sha1ChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return BuildCompositeSha1Checksum(partChecksums);
+        }
+
+        if (string.Equals(algorithm, Crc32cChecksumAlgorithm, StringComparison.OrdinalIgnoreCase)) {
+            return BuildCompositeCrc32cChecksum(partChecksums);
+        }
+
+        throw new InvalidOperationException($"Multipart checksum algorithm '{algorithm}' is not supported for composite checksum synthesis.");
+    }
+
     private static string BuildCompositeSha256Checksum(IReadOnlyList<string> partChecksums)
     {
         using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -2240,6 +2296,26 @@ internal sealed class DiskStorageService(
         }
 
         return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Count}";
+    }
+
+    private static string BuildCompositeSha1Checksum(IReadOnlyList<string> partChecksums)
+    {
+        using var checksum = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+        foreach (var partChecksum in partChecksums) {
+            checksum.AppendData(Convert.FromBase64String(partChecksum));
+        }
+
+        return $"{Convert.ToBase64String(checksum.GetHashAndReset())}-{partChecksums.Count}";
+    }
+
+    private static string BuildCompositeCrc32cChecksum(IReadOnlyList<string> partChecksums)
+    {
+        var checksum = Crc32Accumulator.CreateCastagnoli();
+        foreach (var partChecksum in partChecksums) {
+            checksum.Append(Convert.FromBase64String(partChecksum));
+        }
+
+        return $"{Convert.ToBase64String(checksum.GetHashBytes())}-{partChecksums.Count}";
     }
 
     private static StorageError? EvaluatePreconditions(GetObjectRequest request, ObjectInfo objectInfo)
@@ -2504,6 +2580,44 @@ internal sealed class DiskStorageService(
         };
     }
 
+    private StorageError GetDeleteMarkerReadError(string bucketName, string objectKey, string? requestedVersionId, DiskObjectMetadata deleteMarkerMetadata)
+    {
+        return string.IsNullOrWhiteSpace(requestedVersionId)
+            ? CurrentDeleteMarkerNotFound(bucketName, objectKey, deleteMarkerMetadata)
+            : DeleteMarkerMethodNotAllowed(bucketName, objectKey, deleteMarkerMetadata);
+    }
+
+    private StorageError CurrentDeleteMarkerNotFound(string bucketName, string objectKey, DiskObjectMetadata deleteMarkerMetadata)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.ObjectNotFound,
+            Message = $"Object '{objectKey}' was not found in bucket '{bucketName}'.",
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            VersionId = deleteMarkerMetadata.VersionId,
+            IsDeleteMarker = true,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 404
+        };
+    }
+
+    private StorageError DeleteMarkerMethodNotAllowed(string bucketName, string objectKey, DiskObjectMetadata deleteMarkerMetadata)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.MethodNotAllowed,
+            Message = $"The specified version '{deleteMarkerMetadata.VersionId}' is a delete marker and does not support this operation.",
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            VersionId = deleteMarkerMetadata.VersionId,
+            IsDeleteMarker = true,
+            LastModifiedUtc = deleteMarkerMetadata.LastModifiedUtc,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 405
+        };
+    }
+
     private sealed record MultipartUploadStateContext(string UploadDirectoryPath, MultipartUploadState State);
 
     private sealed record ResolvedStoredObject(string? ContentPath, DiskObjectMetadata Metadata, bool IsCurrent, bool IsDeleteMarker);
@@ -2512,22 +2626,32 @@ internal sealed class DiskStorageService(
 
     private struct Crc32Accumulator
     {
-        private static readonly uint[] Table = CreateTable();
+        private static readonly uint[] Crc32Table = CreateTable(0xEDB88320u);
+        private static readonly uint[] Crc32cTable = CreateTable(0x82F63B78u);
 
+        private readonly uint[] _table;
         private uint _current;
 
         public static Crc32Accumulator Create()
         {
-            return new Crc32Accumulator
-            {
-                _current = 0xFFFFFFFFu
-            };
+            return new Crc32Accumulator(Crc32Table);
+        }
+
+        public static Crc32Accumulator CreateCastagnoli()
+        {
+            return new Crc32Accumulator(Crc32cTable);
+        }
+
+        private Crc32Accumulator(uint[] table)
+        {
+            _table = table;
+            _current = 0xFFFFFFFFu;
         }
 
         public void Append(ReadOnlySpan<byte> buffer)
         {
             foreach (var value in buffer) {
-                _current = (_current >> 8) ^ Table[(byte)(_current ^ value)];
+                _current = (_current >> 8) ^ _table[(byte)(_current ^ value)];
             }
         }
 
@@ -2543,7 +2667,7 @@ internal sealed class DiskStorageService(
             ];
         }
 
-        private static uint[] CreateTable()
+        private static uint[] CreateTable(uint polynomial)
         {
             var table = new uint[256];
             for (uint i = 0; i < table.Length; i++) {
@@ -2551,7 +2675,7 @@ internal sealed class DiskStorageService(
                 for (var bit = 0; bit < 8; bit++) {
                     value = (value & 1) == 0
                         ? value >> 1
-                        : 0xEDB88320u ^ (value >> 1);
+                        : polynomial ^ (value >> 1);
                 }
 
                 table[i] = value;
