@@ -1020,6 +1020,52 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_GetObject_IfMatchTakesPrecedenceOverIfUnmodifiedSince()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "docs" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("hello integrated s3"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "docs",
+            Key = "precedence.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+        var currentETag = $"\"{putResult.Value!.ETag}\"";
+        var lastModifiedUtc = putResult.Value.LastModifiedUtc;
+
+        var result = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "docs",
+            Key = "precedence.txt",
+            IfMatchETag = currentETag,
+            IfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
+        });
+
+        Assert.True(result.IsSuccess);
+        await using var response = result.Value!;
+        Assert.False(response.IsNotModified);
+        using var reader = new StreamReader(response.Content, Encoding.UTF8);
+        Assert.Equal("hello integrated s3", await reader.ReadToEndAsync());
+
+        var failedMixedConditions = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "docs",
+            Key = "precedence.txt",
+            IfMatchETag = "\"different\"",
+            IfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        });
+
+        Assert.False(failedMixedConditions.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedMixedConditions.Error!.Code);
+    }
+
+    [Fact]
     public async Task DiskStorage_CopiesObjectsAndPreservesMetadata()
     {
         await using var fixture = new DiskStorageFixture();
@@ -1113,6 +1159,188 @@ public sealed class DiskStorageServiceTests
         {
             BucketName = "target",
             Key = "docs/copied.txt"
+        })).IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_SourceIfMatchTakesPrecedenceOverSourceIfUnmodifiedSince()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "source" });
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "target" });
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("copy me"));
+        var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(putResult.IsSuccess);
+        var currentETag = $"\"{putResult.Value!.ETag}\"";
+        var lastModifiedUtc = putResult.Value.LastModifiedUtc;
+
+        var successfulCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/precedence-copy.txt",
+            SourceIfMatchETag = currentETag,
+            SourceIfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(-5)
+        });
+
+        Assert.True(successfulCopy.IsSuccess);
+
+        var copiedObject = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/precedence-copy.txt"
+        });
+
+        Assert.True(copiedObject.IsSuccess);
+        await using (var response = copiedObject.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8);
+            Assert.Equal("copy me", await reader.ReadToEndAsync());
+        }
+
+        var failedMixedConditions = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/blocked-copy.txt",
+            SourceIfMatchETag = "\"different\"",
+            SourceIfUnmodifiedSinceUtc = lastModifiedUtc.AddMinutes(5)
+        });
+
+        Assert.False(failedMixedConditions.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedMixedConditions.Error!.Code);
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/blocked-copy.txt"
+        })).IsSuccess);
+    }
+
+    [Fact]
+    public async Task DiskStorage_CopyObject_SourceVersionIdCanTargetHistoricalVersionsAndRejectDeleteMarkers()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "source",
+            EnableVersioning = true
+        })).IsSuccess);
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "target"
+        })).IsSuccess);
+
+        await using var v1Stream = new MemoryStream(Encoding.UTF8.GetBytes("version one"));
+        var v1Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt",
+            Content = v1Stream,
+            ContentType = "text/plain"
+        });
+
+        await using var v2Stream = new MemoryStream(Encoding.UTF8.GetBytes("version two"));
+        var v2Put = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt",
+            Content = v2Stream,
+            ContentType = "text/plain"
+        });
+
+        Assert.True(v1Put.IsSuccess);
+        Assert.True(v2Put.IsSuccess);
+        Assert.NotEqual(v1Put.Value!.VersionId, v2Put.Value!.VersionId);
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "source",
+            Key = "docs/source.txt"
+        });
+
+        Assert.True(deleteCurrent.IsSuccess);
+        Assert.True(deleteCurrent.Value!.IsDeleteMarker);
+
+        var deleteMarkerVersionId = Assert.IsType<string>(deleteCurrent.Value!.VersionId);
+        var deleteMarkerVersion = Assert.Single(await storageService.ListObjectVersionsAsync(new ListObjectVersionsRequest
+        {
+            BucketName = "source",
+            Prefix = "docs/source.txt"
+        }).Where(static version => version.IsDeleteMarker).ToArrayAsync());
+
+        var historicalCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            SourceVersionId = v1Put.Value.VersionId,
+            DestinationBucketName = "target",
+            DestinationKey = "docs/historical-copy.txt"
+        });
+
+        Assert.True(historicalCopy.IsSuccess);
+
+        var historicalCopyGet = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/historical-copy.txt"
+        });
+
+        Assert.True(historicalCopyGet.IsSuccess);
+        await using (var response = historicalCopyGet.Value!) {
+            using var reader = new StreamReader(response.Content, Encoding.UTF8);
+            Assert.Equal("version one", await reader.ReadToEndAsync());
+        }
+
+        var currentCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/current-copy.txt"
+        });
+
+        Assert.False(currentCopy.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.ObjectNotFound, currentCopy.Error!.Code);
+        Assert.True(currentCopy.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, currentCopy.Error.VersionId);
+        Assert.Null(currentCopy.Error.LastModifiedUtc);
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/current-copy.txt"
+        })).IsSuccess);
+
+        var explicitCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            SourceVersionId = deleteMarkerVersionId,
+            DestinationBucketName = "target",
+            DestinationKey = "docs/versioned-copy.txt"
+        });
+
+        Assert.False(explicitCopy.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.MethodNotAllowed, explicitCopy.Error!.Code);
+        Assert.True(explicitCopy.Error.IsDeleteMarker);
+        Assert.Equal(deleteMarkerVersionId, explicitCopy.Error.VersionId);
+        Assert.Equal(deleteMarkerVersion.LastModifiedUtc, explicitCopy.Error.LastModifiedUtc);
+        Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "target",
+            Key = "docs/versioned-copy.txt"
         })).IsSuccess);
     }
 

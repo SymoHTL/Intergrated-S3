@@ -444,7 +444,7 @@ internal sealed class DiskStorageService(
 
         var storedObject = storedObjectResult.Value!;
         if (storedObject.IsDeleteMarker) {
-            return StorageResult<GetObjectResponse>.Failure(GetDeleteMarkerReadError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+            return StorageResult<GetObjectResponse>.Failure(GetDeleteMarkerAccessError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
         }
 
         if (string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
@@ -542,7 +542,11 @@ internal sealed class DiskStorageService(
         }
 
         var sourceObject = sourceObjectResult.Value!;
-        if (sourceObject.IsDeleteMarker || string.IsNullOrWhiteSpace(sourceObject.ContentPath)) {
+        if (sourceObject.IsDeleteMarker) {
+            return StorageResult<ObjectInfo>.Failure(GetDeleteMarkerAccessError(request.SourceBucketName, request.SourceKey, request.SourceVersionId, sourceObject.Metadata));
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceObject.ContentPath)) {
             return StorageResult<ObjectInfo>.Failure(ObjectNotFound(request.SourceBucketName, request.SourceKey, request.SourceVersionId));
         }
 
@@ -1064,7 +1068,7 @@ internal sealed class DiskStorageService(
 
         var storedObject = storedObjectResult.Value!;
         if (storedObject.IsDeleteMarker) {
-            return StorageResult<ObjectInfo>.Failure(GetDeleteMarkerReadError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+            return StorageResult<ObjectInfo>.Failure(GetDeleteMarkerAccessError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
         }
 
         if (string.IsNullOrWhiteSpace(storedObject.ContentPath)) {
@@ -2654,7 +2658,7 @@ internal sealed class DiskStorageService(
             };
         }
 
-        if (string.IsNullOrWhiteSpace(request.IfMatchETag)
+        if (ShouldEvaluateIfUnmodifiedSince(request.IfMatchETag, objectInfo.ETag)
             && request.IfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
             && WasModifiedAfter(objectInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
             return new StorageError
@@ -2694,7 +2698,7 @@ internal sealed class DiskStorageService(
             };
         }
 
-        if (string.IsNullOrWhiteSpace(request.SourceIfMatchETag)
+        if (ShouldEvaluateIfUnmodifiedSince(request.SourceIfMatchETag, sourceInfo.ETag)
             && request.SourceIfUnmodifiedSinceUtc is { } ifUnmodifiedSinceUtc
             && WasModifiedAfter(sourceInfo.LastModifiedUtc, ifUnmodifiedSinceUtc)) {
             return new StorageError
@@ -2795,6 +2799,11 @@ internal sealed class DiskStorageService(
         }
 
         return MatchesAnyETag(rawHeader, currentETag);
+    }
+
+    private static bool ShouldEvaluateIfUnmodifiedSince(string? rawIfMatch, string? currentETag)
+    {
+        return string.IsNullOrWhiteSpace(rawIfMatch) || !MatchesIfMatch(rawIfMatch, currentETag);
     }
 
     private static bool MatchesAnyETag(string? rawHeader, string? currentETag)
@@ -2903,7 +2912,7 @@ internal sealed class DiskStorageService(
         };
     }
 
-    private StorageError GetDeleteMarkerReadError(string bucketName, string objectKey, string? requestedVersionId, DiskObjectMetadata deleteMarkerMetadata)
+    private StorageError GetDeleteMarkerAccessError(string bucketName, string objectKey, string? requestedVersionId, DiskObjectMetadata deleteMarkerMetadata)
     {
         return string.IsNullOrWhiteSpace(requestedVersionId)
             ? CurrentDeleteMarkerNotFound(bucketName, objectKey, deleteMarkerMetadata)

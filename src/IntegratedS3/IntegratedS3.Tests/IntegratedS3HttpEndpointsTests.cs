@@ -518,6 +518,89 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleHeadObject_WithIfMatchAndIfUnmodifiedSince_PrefersIfMatchPrecedence()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/head-precedence-bucket", content: null)).StatusCode);
+
+        var uploadResponse = await client.PutAsync(
+            "/integrated-s3/head-precedence-bucket/docs/conditional.txt",
+            new StringContent("hello integrated s3", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+
+        var objectHeaders = await GetHeadObjectMetadataAsync(client, "/integrated-s3/head-precedence-bucket/docs/conditional.txt");
+
+        using var failedRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/head-precedence-bucket/docs/conditional.txt");
+        failedRequest.Headers.TryAddWithoutValidation("If-Match", "\"different\"");
+        failedRequest.Headers.TryAddWithoutValidation("If-Unmodified-Since", objectHeaders.LastModifiedUtc.AddMinutes(5).ToString("R"));
+
+        var failedResponse = await client.SendAsync(failedRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedResponse.StatusCode);
+        Assert.Equal(objectHeaders.ETag, failedResponse.Headers.ETag?.Tag);
+        Assert.Equal(objectHeaders.LastModifiedUtc.ToString("R"), failedResponse.Content.Headers.LastModified?.ToString("R"));
+
+        using var successfulRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/head-precedence-bucket/docs/conditional.txt");
+        successfulRequest.Headers.TryAddWithoutValidation("If-Match", objectHeaders.ETag);
+        successfulRequest.Headers.TryAddWithoutValidation("If-Unmodified-Since", objectHeaders.LastModifiedUtc.AddMinutes(-5).ToString("R"));
+
+        var successfulResponse = await client.SendAsync(successfulRequest);
+        Assert.Equal(HttpStatusCode.OK, successfulResponse.StatusCode);
+        Assert.Equal(objectHeaders.ETag, successfulResponse.Headers.ETag?.Tag);
+        Assert.Equal(objectHeaders.LastModifiedUtc.ToString("R"), successfulResponse.Content.Headers.LastModified?.ToString("R"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleHistoricalVersionAccess_WithIfNoneMatchAndIfModifiedSince_UsesRequestedVersionMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/history-conditional-http-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "history-conditional-http-bucket");
+
+        var v1Response = await client.PutAsync(
+            "/integrated-s3/history-conditional-http-bucket/docs/history.txt",
+            new StringContent("http version one", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v1Response.StatusCode);
+        var v1VersionId = Assert.Single(v1Response.Headers.GetValues("x-amz-version-id"));
+
+        var v2Response = await client.PutAsync(
+            "/integrated-s3/history-conditional-http-bucket/docs/history.txt",
+            new StringContent("http version two", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, v2Response.StatusCode);
+        var v2VersionId = Assert.Single(v2Response.Headers.GetValues("x-amz-version-id"));
+        Assert.NotEqual(v1VersionId, v2VersionId);
+
+        var v1Path = $"/integrated-s3/history-conditional-http-bucket/docs/history.txt?versionId={Uri.EscapeDataString(v1VersionId)}";
+        var v2Path = $"/integrated-s3/history-conditional-http-bucket/docs/history.txt?versionId={Uri.EscapeDataString(v2VersionId)}";
+        var v1Headers = await GetHeadObjectMetadataAsync(client, v1Path);
+        var v2Headers = await GetHeadObjectMetadataAsync(client, v2Path);
+        Assert.Equal(v1VersionId, v1Headers.VersionId);
+        Assert.Equal(v2VersionId, v2Headers.VersionId);
+        Assert.NotEqual(v1Headers.ETag, v2Headers.ETag);
+
+        using var historicalGetRequest = new HttpRequestMessage(HttpMethod.Get, v1Path);
+        historicalGetRequest.Headers.TryAddWithoutValidation("If-None-Match", v2Headers.ETag);
+        historicalGetRequest.Headers.IfModifiedSince = v1Headers.LastModifiedUtc.AddMinutes(5);
+
+        var historicalGet = await client.SendAsync(historicalGetRequest);
+        Assert.Equal(HttpStatusCode.OK, historicalGet.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(historicalGet.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal(v1Headers.ETag, historicalGet.Headers.ETag?.Tag);
+        Assert.Equal("http version one", await historicalGet.Content.ReadAsStringAsync());
+
+        using var notModifiedRequest = new HttpRequestMessage(HttpMethod.Get, v1Path);
+        notModifiedRequest.Headers.TryAddWithoutValidation("If-None-Match", v1Headers.ETag);
+        notModifiedRequest.Headers.IfModifiedSince = v1Headers.LastModifiedUtc.AddMinutes(-5);
+
+        var notModifiedResponse = await client.SendAsync(notModifiedRequest);
+        Assert.Equal(HttpStatusCode.NotModified, notModifiedResponse.StatusCode);
+        Assert.Equal(v1VersionId, Assert.Single(notModifiedResponse.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal(v1Headers.ETag, notModifiedResponse.Headers.ETag?.Tag);
+        Assert.Empty(await notModifiedResponse.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
     public async Task S3CompatibleDeleteObjectTagging_ClearsCurrentAndHistoricalVersionTagSets()
     {
         using var client = await _factory.CreateClientAsync();
@@ -712,6 +795,53 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("MethodNotAllowed", GetRequiredElementValue(explicitGetError, "Code"));
 
         using var explicitHeadRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/delete-marker-read-bucket/docs/deleted.txt?versionId={Uri.EscapeDataString(deleteMarkerVersionId)}");
+        var explicitHead = await client.SendAsync(explicitHeadRequest);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, explicitHead.StatusCode);
+        Assert.Equal("true", Assert.Single(explicitHead.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(explicitHead.Headers.GetValues("x-amz-version-id")));
+        Assert.Equal(expectedLastModified, explicitHead.Content.Headers.LastModified?.ToString("R"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleDeleteMarker_ConditionalReadRequestsPreserveCurrentAndExplicitVersionResponses()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/delete-marker-conditional-bucket", content: null)).StatusCode);
+        await EnableBucketVersioningAsync(client, "delete-marker-conditional-bucket");
+
+        var putObjectResponse = await client.PutAsync(
+            "/integrated-s3/delete-marker-conditional-bucket/docs/deleted.txt",
+            new StringContent("delete marker reads", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.StatusCode);
+
+        var deleteCurrent = await client.DeleteAsync("/integrated-s3/delete-marker-conditional-bucket/docs/deleted.txt");
+        Assert.Equal(HttpStatusCode.NoContent, deleteCurrent.StatusCode);
+        Assert.Equal("true", Assert.Single(deleteCurrent.Headers.GetValues("x-amz-delete-marker")));
+        var deleteMarkerVersionId = Assert.Single(deleteCurrent.Headers.GetValues("x-amz-version-id"));
+
+        var versionsResponse = await client.GetAsync("/integrated-s3/delete-marker-conditional-bucket?versions&prefix=docs/deleted.txt");
+        Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
+        var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
+        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements("DeleteMarker"));
+        var expectedLastModified = DateTimeOffset.Parse(deleteMarker.Element("LastModified")!.Value).ToString("R");
+
+        using var currentGetRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/delete-marker-conditional-bucket/docs/deleted.txt");
+        currentGetRequest.Headers.TryAddWithoutValidation("If-None-Match", "\"different\"");
+        currentGetRequest.Headers.IfModifiedSince = DateTimeOffset.UtcNow.AddMinutes(5);
+
+        var currentGet = await client.SendAsync(currentGetRequest);
+        Assert.Equal(HttpStatusCode.NotFound, currentGet.StatusCode);
+        Assert.Equal("true", Assert.Single(currentGet.Headers.GetValues("x-amz-delete-marker")));
+        Assert.Equal(deleteMarkerVersionId, Assert.Single(currentGet.Headers.GetValues("x-amz-version-id")));
+        Assert.Null(currentGet.Content.Headers.LastModified);
+        var currentGetError = XDocument.Parse(await currentGet.Content.ReadAsStringAsync());
+        Assert.Equal("NoSuchKey", GetRequiredElementValue(currentGetError, "Code"));
+
+        using var explicitHeadRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/delete-marker-conditional-bucket/docs/deleted.txt?versionId={Uri.EscapeDataString(deleteMarkerVersionId)}");
+        explicitHeadRequest.Headers.TryAddWithoutValidation("If-Match", "\"different\"");
+        explicitHeadRequest.Headers.TryAddWithoutValidation("If-Unmodified-Since", DateTimeOffset.UtcNow.AddMinutes(5).ToString("R"));
+
         var explicitHead = await client.SendAsync(explicitHeadRequest);
         Assert.Equal(HttpStatusCode.MethodNotAllowed, explicitHead.StatusCode);
         Assert.Equal("true", Assert.Single(explicitHead.Headers.GetValues("x-amz-delete-marker")));
@@ -2547,6 +2677,40 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         return document.Root?.Element(elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
+    }
+
+    private static async Task EnableBucketVersioningAsync(HttpClient client, string bucketName)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?versioning")
+        {
+            Content = new StringContent("""
+<VersioningConfiguration>
+  <Status>Enabled</Status>
+</VersioningConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    private static async Task<(string ETag, DateTimeOffset LastModifiedUtc, string? VersionId)> GetHeadObjectMetadataAsync(HttpClient client, string pathAndQuery)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Head, pathAndQuery);
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var eTag = response.Headers.ETag?.Tag
+            ?? throw new Xunit.Sdk.XunitException("Expected ETag header.");
+        var lastModifiedUtc = response.Content.Headers.LastModified
+            ?? throw new Xunit.Sdk.XunitException("Expected Last-Modified header.");
+
+        return (
+            eTag,
+            lastModifiedUtc,
+            response.Headers.TryGetValues("x-amz-version-id", out var versionIds)
+                ? Assert.Single(versionIds)
+                : null);
     }
 
     private static StorageReplicaRepairEntry CreateRepairEntry(
