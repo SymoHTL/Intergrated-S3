@@ -59,7 +59,6 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         uploadRequest.Headers.Add("x-integrateds3-meta-author", "copilot");
         var expectedChecksum = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes("hello from xunit")));
         var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64("hello from xunit");
-
         var uploadResponse = await client.SendAsync(uploadRequest);
         Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
 
@@ -2626,7 +2625,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("acl")]
+    [InlineData("ownershipControls")]
     [InlineData("versioning&list-type=2")]
     [InlineData("cors&versioning")]
     public async Task S3CompatibleBucketRoute_UnsupportedSubresource_ReturnsNotImplemented(string query)
@@ -2641,7 +2640,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("PUT", "acl")]
+    [InlineData("DELETE", "acl")]
     [InlineData("DELETE", "versioning")]
     [InlineData("POST", "versioning")]
     [InlineData("PUT", "cors&versioning")]
@@ -2744,7 +2743,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("GET", "acl")]
+    [InlineData("GET", "retention")]
     [InlineData("PUT", "legal-hold")]
     [InlineData("DELETE", "retention")]
     [InlineData("POST", "versionId=historical-version")]
@@ -2767,6 +2766,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
+    [InlineData("GET", "acl&versionId=historical-version")]
     [InlineData("GET", "tagging&uploadId=upload-123")]
     [InlineData("GET", "versionId=historical-version&uploadId=upload-123")]
     [InlineData("PUT", "tagging&partNumber=1&uploadId=upload-123")]
@@ -3525,6 +3525,267 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketAcl_PublicRead_AllowsAnonymousBucketListing()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"bucket-acl-public-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await authClient.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/docs/private.txt",
+                new StringContent("bucket acl payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var putAclRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?acl");
+        putAclRequest.Headers.TryAddWithoutValidation("x-amz-acl", "public-read");
+        var putAclResponse = await authClient.SendAsync(putAclRequest);
+        Assert.Equal(HttpStatusCode.OK, putAclResponse.StatusCode);
+
+        var getAclResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}?acl");
+        Assert.Equal(HttpStatusCode.OK, getAclResponse.StatusCode);
+        var aclDocument = XDocument.Parse(await getAclResponse.Content.ReadAsStringAsync());
+        Assert.Equal("AccessControlPolicy", aclDocument.Root?.Name.LocalName);
+        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Descendants("URI").Select(static element => element.Value));
+
+        var anonymousListResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, anonymousListResponse.StatusCode);
+        var listDocument = XDocument.Parse(await anonymousListResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListBucketResult", listDocument.Root?.Name.LocalName);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/private.txt");
+        Assert.Equal(HttpStatusCode.Forbidden, anonymousGetResponse.StatusCode);
+        var anonymousGetError = XDocument.Parse(await anonymousGetResponse.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(anonymousGetError, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectAcl_PublicRead_AllowsAnonymousRead_AndOverwriteResetsToPrivate()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"object-acl-public-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/public.txt")
+        {
+            Content = new StringContent("public acl payload", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-acl", "public-read");
+        var putResponse = await authClient.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        using var anonymousHeadRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/docs/public.txt");
+        var anonymousHeadResponse = await anonymousClient.SendAsync(anonymousHeadRequest);
+        Assert.Equal(HttpStatusCode.OK, anonymousHeadResponse.StatusCode);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.OK, anonymousGetResponse.StatusCode);
+        Assert.Equal("public acl payload", await anonymousGetResponse.Content.ReadAsStringAsync());
+
+        var getAclResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt?acl");
+        Assert.Equal(HttpStatusCode.OK, getAclResponse.StatusCode);
+        var aclDocument = XDocument.Parse(await getAclResponse.Content.ReadAsStringAsync());
+        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Descendants("URI").Select(static element => element.Value));
+
+        var overwriteResponse = await authClient.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/public.txt",
+            new StringContent("private overwrite payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, overwriteResponse.StatusCode);
+
+        var anonymousGetAfterOverwrite = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.Forbidden, anonymousGetAfterOverwrite.StatusCode);
+        var errorDocument = XDocument.Parse(await anonymousGetAfterOverwrite.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPolicy_PublicReadAndList_AllowsAnonymousReads_AndCanBeDeleted()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"bucket-policy-public-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await authClient.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/docs/public.txt",
+                new StringContent("bucket policy payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var policyBody = $$"""
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::{{bucketName}}"
+    },
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "*"
+      },
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::{{bucketName}}/*"
+    }
+  ]
+}
+""";
+
+        using var putPolicyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?policy")
+        {
+            Content = new StringContent(policyBody, Encoding.UTF8, "application/json")
+        };
+        var putPolicyResponse = await authClient.SendAsync(putPolicyRequest);
+        Assert.Equal(HttpStatusCode.NoContent, putPolicyResponse.StatusCode);
+
+        var getPolicyResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}?policy");
+        Assert.Equal(HttpStatusCode.OK, getPolicyResponse.StatusCode);
+        using var returnedPolicyDocument = JsonDocument.Parse(await getPolicyResponse.Content.ReadAsStringAsync());
+        Assert.Equal(JsonValueKind.Object, returnedPolicyDocument.RootElement.ValueKind);
+        Assert.True(returnedPolicyDocument.RootElement.TryGetProperty("Statement", out _));
+
+        var anonymousListResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, anonymousListResponse.StatusCode);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.OK, anonymousGetResponse.StatusCode);
+        Assert.Equal("bucket policy payload", await anonymousGetResponse.Content.ReadAsStringAsync());
+
+        var deletePolicyResponse = await authClient.DeleteAsync($"/integrated-s3/{bucketName}?policy");
+        Assert.Equal(HttpStatusCode.NoContent, deletePolicyResponse.StatusCode);
+
+        var missingPolicyResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}?policy");
+        Assert.Equal(HttpStatusCode.NotFound, missingPolicyResponse.StatusCode);
+        var missingPolicyDocument = XDocument.Parse(await missingPolicyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("NoSuchBucketPolicy", GetRequiredElementValue(missingPolicyDocument, "Code"));
+
+        var anonymousGetAfterDelete = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.Forbidden, anonymousGetAfterDelete.StatusCode);
+        var anonymousErrorDocument = XDocument.Parse(await anonymousGetAfterDelete.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(anonymousErrorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPolicy_WithCondition_ReturnsNotImplemented()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        var bucketName = $"bucket-policy-condition-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var policyBody = $$"""
+{
+  "Version": "2012-10-17",
+  "Statement": {
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::{{bucketName}}/*",
+    "Condition": {
+      "StringEquals": {
+        "aws:PrincipalOrgID": "o-test"
+      }
+    }
+  }
+}
+""";
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?policy")
+        {
+            Content = new StringContent(policyBody, Encoding.UTF8, "application/json")
+        };
+        var response = await authClient.SendAsync(request);
+
+        await AssertNotImplementedResponseAsync(response);
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectAcl_WithAccessControlPolicyBody_PublicReadIsSupported()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"object-acl-body-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await authClient.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/docs/public-body.txt",
+                new StringContent("body acl payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var putAclRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/public-body.txt?acl")
+        {
+            Content = new StringContent("""
+<AccessControlPolicy xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Owner>
+    <ID>ignored-owner</ID>
+  </Owner>
+  <AccessControlList>
+    <Grant>
+      <Grantee xsi:type="CanonicalUser">
+        <ID>ignored-owner</ID>
+      </Grantee>
+      <Permission>FULL_CONTROL</Permission>
+    </Grant>
+    <Grant>
+      <Grantee xsi:type="Group">
+        <URI>http://acs.amazonaws.com/groups/global/AllUsers</URI>
+      </Grantee>
+      <Permission>READ</Permission>
+    </Grant>
+  </AccessControlList>
+</AccessControlPolicy>
+""", Encoding.UTF8, "application/xml")
+        };
+        var putAclResponse = await authClient.SendAsync(putAclRequest);
+        Assert.Equal(HttpStatusCode.OK, putAclResponse.StatusCode);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public-body.txt");
+        Assert.Equal(HttpStatusCode.OK, anonymousGetResponse.StatusCode);
+        Assert.Equal("body acl payload", await anonymousGetResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectWrite_WithGrantReadHeader_ReturnsNotImplemented()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        var bucketName = $"object-acl-grant-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/unsupported.txt")
+        {
+            Content = new StringContent("unsupported acl grant", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-grant-read", "uri=\"http://acs.amazonaws.com/groups/global/AllUsers\"");
+
+        var response = await authClient.SendAsync(request);
+
+        await AssertNotImplementedResponseAsync(response);
+    }
+
+    [Fact]
     public async Task EndpointFeatureToggles_CanDisableAdminObjectAndMultipartGroups()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
@@ -4178,6 +4439,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 StorageOperationType.ListBuckets => "storage.read",
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
+                StorageOperationType.ListObjectVersions => "storage.read",
+                StorageOperationType.ListMultipartUploads => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketLocation => "storage.read",
@@ -4201,6 +4464,15 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 SuggestedHttpStatusCode = 403
             }));
         }
+    }
+
+    private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateScopeAuthorizationIsolatedClientAsync()
+    {
+        return _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.AddAuthentication("TestHeader")
+                .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
     }
 
     private sealed class ConfigurableStorageBackendHealthEvaluator(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthEvaluator
