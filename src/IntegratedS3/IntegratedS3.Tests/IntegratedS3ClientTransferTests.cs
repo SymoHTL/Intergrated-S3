@@ -913,7 +913,7 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                 return Task.FromResult(response);
             }));
 
-            var exception = await Assert.ThrowsAsync<IOException>(() =>
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
                 capturingClient.DownloadToFileWithResumeAsync(
                     transferClient,
                     "bucket",
@@ -921,8 +921,11 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
+            Assert.IsType<IOException>(exception.InnerException);
+            Assert.Contains("resume", exception.Message, StringComparison.OrdinalIgnoreCase);
+
             Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
-            Assert.Equal("partial-", await File.ReadAllTextAsync(destPath));
+            Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
         }
         finally {
             Directory.Delete(tempDir, recursive: true);
@@ -946,13 +949,16 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                         new IOException("Simulated new file failure.")))
                 })));
 
-            await Assert.ThrowsAsync<IOException>(() =>
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
                 capturingClient.DownloadToFileWithResumeAsync(
                     transferClient,
                     "bucket",
                     "key",
                     destPath,
                     expiresInSeconds: 60));
+
+            Assert.IsType<IOException>(exception.InnerException);
+            Assert.Contains("response body", exception.Message, StringComparison.OrdinalIgnoreCase);
 
             Assert.False(File.Exists(destPath), "Files created during this call should be removed when the transfer fails.");
         }
