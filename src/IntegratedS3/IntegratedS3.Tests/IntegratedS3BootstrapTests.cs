@@ -7,9 +7,12 @@ using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.Core.DependencyInjection;
 using IntegratedS3.Provider.Disk;
 using IntegratedS3.Provider.Disk.DependencyInjection;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -300,5 +303,63 @@ public sealed class IntegratedS3BootstrapTests
         });
 
         Assert.Null(location);
+    }
+
+    [Fact]
+    public void ConfigurationBindingOverloads_AreExplicitlyAnnotatedForTrimAndAot()
+    {
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfiguration)
+                ]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfiguration),
+                    typeof(Action<IntegratedS3Options>)
+                ]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfigurationSection)
+                ]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfigurationSection),
+                    typeof(Action<IntegratedS3Options>)
+                ]));
+    }
+
+    [Fact]
+    public void ReferenceHostCompositionMethods_AreExplicitlyAnnotatedForTrimAndAot()
+    {
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(WebUiApplication).GetMethod(
+                nameof(WebUiApplication.ConfigureServices),
+                [typeof(WebApplicationBuilder)]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(WebUiApplication).GetMethod(
+                nameof(WebUiApplication.ConfigurePipeline),
+                [
+                    typeof(WebApplication),
+                    typeof(Action<IntegratedS3EndpointOptions>)
+                ]));
+    }
+
+    private static void AssertRequiresTrimAndAotAnnotations(MethodInfo? methodInfo)
+    {
+        Assert.NotNull(methodInfo);
+        Assert.NotNull(methodInfo!.GetCustomAttribute<RequiresUnreferencedCodeAttribute>());
+        Assert.NotNull(methodInfo.GetCustomAttribute<RequiresDynamicCodeAttribute>());
     }
 }

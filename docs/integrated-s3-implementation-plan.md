@@ -1166,7 +1166,7 @@ Status: **in progress / partially complete**
 Status: **in progress / partially complete**
 
 - conformance coverage now includes version-aware presigned reads, mixed bucket-subresource rejection, multipart `encoding-type=url` rejection, and additional AWS SDK compatibility cases
-- build/test/self-contained publish validation plus the current AOT warning posture are now automated through `.github\workflows\trackh-publish-aot-ci.yml` and `eng\Invoke-AotPublishValidation.ps1`
+- build/test/self-contained publish validation plus the current AOT warning posture are now automated through `.github\workflows\trackh-publish-aot-ci.yml` and `eng\Invoke-AotPublishValidation.ps1`, with the remaining reference-host warnings documented in `docs/webui-reference-host.md`
 - `docs/webui-reference-host.md` now captures the current reference-host surface and validation commands
 - benchmark baselines and additional sample consumers remain pending
 
@@ -1326,11 +1326,11 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources and multipart `encoding-type=url` rejection, and `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage.
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
-  - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
+  - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers while `docs/webui-reference-host.md` documents the remaining reference-host warnings.
 - Verification status (March 2026):
   - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
-  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
+  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining reference-host Minimal API / configuration-binding warning posture without depending on exact line numbers.
 - Remaining scope:
   - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
@@ -1340,7 +1340,7 @@ This section is the execution board for the remaining implementation backlog. As
   - add the planned MVC/Razor and Blazor WebAssembly sample consumers
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
-  - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
+  - triage the remaining observed IL2026/IL3050 native AOT warnings on the reference-host composition path and decide whether they should be eliminated further or whether the current documented annotations remain the intended consumer-facing posture
   - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
   - add benchmark baselines for representative disk plus HTTP get/put/list paths before broadening the remaining release-polish work
 

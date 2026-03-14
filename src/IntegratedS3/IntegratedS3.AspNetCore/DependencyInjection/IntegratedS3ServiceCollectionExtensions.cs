@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Diagnostics.CodeAnalysis;
 
 namespace IntegratedS3.AspNetCore.DependencyInjection;
 
@@ -20,6 +21,8 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(static _ => { });
     }
 
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -27,6 +30,8 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(configuration.GetSection("IntegratedS3"));
     }
 
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -36,6 +41,8 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(configuration.GetSection("IntegratedS3"), configure);
     }
 
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -49,6 +56,8 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    [RequiresUnreferencedCode("Configuration binding for IntegratedS3 options may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("Configuration binding for IntegratedS3 options may require runtime-generated code when AOT compiling.")]
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);

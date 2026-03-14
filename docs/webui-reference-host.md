@@ -55,9 +55,21 @@ Use the existing repository validation commands when polishing or updating the s
 dotnet build src\IntegratedS3\IntegratedS3.slnx
 dotnet test src\IntegratedS3\IntegratedS3.slnx
 dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj
+powershell -ExecutionPolicy Bypass -File .\eng\Invoke-AotPublishValidation.ps1
 ```
 
-Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command.
+Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command. The checked-in CI workflow at `.github\workflows\trackh-publish-aot-ci.yml` uses the PowerShell validation script so the warning baseline stays enforced in automation, not just during local smoke testing.
+
+## AOT warning posture
+
+The current reference host intentionally keeps the remaining IL2026/IL3050 warnings scoped to the `WebUi` composition entry points rather than letting them surface from deeper package internals.
+
+- `WebUiApplication.ConfigureServices(...)` is annotated because the supported host wiring still relies on configuration binding for `IntegratedS3Options` and `IntegratedS3EndpointOptions`
+- `WebUiApplication.ConfigurePipeline(...)` is annotated because the supported host wiring still relies on Minimal API endpoint registration for `MapIntegratedS3Endpoints(...)`
+
+During `dotnet publish`, those annotations currently surface as the two `Program.cs` calls into `WebUiApplication.ConfigureServices(...)` and `WebUiApplication.ConfigurePipeline(...)`. The linker reports both the direct call-site warning and the trim/AOT analysis warning for each call, so the current supported baseline is eight IL2026/IL3050 lines total.
+
+`eng\Invoke-AotPublishValidation.ps1` is the supported validation gate for this posture. It fails the publish validation if any new IL2026/IL3050 warnings appear or if the known reference-host warning baseline changes unexpectedly.
 
 ## Test-host alignment
 
