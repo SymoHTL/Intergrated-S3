@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
+using System.Diagnostics.CodeAnalysis;
 
 public static class WebUiApplication
 {
@@ -18,13 +19,15 @@ public static class WebUiApplication
     private const string ReferenceHostSectionPath = $"{IntegratedS3SectionName}:ReferenceHost";
 
     /// <summary>
-     /// Configures the reference host services for the IntegratedS3 sample application.
-     /// </summary>
-     /// <remarks>
-     /// The sample intentionally uses the public ASP.NET integration entrypoint plus configurable disk/S3 backends
-     /// so the host stays a lightweight onboarding/reference application instead of becoming the final architecture container.
-     /// </remarks>
-     /// <param name="builder">The application builder.</param>
+    /// Configures the reference host services for the IntegratedS3 sample application.
+    /// </summary>
+    /// <remarks>
+    /// The sample intentionally uses the public ASP.NET integration entrypoint plus configurable disk/S3 backends so the
+    /// host stays a lightweight onboarding/reference application instead of becoming the final architecture container.
+    /// </remarks>
+    /// <param name="builder">The application builder.</param>
+    [RequiresUnreferencedCode("The reference host uses configuration binding that may require additional metadata preservation when trimming application code.")]
+    [RequiresDynamicCode("The reference host uses configuration binding that may require runtime-generated code when AOT compiling.")]
     public static void ConfigureServices(WebApplicationBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -71,6 +74,8 @@ public static class WebUiApplication
     /// <param name="configureIntegratedS3Endpoints">
     /// Optional endpoint customization used by the sample host and isolated test hosts.
     /// </param>
+    [RequiresUnreferencedCode("The reference host uses Minimal API endpoint registration that may reflect over route handler delegates and parameters.")]
+    [RequiresDynamicCode("The reference host uses Minimal API endpoint registration that may require runtime-generated code for route handler delegates.")]
     public static void ConfigurePipeline(WebApplication app, Action<IntegratedS3EndpointOptions>? configureIntegratedS3Endpoints = null)
     {
         ArgumentNullException.ThrowIfNull(app);

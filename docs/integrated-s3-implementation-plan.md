@@ -1185,10 +1185,10 @@ Status: **in progress / partially complete**
 Status: **in progress / partially complete**
 
 - conformance coverage now includes version-aware presigned reads, mixed bucket-subresource rejection, encoded/owner-aware object and multipart listing responses, and additional AWS SDK compatibility cases
-- build/test/self-contained publish validation remains scriptable through the standard `dotnet` commands plus `eng\Invoke-AotPublishValidation.ps1`, but the repository currently has no checked-in `.github\workflows\` automation; restoring CI validation is tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15)
-- `docs/webui-reference-host.md` now captures the current reference-host surface and validation commands, while broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19)
+- build/test/self-contained publish validation plus the current AOT warning posture are now automated through `.github\workflows\trackh-publish-aot-ci.yml` and `eng\Invoke-AotPublishValidation.ps1`
+- `docs/webui-reference-host.md` now captures the current reference-host surface, validation commands, and remaining reference-host warning posture, while broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19)
 - `src\IntegratedS3\WebUi.MvcRazor`, `src\IntegratedS3\WebUi.BlazorWasm`, and `src\IntegratedS3\WebUi.BlazorWasm.Client` now provide the planned additional sample consumers, and `docs/web-consumer-samples.md` documents how to run them
-- benchmark baselines remain pending ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14), [#13](https://github.com/SymoHTL/Intergrated-S3/issues/13))
+- benchmark baselines remain pending ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14))
 
 ## Remaining Implementation Work by Parallel Track
 
@@ -1405,11 +1405,8 @@ This section is the execution board for the remaining implementation backlog. As
 - Verification status (March 2026):
   - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
-  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
+  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining reference-host Minimal API / configuration-binding warning posture without depending on exact line numbers.
   - MVC/Razor plus hosted Blazor WebAssembly sample consumers now ship under `src\IntegratedS3`, with focused integration coverage in `IntegratedS3.Tests` and run guidance in `docs/web-consumer-samples.md`.
-  - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
-  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
-  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
 - Remaining scope:
   - extend the new provider contract harness beyond the current bucket/object/versioning/CORS/tags/copy/multipart/state-store coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
@@ -1425,30 +1422,10 @@ This section is the execution board for the remaining implementation backlog. As
   - add the planned MVC/Razor and Blazor WebAssembly sample consumers
   - continue package polish with deeper XML docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
-  - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
+  - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi`, especially on the reference-host composition path, and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
   - extend the provider contract harness and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
-  - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs; broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19).
-  - `eng\Invoke-AotPublishValidation.ps1` is checked in, but the repository currently has no `.github\workflows\` directory; restoring checked-in build/test/publish validation is tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15).
-  - Verification status (March 2026):
-    - the March 2026 downstream audit re-ran `dotnet test src\IntegratedS3\IntegratedS3.slnx` successfully (`357/357` passing).
-    - the March 2026 downstream audit re-ran `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` successfully; publish still surfaced 12 AOT/trimming warnings now tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15).
-  - Remaining scope:
-  - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios ([#30](https://github.com/SymoHTL/Intergrated-S3/issues/30))
-  - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios ([#9](https://github.com/SymoHTL/Intergrated-S3/issues/9))
-  - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility ([#17](https://github.com/SymoHTL/Intergrated-S3/issues/17))
-  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14))
-  - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines ([#15](https://github.com/SymoHTL/Intergrated-S3/issues/15))
-  - add the planned MVC/Razor and Blazor WebAssembly sample consumers ([#13](https://github.com/SymoHTL/Intergrated-S3/issues/13))
-  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping ([#18](https://github.com/SymoHTL/Intergrated-S3/issues/18))
-- Next recommended steps:
-  - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
-- extend conformance and protocol hardening into the remaining delete-marker/versioning, checksum-override, and `aws-chunked` edge cases now that the current subresource/presign, conditional-precedence, and raw-query SigV4 gaps are covered
-  - extend conformance and protocol hardening into conditional-precedence, checksum/header, and canonical-request edge cases now that the current subresource plus delete-marker/versioning/tagging gaps are narrowed
-  - decide whether single-object explicit missing-version reads/writes should grow a dedicated `NoSuchVersion` contract or remain explicitly normalized to generic not-found behavior
-  - extend conformance and protocol hardening into additional conditional-precedence, checksum/header, and remaining delete-marker/versioning edge cases now that the current subresource/presign plus version-aware copy/delete-marker gaps are covered
   - add benchmark baselines for representative disk plus HTTP get/put/list paths before broadening the remaining release-polish work
-  - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
   - decide whether benchmark baseline refresh should stay as a repo-local/manual release step or gain dedicated CI / scheduled automation once the current scenario set proves stable
 
 ## Relevant Repository Files
