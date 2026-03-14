@@ -1262,6 +1262,7 @@ This section is the execution board for the remaining implementation backlog. As
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
+  - S3 XML response writers now emit the canonical `http://s3.amazonaws.com/doc/2006-03-01/` namespace across versioning, CORS, error, copy, list, multipart, delete, and tagging XML payloads, and namespace-aware protocol/HTTP tests lock in the response shape
 - Remaining scope:
   - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
   - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
