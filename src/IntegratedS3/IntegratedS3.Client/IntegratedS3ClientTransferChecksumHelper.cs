@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Globalization;
-using System.Net.Http.Headers;
 using System.Security.Cryptography;
 
 namespace IntegratedS3.Client;
