@@ -1127,8 +1127,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var supportStateElement = jsonDocument.RootElement
             .GetProperty("providers")[0]
             .GetProperty("supportState");
+        Assert.True(supportStateElement.TryGetProperty("objectLock", out _));
         Assert.True(supportStateElement.TryGetProperty("accessControl", out _));
         Assert.True(supportStateElement.TryGetProperty("retention", out _));
+        Assert.True(supportStateElement.TryGetProperty("legalHold", out _));
         Assert.True(supportStateElement.TryGetProperty("serverSideEncryption", out _));
 
         var document = JsonSerializer.Deserialize<StorageServiceDocument>(payload, JsonOptions);
@@ -1146,8 +1148,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(StorageCapabilitySupport.Native, provider.Capabilities.Pagination);
         Assert.Equal(StorageObjectAccessMode.ProxyStream, provider.ObjectLocation.DefaultAccessMode);
         Assert.Equal([StorageObjectAccessMode.ProxyStream], provider.ObjectLocation.SupportedAccessModes);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.ObjectLock);
         Assert.Equal(StorageSupportStateOwnership.NotApplicable, provider.SupportState.AccessControl);
-        Assert.Equal(StorageSupportStateOwnership.NotApplicable, provider.SupportState.Retention);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.Retention);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.LegalHold);
         Assert.Equal(StorageSupportStateOwnership.NotApplicable, provider.SupportState.ServerSideEncryption);
     }
 
@@ -1537,6 +1541,119 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var headObjectResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/tagging-bucket/objects/docs/tagged.txt"));
         Assert.Equal(HttpStatusCode.OK, headObjectResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectLock_RetentionAndLegalHold_RoundTripAndProtectVersionDeletes()
+    {
+        using var client = await _factory.CreateClientAsync();
+        var retainUntilUtc = DateTimeOffset.UtcNow.AddDays(7);
+        var expectedRetentionBodyUtc = retainUntilUtc.ToUniversalTime().AddTicks(-(retainUntilUtc.ToUniversalTime().Ticks % TimeSpan.TicksPerMillisecond));
+        var expectedRetentionHeaderUtc = retainUntilUtc.ToUniversalTime().AddTicks(-(retainUntilUtc.ToUniversalTime().Ticks % TimeSpan.TicksPerSecond));
+
+        using (var createBucketRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/object-lock-bucket")) {
+            createBucketRequest.Headers.TryAddWithoutValidation("x-amz-bucket-object-lock-enabled", "true");
+            var createBucketResponse = await client.SendAsync(createBucketRequest);
+            Assert.Equal(HttpStatusCode.OK, createBucketResponse.StatusCode);
+            Assert.Equal("true", Assert.Single(createBucketResponse.Headers.GetValues("x-amz-bucket-object-lock-enabled")));
+        }
+
+        var headBucketResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/object-lock-bucket"));
+        Assert.Equal(HttpStatusCode.OK, headBucketResponse.StatusCode);
+        Assert.Equal("true", Assert.Single(headBucketResponse.Headers.GetValues("x-amz-bucket-object-lock-enabled")));
+
+        var putObjectResponse = await client.PutAsync(
+            "/integrated-s3/object-lock-bucket/docs/protected.txt",
+            new StringContent("protected payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.StatusCode);
+        var versionId = Assert.Single(putObjectResponse.Headers.GetValues("x-amz-version-id"));
+
+        var retentionBody = $"""
+<Retention>
+  <Mode>GOVERNANCE</Mode>
+  <RetainUntilDate>{retainUntilUtc.ToString("O", CultureInfo.InvariantCulture)}</RetainUntilDate>
+</Retention>
+""";
+
+        using (var putRetentionRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/object-lock-bucket/docs/protected.txt?retention&versionId={Uri.EscapeDataString(versionId)}")) {
+            putRetentionRequest.Content = new StringContent(retentionBody, Encoding.UTF8, "application/xml");
+            var putRetentionResponse = await client.SendAsync(putRetentionRequest);
+            Assert.Equal(HttpStatusCode.OK, putRetentionResponse.StatusCode);
+            Assert.Equal(versionId, Assert.Single(putRetentionResponse.Headers.GetValues("x-amz-version-id")));
+        }
+
+        using (var putLegalHoldRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/object-lock-bucket/docs/protected.txt?legal-hold&versionId={Uri.EscapeDataString(versionId)}")) {
+            putLegalHoldRequest.Content = new StringContent("<LegalHold><Status>ON</Status></LegalHold>", Encoding.UTF8, "application/xml");
+            var putLegalHoldResponse = await client.SendAsync(putLegalHoldRequest);
+            Assert.Equal(HttpStatusCode.OK, putLegalHoldResponse.StatusCode);
+            Assert.Equal(versionId, Assert.Single(putLegalHoldResponse.Headers.GetValues("x-amz-version-id")));
+        }
+
+        var getRetentionResponse = await client.GetAsync($"/integrated-s3/object-lock-bucket/docs/protected.txt?retention&versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.OK, getRetentionResponse.StatusCode);
+        var retentionDocument = XDocument.Parse(await getRetentionResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Retention", retentionDocument.Root?.Name.LocalName);
+        Assert.Equal("GOVERNANCE", retentionDocument.Root!.Element("Mode")?.Value);
+        Assert.Equal(expectedRetentionBodyUtc, DateTimeOffset.Parse(retentionDocument.Root.Element("RetainUntilDate")!.Value, CultureInfo.InvariantCulture).ToUniversalTime());
+
+        var getLegalHoldResponse = await client.GetAsync($"/integrated-s3/object-lock-bucket/docs/protected.txt?legal-hold&versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.OK, getLegalHoldResponse.StatusCode);
+        var legalHoldDocument = XDocument.Parse(await getLegalHoldResponse.Content.ReadAsStringAsync());
+        Assert.Equal("LegalHold", legalHoldDocument.Root?.Name.LocalName);
+        Assert.Equal("ON", legalHoldDocument.Root!.Element("Status")?.Value);
+
+        var headObjectResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/object-lock-bucket/docs/protected.txt"));
+        Assert.Equal(HttpStatusCode.OK, headObjectResponse.StatusCode);
+        Assert.Equal("GOVERNANCE", Assert.Single(headObjectResponse.Headers.GetValues("x-amz-object-lock-mode")));
+        Assert.Equal("ON", Assert.Single(headObjectResponse.Headers.GetValues("x-amz-object-lock-legal-hold")));
+        Assert.Equal(expectedRetentionHeaderUtc, DateTimeOffset.Parse(Assert.Single(headObjectResponse.Headers.GetValues("x-amz-object-lock-retain-until-date")), CultureInfo.InvariantCulture).ToUniversalTime());
+
+        var deleteProtectedVersion = await client.DeleteAsync($"/integrated-s3/object-lock-bucket/docs/protected.txt?versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.Forbidden, deleteProtectedVersion.StatusCode);
+        var deleteProtectedVersionDocument = XDocument.Parse(await deleteProtectedVersion.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(deleteProtectedVersionDocument, "Code"));
+
+        using (var putLegalHoldOffRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/object-lock-bucket/docs/protected.txt?legal-hold&versionId={Uri.EscapeDataString(versionId)}")) {
+            putLegalHoldOffRequest.Content = new StringContent("<LegalHold><Status>OFF</Status></LegalHold>", Encoding.UTF8, "application/xml");
+            var putLegalHoldOffResponse = await client.SendAsync(putLegalHoldOffRequest);
+            Assert.Equal(HttpStatusCode.OK, putLegalHoldOffResponse.StatusCode);
+        }
+
+        var deleteStillProtectedByRetention = await client.DeleteAsync($"/integrated-s3/object-lock-bucket/docs/protected.txt?versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.Forbidden, deleteStillProtectedByRetention.StatusCode);
+        var deleteStillProtectedDocument = XDocument.Parse(await deleteStillProtectedByRetention.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(deleteStillProtectedDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectLockOperations_RequireObjectLockEnabledBuckets()
+    {
+        using var client = await _factory.CreateClientAsync();
+        var retainUntilUtc = DateTimeOffset.UtcNow.AddDays(1);
+
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync("/integrated-s3/plain-object-lock-bucket", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await client.PutAsync(
+                "/integrated-s3/plain-object-lock-bucket/docs/plain.txt",
+                new StringContent("plain payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var retentionBody = $"""
+<Retention>
+  <Mode>GOVERNANCE</Mode>
+  <RetainUntilDate>{retainUntilUtc.ToString("O", CultureInfo.InvariantCulture)}</RetainUntilDate>
+</Retention>
+""";
+
+        using var putRetentionRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/plain-object-lock-bucket/docs/plain.txt?retention")
+        {
+            Content = new StringContent(retentionBody, Encoding.UTF8, "application/xml")
+        };
+
+        var putRetentionResponse = await client.SendAsync(putRetentionRequest);
+        Assert.Equal(HttpStatusCode.NotFound, putRetentionResponse.StatusCode);
+        var document = XDocument.Parse(await putRetentionResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ObjectLockConfigurationNotFoundError", GetRequiredElementValue(document, "Code"));
     }
 
     [Fact]
@@ -1962,7 +2079,6 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
     [Theory]
     [InlineData("GET", "acl")]
-    [InlineData("PUT", "legal-hold")]
     [InlineData("DELETE", "retention")]
     [InlineData("POST", "versionId=historical-version")]
     public async Task S3CompatibleObjectRoute_UnsupportedSingleSubresource_ReturnsNotImplemented(string method, string query)
@@ -2689,6 +2805,54 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task Endpoints_RespectClaimsPrincipalDrivenAuthorizationForObjectLockOperations()
+    {
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.AddAuthentication("TestHeader")
+                .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
+
+        using var client = isolatedClient.Client;
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+
+        using (var createBucketRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/secured-object-lock-bucket")) {
+            createBucketRequest.Headers.TryAddWithoutValidation("x-amz-bucket-object-lock-enabled", "true");
+            var createBucketResponse = await client.SendAsync(createBucketRequest);
+            Assert.Equal(HttpStatusCode.OK, createBucketResponse.StatusCode);
+        }
+
+        var putObjectResponse = await client.PutAsync(
+            "/integrated-s3/secured-object-lock-bucket/docs/secret.txt",
+            new StringContent("classified", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, putObjectResponse.StatusCode);
+        var versionId = Assert.Single(putObjectResponse.Headers.GetValues("x-amz-version-id"));
+
+        using (var putRetentionRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/secured-object-lock-bucket/docs/secret.txt?retention&versionId={Uri.EscapeDataString(versionId)}")) {
+            putRetentionRequest.Content = new StringContent($"""
+<Retention>
+  <Mode>GOVERNANCE</Mode>
+  <RetainUntilDate>{DateTimeOffset.UtcNow.AddDays(1).ToString("O", CultureInfo.InvariantCulture)}</RetainUntilDate>
+</Retention>
+""", Encoding.UTF8, "application/xml");
+            var putRetentionResponse = await client.SendAsync(putRetentionRequest);
+            Assert.Equal(HttpStatusCode.OK, putRetentionResponse.StatusCode);
+        }
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read");
+
+        var getRetentionResponse = await client.GetAsync($"/integrated-s3/secured-object-lock-bucket/docs/secret.txt?retention&versionId={Uri.EscapeDataString(versionId)}");
+        Assert.Equal(HttpStatusCode.OK, getRetentionResponse.StatusCode);
+
+        using var putLegalHoldRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/secured-object-lock-bucket/docs/secret.txt?legal-hold&versionId={Uri.EscapeDataString(versionId)}")
+        {
+            Content = new StringContent("<LegalHold><Status>ON</Status></LegalHold>", Encoding.UTF8, "application/xml")
+        };
+        var putLegalHoldResponse = await client.SendAsync(putLegalHoldRequest);
+        Assert.Equal(HttpStatusCode.Forbidden, putLegalHoldResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task EndpointFeatureToggles_CanDisableAdminObjectAndMultipartGroups()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
@@ -3151,6 +3315,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
+                StorageOperationType.GetObjectRetention => "storage.read",
+                StorageOperationType.GetObjectLegalHold => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
                 StorageOperationType.PresignPutObject => "storage.write",
                 _ => "storage.write"
@@ -3193,6 +3359,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public HeadObjectRequest? LastHeadObjectRequest { get; private set; }
 
+        public GetObjectRetentionRequest? LastGetObjectRetentionRequest { get; private set; }
+
+        public PutObjectRetentionRequest? LastPutObjectRetentionRequest { get; private set; }
+
+        public GetObjectLegalHoldRequest? LastGetObjectLegalHoldRequest { get; private set; }
+
+        public PutObjectLegalHoldRequest? LastPutObjectLegalHoldRequest { get; private set; }
+
         public InitiateMultipartUploadRequest? LastInitiateMultipartUploadRequest { get; private set; }
 
         public ObjectInfo? PutObjectResult { get; set; }
@@ -3202,6 +3376,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public GetObjectResponse? GetObjectResult { get; set; }
 
         public ObjectInfo? HeadObjectResult { get; set; }
+
+        public ObjectRetentionInfo? GetObjectRetentionResult { get; set; }
+
+        public ObjectRetentionInfo? PutObjectRetentionResult { get; set; }
+
+        public ObjectLegalHoldInfo? GetObjectLegalHoldResult { get; set; }
+
+        public ObjectLegalHoldInfo? PutObjectLegalHoldResult { get; set; }
 
         public MultipartUploadInfo? InitiateMultipartUploadResult { get; set; }
 
@@ -3239,6 +3421,38 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+        {
+            LastGetObjectRetentionRequest = request;
+
+            return new ValueTask<StorageResult<ObjectRetentionInfo>>(StorageResult<ObjectRetentionInfo>.Success(
+                GetObjectRetentionResult ?? new ObjectRetentionInfo
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId ?? "recording-version",
+                    Policy = new ObjectRetentionPolicy
+                    {
+                        Mode = ObjectRetentionMode.Governance,
+                        RetainUntilUtc = DefaultTimestampUtc.AddDays(30)
+                    }
+                }));
+        }
+
+        public ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+        {
+            LastGetObjectLegalHoldRequest = request;
+
+            return new ValueTask<StorageResult<ObjectLegalHoldInfo>>(StorageResult<ObjectLegalHoldInfo>.Success(
+                GetObjectLegalHoldResult ?? new ObjectLegalHoldInfo
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId ?? "recording-version",
+                    Status = ObjectLegalHoldStatus.Off
+                }));
+        }
+
         public ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
         {
             LastCopyObjectRequest = request;
@@ -3264,6 +3478,38 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         }
 
         public ValueTask<StorageResult<ObjectTagSet>> PutObjectTagsAsync(PutObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+        {
+            LastPutObjectRetentionRequest = request;
+
+            return new ValueTask<StorageResult<ObjectRetentionInfo>>(StorageResult<ObjectRetentionInfo>.Success(
+                PutObjectRetentionResult ?? new ObjectRetentionInfo
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId ?? "recording-version",
+                    Policy = new ObjectRetentionPolicy
+                    {
+                        Mode = request.Policy.Mode,
+                        RetainUntilUtc = request.Policy.RetainUntilUtc
+                    }
+                }));
+        }
+
+        public ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+        {
+            LastPutObjectLegalHoldRequest = request;
+
+            return new ValueTask<StorageResult<ObjectLegalHoldInfo>>(StorageResult<ObjectLegalHoldInfo>.Success(
+                PutObjectLegalHoldResult ?? new ObjectLegalHoldInfo
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId ?? "recording-version",
+                    Status = request.Status
+                }));
+        }
 
         public ValueTask<StorageResult<ObjectTagSet>> DeleteObjectTagsAsync(DeleteObjectTagsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 

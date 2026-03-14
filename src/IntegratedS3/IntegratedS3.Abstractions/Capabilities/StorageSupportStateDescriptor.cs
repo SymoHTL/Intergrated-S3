@@ -2,6 +2,8 @@ namespace IntegratedS3.Abstractions.Capabilities;
 
 public sealed class StorageSupportStateDescriptor
 {
+    public StorageSupportStateOwnership ObjectLock { get; set; } = StorageSupportStateOwnership.NotApplicable;
+
     public StorageSupportStateOwnership ObjectMetadata { get; set; } = StorageSupportStateOwnership.NotApplicable;
 
     public StorageSupportStateOwnership ObjectTags { get; set; } = StorageSupportStateOwnership.NotApplicable;
@@ -15,6 +17,8 @@ public sealed class StorageSupportStateDescriptor
     public StorageSupportStateOwnership AccessControl { get; set; } = StorageSupportStateOwnership.NotApplicable;
 
     public StorageSupportStateOwnership Retention { get; set; } = StorageSupportStateOwnership.NotApplicable;
+
+    public StorageSupportStateOwnership LegalHold { get; set; } = StorageSupportStateOwnership.NotApplicable;
 
     public StorageSupportStateOwnership ServerSideEncryption { get; set; } = StorageSupportStateOwnership.NotApplicable;
 

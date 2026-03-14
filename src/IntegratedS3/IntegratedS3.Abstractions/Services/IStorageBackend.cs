@@ -71,6 +71,18 @@ public interface IStorageBackend
 
     ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default);
 
+    ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectRetentionInfo>.Failure(StorageError.Unsupported("Object retention is not implemented by this storage backend.", request.BucketName, request.Key)));
+
+    ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectRetentionInfo>.Failure(StorageError.Unsupported("Object retention is not implemented by this storage backend.", request.BucketName, request.Key)));
+
+    ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectLegalHoldInfo>.Failure(StorageError.Unsupported("Object legal hold is not implemented by this storage backend.", request.BucketName, request.Key)));
+
+    ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(StorageResult<ObjectLegalHoldInfo>.Failure(StorageError.Unsupported("Object legal hold is not implemented by this storage backend.", request.BucketName, request.Key)));
+
     ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default);
 
     ValueTask<StorageResult<ObjectInfo>> PutObjectAsync(PutObjectRequest request, CancellationToken cancellationToken = default);

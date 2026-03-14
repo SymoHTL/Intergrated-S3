@@ -508,6 +508,43 @@ public static class S3XmlResponseWriter
         return builder.ToString();
     }
 
+    public static string WriteObjectRetention(S3ObjectRetentionConfiguration response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("Retention");
+        xmlWriter.WriteElementString("Mode", response.Mode);
+        xmlWriter.WriteElementString("RetainUntilDate", FormatTimestamp(response.RetainUntilDateUtc));
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
+    public static string WriteObjectLegalHold(S3ObjectLegalHold response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("LegalHold");
+        xmlWriter.WriteElementString("Status", response.Status);
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     private static XmlWriterSettings CreateSettings()
     {
         return new XmlWriterSettings

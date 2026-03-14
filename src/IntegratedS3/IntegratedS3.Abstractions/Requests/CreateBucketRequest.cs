@@ -5,4 +5,6 @@ public sealed class CreateBucketRequest
     public required string BucketName { get; init; }
 
     public bool EnableVersioning { get; init; }
+
+    public bool EnableObjectLock { get; init; }
 }

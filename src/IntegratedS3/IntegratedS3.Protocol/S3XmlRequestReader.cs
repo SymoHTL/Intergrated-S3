@@ -210,6 +210,82 @@ public static class S3XmlRequestReader
         }
     }
 
+    public static async Task<S3ObjectRetentionConfiguration> ReadObjectRetentionAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        using var reader = new StreamReader(content, leaveOpen: true);
+        var xml = await reader.ReadToEndAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(xml)) {
+            throw new FormatException("The object retention request body is required.");
+        }
+
+        try {
+            var document = XDocument.Parse(xml, LoadOptions.None);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "Retention", StringComparison.Ordinal)) {
+                throw new FormatException("The object retention request body must contain a root 'Retention' element.");
+            }
+
+            var mode = root.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "Mode", StringComparison.Ordinal))?.Value;
+            if (string.IsNullOrWhiteSpace(mode)) {
+                throw new FormatException("The object retention request body must contain a 'Mode' element.");
+            }
+
+            var retainUntilValue = root.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "RetainUntilDate", StringComparison.Ordinal))?.Value;
+            if (string.IsNullOrWhiteSpace(retainUntilValue) || !DateTimeOffset.TryParse(retainUntilValue, out var retainUntilUtc)) {
+                throw new FormatException("The object retention request body must contain a valid 'RetainUntilDate' element.");
+            }
+
+            return new S3ObjectRetentionConfiguration
+            {
+                Mode = mode.Trim(),
+                RetainUntilDateUtc = retainUntilUtc.ToUniversalTime()
+            };
+        }
+        catch (FormatException) {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            throw new FormatException("The object retention request body is not valid XML.", exception);
+        }
+    }
+
+    public static async Task<S3ObjectLegalHold> ReadObjectLegalHoldAsync(Stream content, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        using var reader = new StreamReader(content, leaveOpen: true);
+        var xml = await reader.ReadToEndAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(xml)) {
+            throw new FormatException("The object legal hold request body is required.");
+        }
+
+        try {
+            var document = XDocument.Parse(xml, LoadOptions.None);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "LegalHold", StringComparison.Ordinal)) {
+                throw new FormatException("The object legal hold request body must contain a root 'LegalHold' element.");
+            }
+
+            var status = root.Elements().FirstOrDefault(static child => string.Equals(child.Name.LocalName, "Status", StringComparison.Ordinal))?.Value;
+            if (string.IsNullOrWhiteSpace(status)) {
+                throw new FormatException("The object legal hold request body must contain a 'Status' element.");
+            }
+
+            return new S3ObjectLegalHold
+            {
+                Status = status.Trim()
+            };
+        }
+        catch (FormatException) {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            throw new FormatException("The object legal hold request body is not valid XML.", exception);
+        }
+    }
+
     private static S3CompleteMultipartUploadPart ParseCompleteMultipartUploadPart(XElement element)
     {
         ArgumentNullException.ThrowIfNull(element);

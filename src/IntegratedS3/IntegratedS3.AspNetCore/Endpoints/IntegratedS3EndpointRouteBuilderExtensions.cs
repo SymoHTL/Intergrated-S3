@@ -49,6 +49,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
     private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
     private const string VersionIdHeaderName = "x-amz-version-id";
+    private const string BucketObjectLockEnabledHeaderName = "x-amz-bucket-object-lock-enabled";
+    private const string ObjectLockModeHeaderName = "x-amz-object-lock-mode";
+    private const string ObjectLockRetainUntilDateHeaderName = "x-amz-object-lock-retain-until-date";
+    private const string ObjectLockLegalHoldHeaderName = "x-amz-object-lock-legal-hold";
     private const string XmlContentType = "application/xml";
     private const string ListTypeQueryParameterName = "list-type";
     private const string PrefixQueryParameterName = "prefix";
@@ -59,6 +63,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ContinuationTokenQueryParameterName = "continuation-token";
     private const string CorsQueryParameterName = "cors";
     private const string TaggingQueryParameterName = "tagging";
+    private const string RetentionQueryParameterName = "retention";
+    private const string LegalHoldQueryParameterName = "legal-hold";
     private const string VersioningQueryParameterName = "versioning";
     private const string VersionsQueryParameterName = "versions";
     private const string KeyMarkerQueryParameterName = "key-marker";
@@ -87,10 +93,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, MaxUploadsQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectRetentionQueryParameters = CreateQueryParameterSet(RetentionQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectLegalHoldQueryParameters = CreateQueryParameterSet(LegalHoldQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartPartQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartUploadQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName);
-    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName);
+    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, RetentionQueryParameterName, LegalHoldQueryParameterName, VersionIdQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName);
     private static readonly HashSet<string> SupportedManagedServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         ServerSideEncryptionHeaderName,
@@ -482,12 +490,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        if (!TryParseBucketObjectLockEnabledHeader(httpContext, BuildObjectResource(bucketName, null), bucketName, out var enableObjectLock, out var objectLockHeaderError)) {
+            return objectLockHeaderError!;
+        }
+
         try {
             var result = await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, innerCancellationToken =>
                 storageService.CreateBucketAsync(new CreateBucketRequest
                 {
-                    BucketName = bucketName
+                    BucketName = bucketName,
+                    EnableObjectLock = enableObjectLock
                 }, innerCancellationToken).AsTask(), cancellationToken);
+
+            if (result.IsSuccess && result.Value is not null) {
+                ApplyBucketHeaders(httpContext.Response, result.Value);
+            }
 
             return result.IsSuccess
                 ? TypedResults.Created($"buckets/{bucketName}", result.Value)
@@ -670,6 +687,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             var result = await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor,
                 innerCancellationToken => storageService.HeadBucketAsync(bucketName, innerCancellationToken).AsTask(),
                 cancellationToken);
+            if (result.IsSuccess && result.Value is not null) {
+                ApplyBucketHeaders(httpContext.Response, result.Value);
+            }
+
             return result.IsSuccess
                 ? TypedResults.Ok()
                 : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
@@ -1262,12 +1283,21 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        if (!TryParseBucketObjectLockEnabledHeader(httpContext, BuildObjectResource(bucketName, null), bucketName, out var enableObjectLock, out var objectLockHeaderError)) {
+            return objectLockHeaderError!;
+        }
+
         try {
             var result = await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, innerCancellationToken =>
                 storageService.CreateBucketAsync(new CreateBucketRequest
                 {
-                    BucketName = bucketName
+                    BucketName = bucketName,
+                    EnableObjectLock = enableObjectLock
                 }, innerCancellationToken).AsTask(), cancellationToken);
+
+            if (result.IsSuccess && result.Value is not null) {
+                ApplyBucketHeaders(httpContext.Response, result.Value);
+            }
 
             return result.IsSuccess
                 ? TypedResults.Ok()
@@ -1306,7 +1336,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         return httpContext.Request.Method switch
         {
+            "GET" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await GetObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+            "GET" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await GetObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+            "PUT" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await PutObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+            "PUT" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await PutObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
             "POST" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await InitiateMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
@@ -1434,6 +1468,181 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                 return result.IsSuccess
                     ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> GetObjectRetentionAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetObjectRetentionAsync(new GetObjectRetentionRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request)
+                }, innerCancellationToken);
+
+                if (result.IsSuccess && result.Value is not null) {
+                    ApplyVersionIdHeader(httpContext.Response, result.Value.VersionId);
+                }
+
+                return result.IsSuccess
+                    ? new XmlContentResult(
+                        S3XmlResponseWriter.WriteObjectRetention(new S3ObjectRetentionConfiguration
+                        {
+                            Mode = ToS3RetentionMode(result.Value!.Policy.Mode),
+                            RetainUntilDateUtc = result.Value.Policy.RetainUntilUtc
+                        }),
+                        StatusCodes.Status200OK,
+                        XmlContentType)
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> PutObjectRetentionAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3ObjectRetentionConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadObjectRetentionAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (!TryParseObjectRetentionPolicy(httpContext, requestBody, bucketName, key, out var policy, out var policyErrorResult)) {
+            return policyErrorResult!;
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutObjectRetentionAsync(new PutObjectRetentionRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request),
+                    Policy = policy!
+                }, innerCancellationToken);
+
+                if (result.IsSuccess && result.Value is not null) {
+                    ApplyVersionIdHeader(httpContext.Response, result.Value.VersionId);
+                }
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> GetObjectLegalHoldAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request)
+                }, innerCancellationToken);
+
+                if (result.IsSuccess && result.Value is not null) {
+                    ApplyVersionIdHeader(httpContext.Response, result.Value.VersionId);
+                }
+
+                return result.IsSuccess
+                    ? new XmlContentResult(
+                        S3XmlResponseWriter.WriteObjectLegalHold(new S3ObjectLegalHold
+                        {
+                            Status = ToS3LegalHoldStatus(result.Value!.Status)
+                        }),
+                        StatusCodes.Status200OK,
+                        XmlContentType)
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> PutObjectLegalHoldAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3ObjectLegalHold requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadObjectLegalHoldAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (!TryParseObjectLegalHoldStatus(httpContext, requestBody.Status, bucketName, key, out var status, out var statusErrorResult)) {
+            return statusErrorResult!;
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request),
+                    Status = status
+                }, innerCancellationToken);
+
+                if (result.IsSuccess && result.Value is not null) {
+                    ApplyVersionIdHeader(httpContext.Response, result.Value.VersionId);
+                }
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
                     : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
             }, cancellationToken);
         }
@@ -2025,7 +2234,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.ObjectNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.BucketNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.CorsConfigurationNotFound => StatusCodes.Status404NotFound,
+            StorageErrorCode.ObjectLockConfigurationNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.AccessDenied => StatusCodes.Status403Forbidden,
+            StorageErrorCode.InvalidRequest => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidChecksum => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidRange => StatusCodes.Status416RangeNotSatisfiable,
             StorageErrorCode.PreconditionFailed => StatusCodes.Status412PreconditionFailed,
@@ -2048,7 +2259,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.ObjectNotFound => "NoSuchKey",
             StorageErrorCode.BucketNotFound => "NoSuchBucket",
             StorageErrorCode.CorsConfigurationNotFound => "NoSuchCORSConfiguration",
+            StorageErrorCode.ObjectLockConfigurationNotFound => "ObjectLockConfigurationNotFoundError",
             StorageErrorCode.AccessDenied => "AccessDenied",
+            StorageErrorCode.InvalidRequest => "InvalidRequest",
             StorageErrorCode.InvalidChecksum => "BadDigest",
             StorageErrorCode.InvalidRange => "InvalidRange",
             StorageErrorCode.PreconditionFailed => "PreconditionFailed",
@@ -2607,13 +2820,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isCurrentObjectRequest = queryKeys.SetEquals(EmptyQueryParameters);
         var isVersionedObjectRequest = queryKeys.SetEquals(ObjectVersionQueryParameters);
         var isTaggingRequest = queryKeys.Contains(TaggingQueryParameterName) && queryKeys.IsSubsetOf(ObjectTaggingQueryParameters);
+        var isRetentionRequest = queryKeys.Contains(RetentionQueryParameterName) && queryKeys.IsSubsetOf(ObjectRetentionQueryParameters);
+        var isLegalHoldRequest = queryKeys.Contains(LegalHoldQueryParameterName) && queryKeys.IsSubsetOf(ObjectLegalHoldQueryParameters);
         var isInitiateMultipartRequest = queryKeys.SetEquals(ObjectMultipartInitiateQueryParameters);
         var isUploadMultipartPartRequest = queryKeys.SetEquals(ObjectMultipartPartQueryParameters);
         var isUploadScopedMultipartRequest = queryKeys.SetEquals(ObjectMultipartUploadQueryParameters);
 
         switch (request.Method) {
-            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isTaggingRequest:
-            case "PUT" when isCurrentObjectRequest || isTaggingRequest || isUploadMultipartPartRequest:
+            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest:
+            case "PUT" when isCurrentObjectRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest || isUploadMultipartPartRequest:
             case "HEAD" when isCurrentObjectRequest || isVersionedObjectRequest:
             case "DELETE" when isCurrentObjectRequest || isVersionedObjectRequest || isTaggingRequest || isUploadScopedMultipartRequest:
             case "POST" when isCurrentObjectRequest || isInitiateMultipartRequest || isUploadScopedMultipartRequest:
@@ -3548,6 +3763,156 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return parsedValue;
     }
 
+    private static bool TryParseBucketObjectLockEnabledHeader(
+        HttpContext httpContext,
+        string resource,
+        string bucketName,
+        out bool enableObjectLock,
+        out IResult? errorResult)
+    {
+        if (!httpContext.Request.Headers.ContainsKey(BucketObjectLockEnabledHeaderName)) {
+            enableObjectLock = false;
+            errorResult = null;
+            return true;
+        }
+
+        var rawValue = httpContext.Request.Headers[BucketObjectLockEnabledHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            enableObjectLock = true;
+            errorResult = null;
+            return true;
+        }
+
+        if (bool.TryParse(rawValue, out var parsedValue)) {
+            enableObjectLock = parsedValue;
+            errorResult = null;
+            return true;
+        }
+
+        enableObjectLock = false;
+        errorResult = ToErrorResult(
+            httpContext,
+            StatusCodes.Status400BadRequest,
+            "InvalidRequest",
+            $"The '{BucketObjectLockEnabledHeaderName}' header must be a boolean value.",
+            resource,
+            bucketName);
+        return false;
+    }
+
+    private static bool TryParseObjectRetentionPolicy(
+        HttpContext httpContext,
+        S3ObjectRetentionConfiguration configuration,
+        string bucketName,
+        string key,
+        out ObjectRetentionPolicy? policy,
+        out IResult? errorResult)
+    {
+        if (!TryParseObjectRetentionMode(httpContext, configuration.Mode, bucketName, key, out var mode, out errorResult)) {
+            policy = null;
+            return false;
+        }
+
+        policy = new ObjectRetentionPolicy
+        {
+            Mode = mode,
+            RetainUntilUtc = configuration.RetainUntilDateUtc
+        };
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryParseObjectRetentionMode(
+        HttpContext httpContext,
+        string rawMode,
+        string bucketName,
+        string key,
+        out ObjectRetentionMode mode,
+        out IResult? errorResult)
+    {
+        if (string.Equals(rawMode, "GOVERNANCE", StringComparison.OrdinalIgnoreCase)) {
+            mode = ObjectRetentionMode.Governance;
+            errorResult = null;
+            return true;
+        }
+
+        if (string.Equals(rawMode, "COMPLIANCE", StringComparison.OrdinalIgnoreCase)) {
+            mode = ObjectRetentionMode.Compliance;
+            errorResult = null;
+            return true;
+        }
+
+        mode = default;
+        errorResult = ToErrorResult(
+            httpContext,
+            statusCode: StatusCodes.Status400BadRequest,
+            code: "InvalidRequest",
+            message: $"Unsupported object retention mode '{rawMode}'.",
+            resource: BuildObjectResource(bucketName, key),
+            bucketName: bucketName,
+            key: key);
+        return false;
+    }
+
+    private static bool TryParseObjectLegalHoldStatus(
+        HttpContext httpContext,
+        string rawStatus,
+        string bucketName,
+        string key,
+        out ObjectLegalHoldStatus status,
+        out IResult? errorResult)
+    {
+        if (string.Equals(rawStatus, "ON", StringComparison.OrdinalIgnoreCase)) {
+            status = ObjectLegalHoldStatus.On;
+            errorResult = null;
+            return true;
+        }
+
+        if (string.Equals(rawStatus, "OFF", StringComparison.OrdinalIgnoreCase)) {
+            status = ObjectLegalHoldStatus.Off;
+            errorResult = null;
+            return true;
+        }
+
+        status = default;
+        errorResult = ToErrorResult(
+            httpContext,
+            statusCode: StatusCodes.Status400BadRequest,
+            code: "InvalidRequest",
+            message: $"Unsupported object legal hold status '{rawStatus}'.",
+            resource: BuildObjectResource(bucketName, key),
+            bucketName: bucketName,
+            key: key);
+        return false;
+    }
+
+    private static string ToS3RetentionMode(ObjectRetentionMode mode)
+    {
+        return mode switch
+        {
+            ObjectRetentionMode.Governance => "GOVERNANCE",
+            ObjectRetentionMode.Compliance => "COMPLIANCE",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported object retention mode.")
+        };
+    }
+
+    private static string ToS3LegalHoldStatus(ObjectLegalHoldStatus status)
+    {
+        return status switch
+        {
+            ObjectLegalHoldStatus.On => "ON",
+            ObjectLegalHoldStatus.Off => "OFF",
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unsupported object legal hold status.")
+        };
+    }
+
+    private static void ApplyBucketHeaders(HttpResponse httpResponse, BucketInfo bucketInfo)
+    {
+        if (bucketInfo.ObjectLockEnabled) {
+            httpResponse.Headers[BucketObjectLockEnabledHeaderName] = "true";
+        }
+    }
+
     private static void ApplyDeleteObjectHeaders(HttpResponse httpResponse, DeleteObjectResult result)
     {
         ApplyVersionIdHeader(httpResponse, result.VersionId);
@@ -3626,6 +3991,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         httpResponse.Headers.LastModified = objectInfo.LastModifiedUtc.ToString("R");
         ApplyObjectIdentityHeaders(httpResponse, objectInfo);
+        ApplyObjectLockHeaders(httpResponse, objectInfo);
 
         IEnumerable<KeyValuePair<string, string>> metadataPairs = objectInfo.Metadata ?? Enumerable.Empty<KeyValuePair<string, string>>();
         foreach (var metadataPair in metadataPairs) {
@@ -3643,6 +4009,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         ApplyChecksumHeaders(httpResponse, objectInfo.Checksums);
         ApplyServerSideEncryptionHeaders(httpResponse, objectInfo.ServerSideEncryption);
+    }
+
+    private static void ApplyObjectLockHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
+    {
+        if (objectInfo.Retention is not null) {
+            httpResponse.Headers[ObjectLockModeHeaderName] = ToS3RetentionMode(objectInfo.Retention.Mode);
+            httpResponse.Headers[ObjectLockRetainUntilDateHeaderName] = objectInfo.Retention.RetainUntilUtc.ToUniversalTime().ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        if (objectInfo.LegalHold.HasValue) {
+            httpResponse.Headers[ObjectLockLegalHoldHeaderName] = ToS3LegalHoldStatus(objectInfo.LegalHold.Value);
+        }
     }
 
     private static void ApplyVersionIdHeader(HttpResponse httpResponse, string? versionId)

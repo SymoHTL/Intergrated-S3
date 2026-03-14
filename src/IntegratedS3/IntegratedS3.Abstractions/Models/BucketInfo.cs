@@ -7,4 +7,6 @@ public sealed class BucketInfo
     public DateTimeOffset CreatedAtUtc { get; init; }
 
     public bool VersioningEnabled { get; init; }
+
+    public bool ObjectLockEnabled { get; init; }
 }

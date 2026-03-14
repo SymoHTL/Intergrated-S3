@@ -31,8 +31,10 @@ public sealed class IntegratedS3BootstrapTests
                 ["IntegratedS3:Providers:0:ObjectLocation:DefaultAccessMode"] = "Redirect",
                 ["IntegratedS3:Providers:0:ObjectLocation:SupportedAccessModes:0"] = "Redirect",
                 ["IntegratedS3:Providers:0:ObjectLocation:SupportedAccessModes:1"] = "Delegated",
+                ["IntegratedS3:Providers:0:SupportState:ObjectLock"] = "BackendOwned",
                 ["IntegratedS3:Providers:0:SupportState:AccessControl"] = "Delegated",
                 ["IntegratedS3:Providers:0:SupportState:Retention"] = "Delegated",
+                ["IntegratedS3:Providers:0:SupportState:LegalHold"] = "Delegated",
                 ["IntegratedS3:Providers:0:SupportState:ServerSideEncryption"] = "Delegated"
             })
             .Build();
@@ -54,8 +56,10 @@ public sealed class IntegratedS3BootstrapTests
         Assert.Equal(StorageProviderMode.Passthrough, descriptor.Providers[0].Mode);
         Assert.Equal(StorageObjectAccessMode.Redirect, descriptor.Providers[0].ObjectLocation.DefaultAccessMode);
         Assert.Equal([StorageObjectAccessMode.Redirect, StorageObjectAccessMode.Delegated], descriptor.Providers[0].ObjectLocation.SupportedAccessModes);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, descriptor.Providers[0].SupportState.ObjectLock);
         Assert.Equal(StorageSupportStateOwnership.Delegated, descriptor.Providers[0].SupportState.AccessControl);
         Assert.Equal(StorageSupportStateOwnership.Delegated, descriptor.Providers[0].SupportState.Retention);
+        Assert.Equal(StorageSupportStateOwnership.Delegated, descriptor.Providers[0].SupportState.LegalHold);
         Assert.Equal(StorageSupportStateOwnership.Delegated, descriptor.Providers[0].SupportState.ServerSideEncryption);
     }
 
@@ -240,11 +244,13 @@ public sealed class IntegratedS3BootstrapTests
         Assert.Equal(StorageCapabilitySupport.Emulated, provider.Capabilities.Checksums);
         Assert.Equal(StorageObjectAccessMode.ProxyStream, provider.ObjectLocation.DefaultAccessMode);
         Assert.Equal([StorageObjectAccessMode.ProxyStream], provider.ObjectLocation.SupportedAccessModes);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.ObjectLock);
         Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.ObjectMetadata);
         Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.ObjectTags);
         Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.Checksums);
         Assert.Equal(StorageSupportStateOwnership.NotApplicable, provider.SupportState.AccessControl);
-        Assert.Equal(StorageSupportStateOwnership.NotApplicable, provider.SupportState.Retention);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.Retention);
+        Assert.Equal(StorageSupportStateOwnership.BackendOwned, provider.SupportState.LegalHold);
         Assert.Equal(StorageSupportStateOwnership.NotApplicable, provider.SupportState.ServerSideEncryption);
         Assert.Equal(StorageCapabilitySupport.Native, capabilities.ObjectCrud);
         Assert.Equal(StorageCapabilitySupport.Emulated, capabilities.Checksums);

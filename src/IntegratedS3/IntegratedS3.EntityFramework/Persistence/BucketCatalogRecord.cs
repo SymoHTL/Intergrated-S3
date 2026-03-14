@@ -12,6 +12,8 @@ public sealed class BucketCatalogRecord
 
     public bool VersioningEnabled { get; set; }
 
+    public bool ObjectLockEnabled { get; set; }
+
     public DateTimeOffset LastSyncedAtUtc { get; set; }
 
     public List<ObjectCatalogRecord> Objects { get; set; } = [];

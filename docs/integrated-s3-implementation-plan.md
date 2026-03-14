@@ -560,7 +560,7 @@ The project now has enough implemented surface area that the capability slices c
 | checksums | partially implemented | emulated | partially implemented | yes | disk now computes and persists checksums for the current put/copy/multipart flows, the native S3 provider now forwards/echoes checksum data on native put/copy/multipart paths where the upstream SDK exposes it cleanly, and the current HTTP surface emits the supported checksum fields in copy-object XML plus object-response headers; deeper checksum/header edge cases and broader parity hardening are still pending |
 | ACL / policy behavior | not started | unsupported | not implemented | no | authorization is `ClaimsPrincipal`-driven rather than S3 ACL compatible today, but provider support-state descriptors can now report access-control ownership independently from capability support |
 | CORS | implemented for the current slice | emulated | implemented | yes | bucket-level CORS contracts/configuration now round-trip through Core; disk reports `Cors = Emulated`, the native S3 provider reports `Cors = Native`, and ASP.NET now serves bucket-aware preflight plus actual-response headers without global middleware, including `Vary` handling for both allowed and rejected browser-facing CORS evaluations |
-| object lock / retention / legal hold | not started | unsupported | not implemented | no | behavior still needs abstractions and provider persistence shape, but retention ownership can now be surfaced separately in provider support-state descriptors |
+| object lock / retention / legal hold | implemented for the current slice | emulated with backend-owned bucket config plus backend- or platform-managed object state | implemented for the current slice | yes | provider-agnostic bucket/object-lock contracts, support-state ownership reporting, disk persistence, S3-compatible `GET` / `PUT ?retention` and `GET` / `PUT ?legal-hold`, and protected-version delete guardrails are now in place for the current disk-backed surface; native S3 provider parity and broader governance-bypass/conformance follow-ons remain pending |
 | server-side encryption variants | implemented for the current slice | unsupported with explicit guardrails | implemented for the current slice | yes | provider-agnostic object-level SSE request/response models now cover the current `AES256` / `aws:kms` flows plus object-metadata surfacing; the native S3 provider, Core/catalog flow, and ASP.NET S3-compatible header parsing/response emission now cover put/copy/initiate-multipart plus put/copy/get/head response metadata, while the disk provider explicitly rejects managed SSE request shapes and broader variants/provider expansion remain pending |
 
 This matrix should now be treated as the authoritative cross-track capability summary for the current vertical slice. Day-to-day backlog movement should live in `Remaining Implementation Work by Parallel Track` so contributors can update one matrix row and one owning subsection instead of editing repeated status prose across the document.
@@ -870,10 +870,10 @@ Build `IntegratedS3.Provider.Disk` first to validate:
 Status:
 
 - this milestone is substantially complete for the current vertical slice
-- disk backend validates streaming CRUD, paginated listing, range reads, conditional requests, copy-object, multipart upload lifecycle, bucket versioning controls, historical object version access/tagging/deletion, list-object-versions, delete-marker creation/promotion, delete-marker `GET` / `HEAD` fidelity, and direct put-object checksum validation
-- object metadata, tags, versioning state, and checksums are managed through `IStorageObjectStateStore` (platform-managed via EF catalog by default) with sidecar fallback for standalone deployments
+- disk backend validates streaming CRUD, paginated listing, range reads, conditional requests, copy-object, multipart upload lifecycle, bucket versioning controls, bucket object-lock enablement, historical object version access/tagging/retention/legal-hold/deletion, list-object-versions, delete-marker creation/promotion, delete-marker `GET` / `HEAD` fidelity, protected-version delete guardrails, and direct put-object checksum validation
+- object metadata, tags, versioning state, checksums, retention, and legal hold are managed through `IStorageObjectStateStore` (platform-managed via EF catalog by default) with sidecar fallback for standalone deployments
 - multipart upload state is managed through `IStorageMultipartStateStore` (platform-managed via EF by default) with sidecar fallback
-- retention, remaining checksum/header edge cases, and advanced versioning/tagging edge cases are still pending
+- remaining checksum/header edge cases, native-S3 object-lock parity, and advanced versioning/tagging edge cases are still pending
 
 ### 2. Native S3 provider second
 
@@ -1154,7 +1154,8 @@ Status: **in progress / partially complete**
 
 - bucket-level CORS is now implemented across abstractions, Core orchestration, the disk provider, the native S3 provider, and the ASP.NET S3-compatible surface
 - ASP.NET now supports bucket-aware preflight `OPTIONS` handling and actual-response `Access-Control-*` headers without relying on global middleware
-- ACL/policy mapping, object lock / retention / legal hold, and encryption-related support are still not started
+- object lock / retention / legal hold is now implemented for the current disk/Core/ASP.NET slice, including bucket object-lock enablement, ownership reporting, S3-compatible `GET` / `PUT` retention/legal-hold flows, and protected-version delete guardrails
+- ACL/policy mapping remains not started, while encryption-related support now has an initial shipped slice
 
 ### M8 — Hardening
 
@@ -1180,7 +1181,7 @@ This section is the execution board for the remaining implementation backlog. As
 - Track B is now in hardening mode rather than foundation-build mode: the native S3 copy/multipart/checksum/SSE/delegated-read slice is already landed, so the next work is local-endpoint parity plus broader provider-specific conformance.
 - Track C can continue immediately: provider-agnostic direct-presign plumbing, delegated-read S3 wiring, and typed transfer helpers are now in place, so the remaining work is higher-level client/API hardening rather than foundational presign plumbing.
 - Track F can continue on orchestration semantics, failure/backlog boundaries, and optional hosted-service seams now, with end-to-end repair behavior still benefiting from richer multi-provider parity.
-- Track G is now active for the bucket-CORS plus initial SSE slice; the remaining ACL/policy and retention/legal-hold follow-on work still benefits from Track A design follow-through.
+- Track G now has bucket-CORS, initial SSE, and the first object-lock/retention/legal-hold slice landed; the remaining ACL/policy and native-provider parity follow-on work still benefits from Track A design follow-through.
 
 ### Track A — Architecture follow-through and provider modes
 
@@ -1303,16 +1304,17 @@ This section is the execution board for the remaining implementation backlog. As
   - the disk provider now persists bucket CORS in the existing bucket-metadata sidecar and reports `Cors = Emulated`
   - the native S3 provider now maps bucket CORS through the AWS SDK and reports `Cors = Native`
   - ASP.NET now supports S3-compatible `GET` / `PUT` / `DELETE ?cors` XML handling plus bucket-aware preflight `OPTIONS` and actual-response `Access-Control-*` headers without global middleware, including anonymous preflight evaluation against bucket CORS rules
-  - provider support-state descriptors now surface `AccessControl` and `ServerSideEncryption` ownership alongside `Retention`, with disk remaining `NotApplicable` and the native S3 provider reporting delegated ownership for those upstream-owned concerns
+  - provider support-state descriptors now surface `ObjectLock`, `Retention`, `LegalHold`, `AccessControl`, and `ServerSideEncryption` ownership independently, with the disk provider reporting backend-owned bucket object-lock state plus backend- or platform-managed retention/legal-hold state depending on whether an object-state store is registered
   - `IntegratedS3.Abstractions` now includes provider-agnostic object-level SSE request/response models for the initial `AES256` / key-managed slice, and catalog-backed object metadata can now carry optional SSE algorithm/key metadata without leaking provider SDK types into shared contracts
   - the native S3 provider now reports `ServerSideEncryption = Native`, maps the initial object-level `AES256` / `aws:kms` request slice through the AWS SDK for put/copy/initiate-multipart, and preserves returned object SSE metadata on provider-facing `ObjectInfo` results
   - ASP.NET now validates and normalizes the initial object-level `AES256` / `aws:kms` SSE headers for S3-compatible put/copy/initiate-multipart requests, rejects unsupported SSE request shapes explicitly, and emits returned SSE response headers on put/copy/get/head object responses
   - the disk provider now rejects the managed SSE request shapes explicitly across the current get/head/put/copy/initiate-multipart surface so unsupported requests fail consistently instead of being ignored
   - `IntegratedS3.Tests` now exercises the end-to-end SSE slice across contracts, S3 provider mapping, disk guardrails, HTTP header/response behavior, and catalog persistence for the shipped `AES256` / `aws:kms` surface
   - browser-facing CORS handling now preserves `Vary` headers for both allowed and rejected preflight/actual responses, and S3-compatible bucket subresource validation now ignores SigV4 presign query parameters so presigned bucket-versioning reads continue to work
+  - provider-agnostic object-lock contracts now cover bucket object-lock enablement plus object retention/legal-hold lifecycle state, the EF-backed catalog and disk provider persist those fields, Core authorization/replication flows now route the new operations, and ASP.NET exposes S3-compatible `GET` / `PUT ?retention` and `GET` / `PUT ?legal-hold` with object-lock response headers and protected-version delete failures
 - Remaining scope:
   - ACL/policy-compatible behavior where it makes sense alongside the existing `ClaimsPrincipal` authorization model
-  - object lock, retention, and legal-hold abstractions plus provider persistence shape
+  - native S3 provider parity for object lock / retention / legal hold, including any deliberate governance-bypass or upstream-ownership semantics that should be surfaced explicitly rather than guessed
   - any remaining server-side-encryption follow-on work beyond the implemented native-S3-plus-explicit-disk-guardrails `AES256` / `aws:kms` slice, including broader SSE variants and any future provider expansion, without leaking provider SDK details into shared contracts
   - any remaining CORS conformance hardening beyond the implemented bucket-configuration, `Vary` handling, and browser-flow slice
 
@@ -1471,7 +1473,7 @@ Recommended dependency-aware order:
 3. execute Track B in parallel to harden the landed native S3 copy/multipart/checksum/SSE/delegated-read slice against local S3-compatible endpoints and decide whether backend-direct presign should complement the current resolver path
 4. continue Track C in parallel with larger-object and checksum-aware client ergonomics now that direct/delegated read paths, typed transfer helpers, and resume-aware file downloads are already shipped
 5. revisit Track D follow-up only if consumer feedback warrants configuration-bound authorization conventions or more backend-registration sugar
-6. continue Track F in parallel and use the remaining Track G budget for ACL/policy plus retention/encryption behavior and richer health/admin visibility now that endpoint toggles, repair-backlog visibility, descriptor follow-ons, and CORS `Vary` hardening are in place
+6. continue Track F in parallel and use the remaining Track G budget for ACL/policy plus native-provider object-lock/SSE parity and richer health/admin visibility now that endpoint toggles, repair-backlog visibility, descriptor follow-ons, CORS `Vary` hardening, and the first disk-backed object-lock slice are in place
 
 ## Suggested First Parallel Batch
 

@@ -6,6 +6,8 @@ internal sealed class DiskBucketMetadata
 {
     public BucketVersioningStatus VersioningStatus { get; init; } = BucketVersioningStatus.Disabled;
 
+    public bool ObjectLockEnabled { get; init; }
+
     public DiskBucketCorsConfiguration? CorsConfiguration { get; init; }
 }
 

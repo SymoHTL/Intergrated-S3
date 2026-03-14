@@ -23,7 +23,7 @@ public static class DiskStorageCapabilities
             BatchDelete = StorageCapabilitySupport.Unsupported,
             AccessControl = StorageCapabilitySupport.Unsupported,
             Cors = StorageCapabilitySupport.Emulated,
-            ObjectLock = StorageCapabilitySupport.Unsupported,
+            ObjectLock = StorageCapabilitySupport.Emulated,
             ServerSideEncryption = StorageCapabilitySupport.Unsupported,
             Checksums = StorageCapabilitySupport.Emulated,
             XmlErrors = StorageCapabilitySupport.Unsupported,

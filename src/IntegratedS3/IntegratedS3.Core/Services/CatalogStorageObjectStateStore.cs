@@ -34,6 +34,8 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
             Metadata = entry.Metadata,
             Tags = entry.Tags,
             Checksums = entry.Checksums,
+            Retention = entry.Retention,
+            LegalHold = entry.LegalHold,
             ServerSideEncryption = entry.ServerSideEncryption
         };
     }
@@ -61,6 +63,8 @@ public sealed class CatalogStorageObjectStateStore(IStorageCatalogStore catalogS
                 Metadata = entry.Metadata,
                 Tags = entry.Tags,
                 Checksums = entry.Checksums,
+                Retention = entry.Retention,
+                LegalHold = entry.LegalHold,
                 ServerSideEncryption = entry.ServerSideEncryption
             };
         }

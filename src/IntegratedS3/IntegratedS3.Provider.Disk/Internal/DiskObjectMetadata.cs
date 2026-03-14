@@ -1,3 +1,5 @@
+using IntegratedS3.Abstractions.Models;
+
 namespace IntegratedS3.Provider.Disk.Internal;
 
 internal sealed class DiskObjectMetadata
@@ -17,4 +19,8 @@ internal sealed class DiskObjectMetadata
     public Dictionary<string, string>? Tags { get; init; }
 
     public Dictionary<string, string>? Checksums { get; init; }
+
+    public ObjectRetentionPolicy? Retention { get; init; }
+
+    public ObjectLegalHoldStatus? LegalHold { get; init; }
 }

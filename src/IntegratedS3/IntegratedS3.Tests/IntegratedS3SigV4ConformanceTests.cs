@@ -250,6 +250,8 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketCors => "storage.read",
                 StorageOperationType.GetObjectTags => "storage.read",
+                StorageOperationType.GetObjectRetention => "storage.read",
+                StorageOperationType.GetObjectLegalHold => "storage.read",
                 StorageOperationType.HeadObject => "storage.read",
                 StorageOperationType.PresignPutObject => "storage.write",
                 _ => "storage.write"

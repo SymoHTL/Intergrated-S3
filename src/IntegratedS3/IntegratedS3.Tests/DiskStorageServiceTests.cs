@@ -1642,6 +1642,200 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_ObjectLockBuckets_EnableVersioningAndPreventVersioningSuspension()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        var createBucket = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "locked-bucket",
+            EnableObjectLock = true
+        });
+
+        Assert.True(createBucket.IsSuccess);
+        Assert.True(createBucket.Value!.ObjectLockEnabled);
+        Assert.True(createBucket.Value.VersioningEnabled);
+
+        var headBucket = await storageService.HeadBucketAsync("locked-bucket");
+        Assert.True(headBucket.IsSuccess);
+        Assert.True(headBucket.Value!.ObjectLockEnabled);
+        Assert.True(headBucket.Value.VersioningEnabled);
+
+        var listBuckets = await storageService.ListBucketsAsync().ToArrayAsync();
+        Assert.Contains(listBuckets, static bucket => bucket.Name == "locked-bucket" && bucket.ObjectLockEnabled && bucket.VersioningEnabled);
+
+        var suspendVersioning = await storageService.PutBucketVersioningAsync(new PutBucketVersioningRequest
+        {
+            BucketName = "locked-bucket",
+            Status = BucketVersioningStatus.Suspended
+        });
+
+        Assert.False(suspendVersioning.IsSuccess);
+        Assert.Equal(StorageErrorCode.InvalidRequest, suspendVersioning.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ObjectRetentionAndLegalHold_RoundTripAcrossVersionedDeletes()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        var retainUntilUtc = DateTimeOffset.UtcNow.AddDays(7);
+
+        var createBucket = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "object-lock",
+            EnableObjectLock = true
+        });
+        Assert.True(createBucket.IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("protected payload"));
+        var putObject = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+        Assert.True(putObject.IsSuccess);
+
+        var versionId = putObject.Value!.VersionId;
+
+        var putRetention = await storageService.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId,
+            Policy = new ObjectRetentionPolicy
+            {
+                Mode = ObjectRetentionMode.Governance,
+                RetainUntilUtc = retainUntilUtc
+            }
+        });
+        Assert.True(putRetention.IsSuccess);
+
+        var putLegalHold = await storageService.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId,
+            Status = ObjectLegalHoldStatus.On
+        });
+        Assert.True(putLegalHold.IsSuccess);
+
+        var getRetention = await storageService.GetObjectRetentionAsync(new GetObjectRetentionRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId
+        });
+        Assert.True(getRetention.IsSuccess);
+        Assert.Equal(ObjectRetentionMode.Governance, getRetention.Value!.Policy.Mode);
+        Assert.Equal(retainUntilUtc, getRetention.Value.Policy.RetainUntilUtc);
+
+        var getLegalHold = await storageService.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId
+        });
+        Assert.True(getLegalHold.IsSuccess);
+        Assert.Equal(ObjectLegalHoldStatus.On, getLegalHold.Value!.Status);
+
+        var headProtectedVersion = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId
+        });
+        Assert.True(headProtectedVersion.IsSuccess);
+        Assert.NotNull(headProtectedVersion.Value!.Retention);
+        Assert.Equal(retainUntilUtc, headProtectedVersion.Value.Retention!.RetainUntilUtc);
+        Assert.Equal(ObjectLegalHoldStatus.On, headProtectedVersion.Value.LegalHold);
+
+        var deleteSpecificVersion = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId
+        });
+        Assert.False(deleteSpecificVersion.IsSuccess);
+        Assert.Equal(StorageErrorCode.AccessDenied, deleteSpecificVersion.Error!.Code);
+
+        var deleteCurrent = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt"
+        });
+        Assert.True(deleteCurrent.IsSuccess);
+        Assert.True(deleteCurrent.Value!.IsDeleteMarker);
+
+        var putLegalHoldOff = await storageService.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId,
+            Status = ObjectLegalHoldStatus.Off
+        });
+        Assert.True(putLegalHoldOff.IsSuccess);
+
+        var preservedHistoricalVersion = await storageService.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId
+        });
+        Assert.True(preservedHistoricalVersion.IsSuccess);
+        Assert.NotNull(preservedHistoricalVersion.Value!.Retention);
+        Assert.Equal(ObjectLegalHoldStatus.Off, preservedHistoricalVersion.Value.LegalHold);
+
+        var deleteStillBlockedByRetention = await storageService.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = "object-lock",
+            Key = "docs/protected.txt",
+            VersionId = versionId
+        });
+        Assert.False(deleteStillBlockedByRetention.IsSuccess);
+        Assert.Equal(StorageErrorCode.AccessDenied, deleteStillBlockedByRetention.Error!.Code);
+    }
+
+    [Fact]
+    public async Task DiskStorage_ObjectLockOperations_RequireObjectLockEnabledBuckets()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "plain-bucket"
+        })).IsSuccess);
+
+        await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("plain payload"));
+        var putObject = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "plain-bucket",
+            Key = "docs/plain.txt",
+            Content = uploadStream,
+            ContentType = "text/plain"
+        });
+        Assert.True(putObject.IsSuccess);
+
+        var putRetention = await storageService.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = "plain-bucket",
+            Key = "docs/plain.txt",
+            Policy = new ObjectRetentionPolicy
+            {
+                Mode = ObjectRetentionMode.Governance,
+                RetainUntilUtc = DateTimeOffset.UtcNow.AddDays(1)
+            }
+        });
+
+        Assert.False(putRetention.IsSuccess);
+        Assert.Equal(StorageErrorCode.ObjectLockConfigurationNotFound, putRetention.Error!.Code);
+    }
+
+    [Fact]
     public async Task DiskStorage_MultipartUpload_CompletesObjectAndPreservesMetadata()
     {
         await using var fixture = new DiskStorageFixture();
@@ -2003,14 +2197,21 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
-    public async Task DiskStorage_UsesRegisteredPlatformObjectStateStoreForMetadataAndTags()
+    public async Task DiskStorage_UsesRegisteredPlatformObjectStateStoreForMetadataObjectLockAndTags()
     {
         await using var fixture = new DiskStorageFixture(services => {
             services.AddSingleton<IStorageObjectStateStore, InMemoryObjectStateStore>();
         });
 
         var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
-        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "external-state" });
+        var retainUntilUtc = DateTimeOffset.UtcNow.AddDays(14);
+        var createBucket = await storageService.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "external-state",
+            EnableObjectLock = true
+        });
+        Assert.True(createBucket.IsSuccess);
+        Assert.True(createBucket.Value!.ObjectLockEnabled);
 
         await using var uploadStream = new MemoryStream(Encoding.UTF8.GetBytes("hello external state"));
         var putResult = await storageService.PutObjectAsync(new PutObjectRequest
@@ -2039,6 +2240,26 @@ public sealed class DiskStorageServiceTests
 
         Assert.True(putTagsResult.IsSuccess);
 
+        var putRetentionResult = await storageService.PutObjectRetentionAsync(new PutObjectRetentionRequest
+        {
+            BucketName = "external-state",
+            Key = "docs/external.txt",
+            Policy = new ObjectRetentionPolicy
+            {
+                Mode = ObjectRetentionMode.Governance,
+                RetainUntilUtc = retainUntilUtc
+            }
+        });
+        Assert.True(putRetentionResult.IsSuccess);
+
+        var putLegalHoldResult = await storageService.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+        {
+            BucketName = "external-state",
+            Key = "docs/external.txt",
+            Status = ObjectLegalHoldStatus.On
+        });
+        Assert.True(putLegalHoldResult.IsSuccess);
+
         var getResult = await storageService.GetObjectAsync(new GetObjectRequest
         {
             BucketName = "external-state",
@@ -2050,17 +2271,24 @@ public sealed class DiskStorageServiceTests
             Assert.Equal("platform-store", response.Object.Metadata!["owner"]);
             Assert.Equal("test", response.Object.Tags!["environment"]);
             Assert.Equal(ComputeSha256Base64("hello external state"), response.Object.Checksums!["sha256"]);
+            Assert.NotNull(response.Object.Retention);
+            Assert.Equal(ObjectRetentionMode.Governance, response.Object.Retention!.Mode);
+            Assert.Equal(retainUntilUtc, response.Object.Retention.RetainUntilUtc);
+            Assert.Equal(ObjectLegalHoldStatus.On, response.Object.LegalHold);
         }
 
         var supportState = await storageService.GetSupportStateDescriptorAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.BackendOwned, supportState.ObjectLock);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.ObjectMetadata);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.ObjectTags);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.Checksums);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.AccessControl);
-        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.Retention);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.Retention);
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.PlatformManaged, supportState.LegalHold);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageSupportStateOwnership.NotApplicable, supportState.ServerSideEncryption);
 
         var capabilities = await storageService.GetCapabilitiesAsync();
+        Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Emulated, capabilities.ObjectLock);
         Assert.Equal(IntegratedS3.Abstractions.Capabilities.StorageCapabilitySupport.Unsupported, capabilities.ServerSideEncryption);
 
         var providerMode = await storageService.GetProviderModeAsync();
@@ -2609,7 +2837,9 @@ public sealed class DiskStorageServiceTests
                         LastModifiedUtc = existing.LastModifiedUtc,
                         Metadata = existing.Metadata,
                         Tags = existing.Tags,
-                        Checksums = existing.Checksums
+                        Checksums = existing.Checksums,
+                        Retention = existing.Retention,
+                        LegalHold = existing.LegalHold
                     };
                 }
             }

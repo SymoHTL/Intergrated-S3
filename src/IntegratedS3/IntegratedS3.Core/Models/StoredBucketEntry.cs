@@ -10,5 +10,7 @@ public sealed class StoredBucketEntry
 
     public bool VersioningEnabled { get; init; }
 
+    public bool ObjectLockEnabled { get; init; }
+
     public DateTimeOffset LastSyncedAtUtc { get; init; }
 }

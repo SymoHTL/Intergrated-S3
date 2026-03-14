@@ -53,13 +53,15 @@ internal sealed class DiskStorageService(
         var multipartStateOwnership = _multipartStateStore?.Ownership ?? StorageSupportStateOwnership.BackendOwned;
         return ValueTask.FromResult(new StorageSupportStateDescriptor
         {
+            ObjectLock = StorageSupportStateOwnership.BackendOwned,
             ObjectMetadata = objectStateOwnership,
             ObjectTags = objectStateOwnership,
             MultipartState = multipartStateOwnership,
             Versioning = objectStateOwnership,
             Checksums = objectStateOwnership,
             AccessControl = StorageSupportStateOwnership.NotApplicable,
-            Retention = StorageSupportStateOwnership.NotApplicable,
+            Retention = objectStateOwnership,
+            LegalHold = objectStateOwnership,
             ServerSideEncryption = StorageSupportStateOwnership.NotApplicable,
             RedirectLocations = StorageSupportStateOwnership.NotApplicable
         });
@@ -107,7 +109,8 @@ internal sealed class DiskStorageService(
             {
                 Name = directoryInfo.Name,
                 CreatedAtUtc = directoryInfo.CreationTimeUtc,
-                VersioningEnabled = bucketMetadata.VersioningStatus == BucketVersioningStatus.Enabled
+                VersioningEnabled = bucketMetadata.VersioningStatus == BucketVersioningStatus.Enabled,
+                ObjectLockEnabled = bucketMetadata.ObjectLockEnabled
             };
 
             await Task.Yield();
@@ -131,14 +134,15 @@ internal sealed class DiskStorageService(
 
         Directory.CreateDirectory(bucketPath);
         var directoryInfo = new DirectoryInfo(bucketPath);
-        var versioningStatus = request.EnableVersioning
+        var versioningStatus = request.EnableVersioning || request.EnableObjectLock
             ? BucketVersioningStatus.Enabled
             : BucketVersioningStatus.Disabled;
 
-        if (versioningStatus != BucketVersioningStatus.Disabled) {
+        if (versioningStatus != BucketVersioningStatus.Disabled || request.EnableObjectLock) {
             await WriteBucketMetadataAsync(bucketPath, new DiskBucketMetadata
             {
-                VersioningStatus = versioningStatus
+                VersioningStatus = versioningStatus,
+                ObjectLockEnabled = request.EnableObjectLock
             }, cancellationToken);
         }
 
@@ -146,7 +150,8 @@ internal sealed class DiskStorageService(
         {
             Name = request.BucketName,
             CreatedAtUtc = directoryInfo.CreationTimeUtc,
-            VersioningEnabled = versioningStatus == BucketVersioningStatus.Enabled
+            VersioningEnabled = versioningStatus == BucketVersioningStatus.Enabled,
+            ObjectLockEnabled = request.EnableObjectLock
         });
     }
 
@@ -178,9 +183,14 @@ internal sealed class DiskStorageService(
         }
 
         var existingMetadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        if (existingMetadata.ObjectLockEnabled && request.Status != BucketVersioningStatus.Enabled) {
+            return StorageResult<BucketVersioningInfo>.Failure(BucketObjectLockRequiresVersioning(request.BucketName));
+        }
+
         var metadata = new DiskBucketMetadata
         {
             VersioningStatus = request.Status,
+            ObjectLockEnabled = existingMetadata.ObjectLockEnabled,
             CorsConfiguration = existingMetadata.CorsConfiguration
         };
 
@@ -229,6 +239,7 @@ internal sealed class DiskStorageService(
         var updatedMetadata = new DiskBucketMetadata
         {
             VersioningStatus = existingMetadata.VersioningStatus,
+            ObjectLockEnabled = existingMetadata.ObjectLockEnabled,
             CorsConfiguration = new DiskBucketCorsConfiguration
             {
                 Rules = request.Rules.Select(ToDiskBucketCorsRule).ToArray()
@@ -259,6 +270,7 @@ internal sealed class DiskStorageService(
         var updatedMetadata = new DiskBucketMetadata
         {
             VersioningStatus = existingMetadata.VersioningStatus,
+            ObjectLockEnabled = existingMetadata.ObjectLockEnabled,
             CorsConfiguration = null
         };
 
@@ -640,7 +652,7 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
-                cancellationToken);
+                cancellationToken: cancellationToken);
         }
         finally {
             if (File.Exists(tempDestinationPath)) {
@@ -717,7 +729,7 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
-                cancellationToken);
+                cancellationToken: cancellationToken);
         }
         finally {
             if (File.Exists(tempFilePath)) {
@@ -740,6 +752,152 @@ internal sealed class DiskStorageService(
         ArgumentNullException.ThrowIfNull(request);
 
         return await UpdateObjectTagsAsync(request.BucketName, request.Key, request.VersionId, tags: null, cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var objectLockError = await GetObjectLockConfigurationErrorAsync(request.BucketName, request.Key, cancellationToken);
+        if (objectLockError is not null) {
+            return StorageResult<ObjectRetentionInfo>.Failure(objectLockError);
+        }
+
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectRetentionInfo>.Failure(storedObjectResult.Error!);
+        }
+
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectRetentionInfo>.Failure(GetDeleteMarkerAccessError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        if (storedObject.Metadata.Retention is null) {
+            return StorageResult<ObjectRetentionInfo>.Failure(ObjectRetentionNotConfigured(request.BucketName, request.Key, storedObject.Metadata.VersionId));
+        }
+
+        return StorageResult<ObjectRetentionInfo>.Success(new ObjectRetentionInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = storedObject.Metadata.VersionId,
+            Policy = CloneRetentionPolicy(storedObject.Metadata.Retention)
+        });
+    }
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var objectLockError = await GetObjectLockConfigurationErrorAsync(request.BucketName, request.Key, cancellationToken);
+        if (objectLockError is not null) {
+            return StorageResult<ObjectRetentionInfo>.Failure(objectLockError);
+        }
+
+        if (request.Policy.RetainUntilUtc <= DateTimeOffset.UtcNow) {
+            return StorageResult<ObjectRetentionInfo>.Failure(InvalidObjectLockRequest(
+                "Object retention must specify a future retain-until timestamp.",
+                request.BucketName,
+                request.Key,
+                request.VersionId));
+        }
+
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectRetentionInfo>.Failure(storedObjectResult.Error!);
+        }
+
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectRetentionInfo>.Failure(GetDeleteMarkerAccessError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        var updateError = ValidateRetentionUpdate(storedObject.Metadata.Retention, request.Policy, request.BucketName, request.Key, storedObject.Metadata.VersionId);
+        if (updateError is not null) {
+            return StorageResult<ObjectRetentionInfo>.Failure(updateError);
+        }
+
+        var updatedRetention = CloneRetentionPolicy(request.Policy);
+        await PersistStoredObjectStateAsync(
+            request.BucketName,
+            request.Key,
+            storedObject,
+            retention: updatedRetention,
+            legalHold: storedObject.Metadata.LegalHold,
+            cancellationToken);
+
+        return StorageResult<ObjectRetentionInfo>.Success(new ObjectRetentionInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = storedObject.Metadata.VersionId,
+            Policy = updatedRetention
+        });
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var objectLockError = await GetObjectLockConfigurationErrorAsync(request.BucketName, request.Key, cancellationToken);
+        if (objectLockError is not null) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(objectLockError);
+        }
+
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(storedObjectResult.Error!);
+        }
+
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(GetDeleteMarkerAccessError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        return StorageResult<ObjectLegalHoldInfo>.Success(new ObjectLegalHoldInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = storedObject.Metadata.VersionId,
+            Status = storedObject.Metadata.LegalHold ?? ObjectLegalHoldStatus.Off
+        });
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var objectLockError = await GetObjectLockConfigurationErrorAsync(request.BucketName, request.Key, cancellationToken);
+        if (objectLockError is not null) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(objectLockError);
+        }
+
+        var storedObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, request.VersionId, cancellationToken);
+        if (!storedObjectResult.IsSuccess) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(storedObjectResult.Error!);
+        }
+
+        var storedObject = storedObjectResult.Value!;
+        if (storedObject.IsDeleteMarker) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(GetDeleteMarkerAccessError(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        await PersistStoredObjectStateAsync(
+            request.BucketName,
+            request.Key,
+            storedObject,
+            retention: storedObject.Metadata.Retention,
+            legalHold: request.Status,
+            cancellationToken);
+
+        return StorageResult<ObjectLegalHoldInfo>.Success(new ObjectLegalHoldInfo
+        {
+            BucketName = request.BucketName,
+            Key = request.Key,
+            VersionId = storedObject.Metadata.VersionId,
+            Status = request.Status
+        });
     }
 
     private async ValueTask<StorageResult<ObjectTagSet>> UpdateObjectTagsAsync(
@@ -778,6 +936,8 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: metadata.LastModifiedUtc,
+                retention: metadata.Retention,
+                legalHold: metadata.LegalHold,
                 cancellationToken);
         }
         else {
@@ -793,6 +953,8 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: false,
                 lastModifiedUtc: metadata.LastModifiedUtc,
+                retention: metadata.Retention,
+                legalHold: metadata.LegalHold,
                 cancellationToken);
         }
 
@@ -1070,7 +1232,7 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
             Directory.Delete(uploadState.UploadDirectoryPath, recursive: true);
@@ -1147,10 +1309,14 @@ internal sealed class DiskStorageService(
                 return StorageResult<DeleteObjectResult>.Failure(storedObjectResult.Error!);
             }
 
-            var storedObject = storedObjectResult.Value!;
-            if (!storedObject.IsDeleteMarker && !string.IsNullOrWhiteSpace(storedObject.ContentPath) && File.Exists(storedObject.ContentPath)) {
-                File.Delete(storedObject.ContentPath);
-            }
+        var storedObject = storedObjectResult.Value!;
+        if (IsObjectProtectedFromPermanentDeletion(storedObject.Metadata)) {
+            return StorageResult<DeleteObjectResult>.Failure(DeleteBlockedByObjectLock(request.BucketName, request.Key, request.VersionId, storedObject.Metadata));
+        }
+
+        if (!storedObject.IsDeleteMarker && !string.IsNullOrWhiteSpace(storedObject.ContentPath) && File.Exists(storedObject.ContentPath)) {
+            File.Delete(storedObject.ContentPath);
+        }
 
             if (storedObject.IsCurrent) {
                 await DeleteStoredObjectStateAsync(request.BucketName, request.Key, filePath, request.VersionId, cancellationToken);
@@ -1203,6 +1369,15 @@ internal sealed class DiskStorageService(
                 IsDeleteMarker = true,
                 CurrentObject = deleteMarker
             });
+        }
+
+        var currentStoredObjectResult = await ResolveStoredObjectAsync(request.BucketName, request.Key, versionId: null, cancellationToken);
+        if (!currentStoredObjectResult.IsSuccess) {
+            return StorageResult<DeleteObjectResult>.Failure(currentStoredObjectResult.Error!);
+        }
+
+        if (IsObjectProtectedFromPermanentDeletion(currentStoredObjectResult.Value!.Metadata)) {
+            return StorageResult<DeleteObjectResult>.Failure(DeleteBlockedByObjectLock(request.BucketName, request.Key, currentStoredObjectResult.Value.Metadata.VersionId, currentStoredObjectResult.Value.Metadata));
         }
 
         if (File.Exists(filePath)) {
@@ -1445,7 +1620,9 @@ internal sealed class DiskStorageService(
             LastModifiedUtc = lastModifiedUtc,
             Metadata = metadata.Metadata,
             Tags = metadata.Tags,
-            Checksums = metadata.Checksums
+            Checksums = metadata.Checksums,
+            Retention = metadata.Retention is null ? null : CloneRetentionPolicy(metadata.Retention),
+            LegalHold = metadata.LegalHold
         };
     }
 
@@ -1567,6 +1744,8 @@ internal sealed class DiskStorageService(
             metadata.IsDeleteMarker,
             isLatest,
             metadata.LastModifiedUtc,
+            metadata.Retention,
+            metadata.LegalHold,
             cancellationToken);
 
         var hydratedObjectInfo = await _objectStateStore.GetObjectInfoAsync(Name, bucketName, key, resolvedVersionId, cancellationToken);
@@ -1587,7 +1766,9 @@ internal sealed class DiskStorageService(
         bool isDeleteMarker,
         bool isLatest,
         DateTimeOffset? lastModifiedUtc,
-        CancellationToken cancellationToken)
+        ObjectRetentionPolicy? retention = null,
+        ObjectLegalHoldStatus? legalHold = null,
+        CancellationToken cancellationToken = default)
     {
         if (_objectStateStore is null) {
             await WriteMetadataAsync(objectPath, new DiskObjectMetadata
@@ -1599,7 +1780,9 @@ internal sealed class DiskStorageService(
                 ContentType = contentType,
                 Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
                 Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
-                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+                Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase),
+                Retention = retention is null ? null : CloneRetentionPolicy(retention),
+                LegalHold = legalHold
             }, cancellationToken);
 
             return;
@@ -1622,10 +1805,44 @@ internal sealed class DiskStorageService(
             LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
             Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
             Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
-            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
+            Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase),
+            Retention = retention is null ? null : CloneRetentionPolicy(retention),
+            LegalHold = legalHold
         }, cancellationToken);
 
         DeleteMetadataFileIfPresent(objectPath);
+    }
+
+    private Task PersistStoredObjectStateAsync(
+        string bucketName,
+        string key,
+        ResolvedStoredObject storedObject,
+        ObjectRetentionPolicy? retention,
+        ObjectLegalHoldStatus? legalHold,
+        CancellationToken cancellationToken)
+    {
+        var objectPath = storedObject.ContentPath;
+        if (string.IsNullOrWhiteSpace(objectPath)) {
+            objectPath = storedObject.IsCurrent
+                ? GetObjectPath(bucketName, key)
+                : GetArchivedVersionContentPath(bucketName, key, storedObject.Metadata.VersionId!);
+        }
+
+        return WriteStoredObjectStateAsync(
+            bucketName,
+            key,
+            objectPath,
+            storedObject.Metadata.VersionId,
+            storedObject.Metadata.ContentType,
+            storedObject.Metadata.Metadata,
+            storedObject.Metadata.Tags,
+            storedObject.Metadata.Checksums,
+            storedObject.Metadata.IsDeleteMarker,
+            storedObject.IsCurrent,
+            storedObject.Metadata.LastModifiedUtc,
+            retention,
+            legalHold,
+            cancellationToken);
     }
 
     private Task WriteStoredObjectStateAsync(
@@ -1651,6 +1868,8 @@ internal sealed class DiskStorageService(
             isDeleteMarker: false,
             isLatest: true,
             lastModifiedUtc: null,
+            retention: null,
+            legalHold: null,
             cancellationToken);
     }
 
@@ -1774,6 +1993,8 @@ internal sealed class DiskStorageService(
             currentObject.IsDeleteMarker,
             isLatest: false,
             currentObject.Metadata.LastModifiedUtc,
+            currentObject.Metadata.Retention,
+            currentObject.Metadata.LegalHold,
             cancellationToken);
     }
 
@@ -1956,7 +2177,7 @@ internal sealed class DiskStorageService(
             isDeleteMarker: true,
             isLatest: true,
             lastModifiedUtc,
-            cancellationToken);
+            cancellationToken: cancellationToken);
 
         return CreateObjectInfo(bucketName, key, null, new DiskObjectMetadata
         {
@@ -2001,6 +2222,8 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: true,
                 isLatest: true,
                 latestArchived.Metadata.LastModifiedUtc,
+                latestArchived.Metadata.Retention,
+                latestArchived.Metadata.LegalHold,
                 cancellationToken);
         }
         else {
@@ -2021,6 +2244,8 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 latestArchived.Metadata.LastModifiedUtc,
+                latestArchived.Metadata.Retention,
+                latestArchived.Metadata.LegalHold,
                 cancellationToken);
         }
 
@@ -2220,8 +2445,116 @@ internal sealed class DiskStorageService(
                 ContentType = objectInfo.ContentType,
                 Metadata = objectInfo.Metadata is null ? null : new Dictionary<string, string>(objectInfo.Metadata, StringComparer.Ordinal),
                 Tags = objectInfo.Tags is null ? null : new Dictionary<string, string>(objectInfo.Tags, StringComparer.Ordinal),
-                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase)
+                Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase),
+                Retention = objectInfo.Retention is null ? null : CloneRetentionPolicy(objectInfo.Retention),
+                LegalHold = objectInfo.LegalHold
             };
+    }
+
+    private static ObjectRetentionPolicy CloneRetentionPolicy(ObjectRetentionPolicy policy)
+    {
+        return new ObjectRetentionPolicy
+        {
+            Mode = policy.Mode,
+            RetainUntilUtc = policy.RetainUntilUtc
+        };
+    }
+
+    private async Task<StorageError?> GetObjectLockConfigurationErrorAsync(string bucketName, string objectKey, CancellationToken cancellationToken)
+    {
+        var bucketPath = GetBucketPath(bucketName);
+        if (!Directory.Exists(bucketPath)) {
+            return BucketNotFound(bucketName);
+        }
+
+        var metadata = await ReadBucketMetadataAsync(bucketPath, cancellationToken);
+        return metadata.ObjectLockEnabled
+            ? null
+            : new StorageError
+            {
+                Code = StorageErrorCode.ObjectLockConfigurationNotFound,
+                Message = $"Bucket '{bucketName}' does not have object lock enabled.",
+                BucketName = bucketName,
+                ObjectKey = objectKey,
+                ProviderName = options.ProviderName,
+                SuggestedHttpStatusCode = 404
+            };
+    }
+
+    private StorageError BucketObjectLockRequiresVersioning(string bucketName)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidRequest,
+            Message = $"Bucket '{bucketName}' cannot disable versioning while object lock is enabled.",
+            BucketName = bucketName,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError ObjectRetentionNotConfigured(string bucketName, string objectKey, string? versionId)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.ObjectLockConfigurationNotFound,
+            Message = $"Object '{objectKey}' does not have a retention policy configured.",
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            VersionId = versionId,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 404
+        };
+    }
+
+    private StorageError InvalidObjectLockRequest(string message, string bucketName, string objectKey, string? versionId = null)
+    {
+        return new StorageError
+        {
+            Code = StorageErrorCode.InvalidRequest,
+            Message = message,
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            VersionId = versionId,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 400
+        };
+    }
+
+    private StorageError? ValidateRetentionUpdate(
+        ObjectRetentionPolicy? existingPolicy,
+        ObjectRetentionPolicy requestedPolicy,
+        string bucketName,
+        string objectKey,
+        string? versionId)
+    {
+        if (existingPolicy is null || existingPolicy.RetainUntilUtc <= DateTimeOffset.UtcNow) {
+            return null;
+        }
+
+        if (requestedPolicy.RetainUntilUtc < existingPolicy.RetainUntilUtc) {
+            return InvalidObjectLockRequest(
+                "Active object retention can only be extended, not shortened.",
+                bucketName,
+                objectKey,
+                versionId);
+        }
+
+        if (existingPolicy.Mode == ObjectRetentionMode.Compliance && requestedPolicy.Mode != ObjectRetentionMode.Compliance) {
+            return InvalidObjectLockRequest(
+                "Compliance-mode retention cannot be downgraded while it remains active.",
+                bucketName,
+                objectKey,
+                versionId);
+        }
+
+        return null;
+    }
+
+    private static bool IsObjectProtectedFromPermanentDeletion(DiskObjectMetadata metadata)
+    {
+        return metadata.LegalHold == ObjectLegalHoldStatus.On
+            || metadata.Retention?.RetainUntilUtc > DateTimeOffset.UtcNow;
     }
 
     private static bool HasBucketCorsConfiguration(DiskBucketMetadata metadata)
@@ -2231,7 +2564,7 @@ internal sealed class DiskStorageService(
 
     private static bool ShouldPersistBucketMetadata(DiskBucketMetadata metadata)
     {
-        return metadata.VersioningStatus != BucketVersioningStatus.Disabled || HasBucketCorsConfiguration(metadata);
+        return metadata.VersioningStatus != BucketVersioningStatus.Disabled || metadata.ObjectLockEnabled || HasBucketCorsConfiguration(metadata);
     }
 
     private static BucketCorsConfiguration ToBucketCorsConfiguration(string bucketName, DiskBucketCorsConfiguration configuration)
@@ -2303,7 +2636,8 @@ internal sealed class DiskStorageService(
         {
             Name = bucketName,
             CreatedAtUtc = directoryInfo.CreationTimeUtc,
-            VersioningEnabled = metadata.VersioningStatus == BucketVersioningStatus.Enabled
+            VersioningEnabled = metadata.VersioningStatus == BucketVersioningStatus.Enabled,
+            ObjectLockEnabled = metadata.ObjectLockEnabled
         });
     }
 
@@ -2977,6 +3311,24 @@ internal sealed class DiskStorageService(
             ObjectKey = objectKey,
             ProviderName = options.ProviderName,
             SuggestedHttpStatusCode = 404
+        };
+    }
+
+    private StorageError DeleteBlockedByObjectLock(string bucketName, string objectKey, string? versionId, DiskObjectMetadata metadata)
+    {
+        var protectionReason = metadata.LegalHold == ObjectLegalHoldStatus.On
+            ? "a legal hold is active"
+            : "an active retention policy is in effect";
+
+        return new StorageError
+        {
+            Code = StorageErrorCode.AccessDenied,
+            Message = $"Object '{objectKey}' cannot be permanently deleted because {protectionReason}.",
+            BucketName = bucketName,
+            ObjectKey = objectKey,
+            VersionId = versionId,
+            ProviderName = options.ProviderName,
+            SuggestedHttpStatusCode = 403
         };
     }
 

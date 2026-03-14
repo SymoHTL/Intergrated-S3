@@ -30,6 +30,10 @@ public sealed class StoredObjectEntry
 
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 
+    public ObjectRetentionPolicy? Retention { get; init; }
+
+    public ObjectLegalHoldStatus? LegalHold { get; init; }
+
     public ObjectServerSideEncryptionInfo? ServerSideEncryption { get; init; }
 
     public DateTimeOffset LastSyncedAtUtc { get; init; }

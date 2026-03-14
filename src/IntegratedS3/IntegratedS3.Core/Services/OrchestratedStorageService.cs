@@ -252,6 +252,22 @@ internal sealed class OrchestratedStorageService(
             cancellationToken);
     }
 
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            (backend, ct) => backend.GetObjectRetentionAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        return await ExecuteReadAsync(
+            (backend, ct) => backend.GetObjectLegalHoldAsync(request, ct),
+            onSuccess: null,
+            cancellationToken);
+    }
+
     public async ValueTask<StorageResult<ObjectInfo>> CopyObjectAsync(CopyObjectRequest request, CancellationToken cancellationToken = default)
     {
         var backend = _primaryBackend.Value;
@@ -386,6 +402,84 @@ internal sealed class OrchestratedStorageService(
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectTagSet>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> PutObjectRetentionAsync(PutObjectRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = _primaryBackend.Value;
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<ObjectRetentionInfo>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutObjectRetentionAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var resolvedVersionId = GetEffectiveVersionId(request.VersionId, result.Value.VersionId);
+            await RefreshCatalogObjectAsync(backend, request.BucketName, request.Key, resolvedVersionId, cancellationToken);
+
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutObjectRetention,
+                backend,
+                request.BucketName,
+                request.Key,
+                resolvedVersionId,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectRetentionAsync(replicaBackend, new PutObjectRetentionRequest
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId,
+                    Policy = new ObjectRetentionPolicy
+                    {
+                        Mode = request.Policy.Mode,
+                        RetainUntilUtc = request.Policy.RetainUntilUtc
+                    }
+                }, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectRetentionFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<ObjectRetentionInfo>.Failure(replicationError);
+            }
+        }
+
+        return result;
+    }
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> PutObjectLegalHoldAsync(PutObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+    {
+        var backend = _primaryBackend.Value;
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, request.VersionId, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<ObjectLegalHoldInfo>.Failure(strictReplicationError);
+        }
+
+        var result = await backend.PutObjectLegalHoldAsync(request, cancellationToken);
+        ObserveResult(backend, result);
+        if (result.IsSuccess && result.Value is not null) {
+            var resolvedVersionId = GetEffectiveVersionId(request.VersionId, result.Value.VersionId);
+            await RefreshCatalogObjectAsync(backend, request.BucketName, request.Key, resolvedVersionId, cancellationToken);
+
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.PutObjectLegalHold,
+                backend,
+                request.BucketName,
+                request.Key,
+                resolvedVersionId,
+                writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectLegalHoldAsync(replicaBackend, new PutObjectLegalHoldRequest
+                {
+                    BucketName = request.BucketName,
+                    Key = request.Key,
+                    VersionId = request.VersionId,
+                    Status = request.Status
+                }, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectLegalHoldFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<ObjectLegalHoldInfo>.Failure(replicationError);
             }
         }
 
@@ -903,7 +997,7 @@ internal sealed class OrchestratedStorageService(
                 return refreshError;
             }
 
-            if (request.EnableVersioning) {
+            if (request.EnableVersioning || request.EnableObjectLock) {
                 return await WriteReplicaBucketVersioningAsync(replicaBackend, new PutBucketVersioningRequest
                 {
                     BucketName = request.BucketName,
@@ -943,7 +1037,8 @@ internal sealed class OrchestratedStorageService(
         var createError = await WriteReplicaBucketCreateAsync(replicaBackend, new CreateBucketRequest
         {
             BucketName = bucketName,
-            EnableVersioning = primaryVersioningResult.Value.VersioningEnabled
+            EnableVersioning = primaryVersioningResult.Value.VersioningEnabled,
+            EnableObjectLock = primaryHeadResult.Value.ObjectLockEnabled
         }, cancellationToken);
         if (createError is not null) {
             return createError;
@@ -1208,6 +1303,90 @@ internal sealed class OrchestratedStorageService(
 
         await RefreshCatalogObjectAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
         return null;
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaPutObjectRetentionAsync(IStorageBackend replicaBackend, PutObjectRetentionRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutObjectRetentionAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object retention update did not return retention metadata.");
+        }
+
+        await RefreshCatalogObjectAsync(replicaBackend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectRetentionFromPrimaryAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        var primaryRetentionResult = await primaryBackend.GetObjectRetentionAsync(new GetObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId
+        }, cancellationToken);
+        ObserveResult(primaryBackend, primaryRetentionResult);
+        if (!primaryRetentionResult.IsSuccess || primaryRetentionResult.Value is null) {
+            return primaryRetentionResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object retention could not be resolved for replica repair.");
+        }
+
+        return await WriteReplicaPutObjectRetentionAsync(replicaBackend, new PutObjectRetentionRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId,
+            Policy = new ObjectRetentionPolicy
+            {
+                Mode = primaryRetentionResult.Value.Policy.Mode,
+                RetainUntilUtc = primaryRetentionResult.Value.Policy.RetainUntilUtc
+            }
+        }, cancellationToken);
+    }
+
+    private async ValueTask<StorageError?> WriteReplicaPutObjectLegalHoldAsync(IStorageBackend replicaBackend, PutObjectLegalHoldRequest request, CancellationToken cancellationToken)
+    {
+        var replicaResult = await replicaBackend.PutObjectLegalHoldAsync(request, cancellationToken);
+        ObserveResult(replicaBackend, replicaResult);
+        if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+            return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object legal-hold update did not return legal-hold metadata.");
+        }
+
+        await RefreshCatalogObjectAsync(replicaBackend, request.BucketName, request.Key, request.VersionId, cancellationToken);
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaObjectLegalHoldFromPrimaryAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? requestedVersionId,
+        CancellationToken cancellationToken)
+    {
+        var primaryLegalHoldResult = await primaryBackend.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId
+        }, cancellationToken);
+        ObserveResult(primaryBackend, primaryLegalHoldResult);
+        if (!primaryLegalHoldResult.IsSuccess || primaryLegalHoldResult.Value is null) {
+            return primaryLegalHoldResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object legal hold could not be resolved for replica repair.");
+        }
+
+        return await WriteReplicaPutObjectLegalHoldAsync(replicaBackend, new PutObjectLegalHoldRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = requestedVersionId,
+            Status = primaryLegalHoldResult.Value.Status
+        }, cancellationToken);
     }
 
     private async ValueTask<StorageError?> WriteReplicaDeleteObjectAsync(IStorageBackend replicaBackend, DeleteObjectRequest request, CancellationToken cancellationToken)

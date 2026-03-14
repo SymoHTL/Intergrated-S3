@@ -107,6 +107,7 @@ internal sealed class ConfiguredStorageDescriptorProvider(
     {
         return new StorageSupportStateDescriptor
         {
+            ObjectLock = supportState.ObjectLock,
             ObjectMetadata = supportState.ObjectMetadata,
             ObjectTags = supportState.ObjectTags,
             MultipartState = supportState.MultipartState,
@@ -114,6 +115,7 @@ internal sealed class ConfiguredStorageDescriptorProvider(
             Checksums = supportState.Checksums,
             AccessControl = supportState.AccessControl,
             Retention = supportState.Retention,
+            LegalHold = supportState.LegalHold,
             ServerSideEncryption = supportState.ServerSideEncryption,
             RedirectLocations = supportState.RedirectLocations
         };

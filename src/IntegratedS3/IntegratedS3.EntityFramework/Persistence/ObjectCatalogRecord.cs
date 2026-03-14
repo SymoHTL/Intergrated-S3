@@ -32,6 +32,12 @@ public sealed class ObjectCatalogRecord
 
     public string? ChecksumsJson { get; set; }
 
+    public ObjectRetentionMode? RetentionMode { get; set; }
+
+    public DateTimeOffset? RetainUntilUtc { get; set; }
+
+    public ObjectLegalHoldStatus? LegalHoldStatus { get; set; }
+
     public ObjectServerSideEncryptionAlgorithm? ServerSideEncryptionAlgorithm { get; set; }
 
     public string? ServerSideEncryptionKeyId { get; set; }
