@@ -103,6 +103,10 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - presign convenience helpers for object `GET` / `PUT`, including access-mode preference overloads
   - `StoragePresignedRequest.CreateHttpRequestMessage(...)` to materialize ready-to-send `HttpRequestMessage` instances from returned grants
   - typed streaming/file transfer helpers that compose presign issuance with upload/download execution
+- package/onboarding polish baseline with:
+  - centralized package metadata/readme wiring and XML documentation file generation for packable projects
+  - XML docs on the primary DI registration, endpoint-mapping, client presign, provider-registration, and capability/options surfaces
+  - consumer guides for getting started, protocol compatibility, and current trimming/AOT diagnostics
 - sample host in `src/IntegratedS3/WebUi` exposing:
   - host composition helpers that can forward endpoint-mapping options while preserving the slim minimal-hosting style
   - shared runtime/test composition through `WebUiApplication.ConfigureServices(...)` and `ConfigurePipeline(...)`, with a dedicated reference-host guide in `docs/webui-reference-host.md`
@@ -1036,6 +1040,8 @@ Ship sample apps for:
 - versioned protocol compatibility
 - easy onboarding docs
 
+Status (March 2026): the current package-polish baseline now includes centralized package metadata/readme wiring, XML documentation file generation for packable projects, consumer onboarding docs, protocol compatibility guidance, and explicit trimming/AOT diagnostic guidance. Future work can deepen member-level XML coverage or add a dedicated analyzer package if a concrete scenario emerges.
+
 ## Recommended Milestone Sequence
 
 ### M1 — Package scaffolding and abstractions
@@ -1335,10 +1341,10 @@ This section is the execution board for the remaining implementation backlog. As
   - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
-  - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
-  - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
-  - add the planned MVC/Razor and Blazor WebAssembly sample consumers
-  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
+- benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
+- keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
+- add the planned MVC/Razor and Blazor WebAssembly sample consumers
+- evaluate whether a dedicated analyzer package or deeper member-level XML coverage is warranted beyond the current package readme, onboarding docs, protocol guidance, and trimming/AOT diagnostics baseline
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
   - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered

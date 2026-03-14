@@ -12,14 +12,23 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IntegratedS3.AspNetCore.DependencyInjection;
 
+/// <summary>
+/// ASP.NET Core DI registrations for the IntegratedS3 host surface.
+/// </summary>
 public static class IntegratedS3ServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers the IntegratedS3 ASP.NET host surface with default options.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
         return services.AddIntegratedS3(static _ => { });
     }
 
+    /// <summary>
+    /// Registers the IntegratedS3 ASP.NET host surface by binding the <c>IntegratedS3</c> configuration section.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -27,6 +36,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(configuration.GetSection("IntegratedS3"));
     }
 
+    /// <summary>
+    /// Registers the IntegratedS3 ASP.NET host surface by binding configuration and then applying additional option overrides.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfiguration configuration, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -36,6 +48,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3(configuration.GetSection("IntegratedS3"), configure);
     }
 
+    /// <summary>
+    /// Registers the IntegratedS3 ASP.NET host surface from an explicit configuration section.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -49,6 +64,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers the IntegratedS3 ASP.NET host surface from an explicit configuration section and an additional options delegate.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, IConfigurationSection section, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -64,6 +82,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Registers the IntegratedS3 ASP.NET host surface and configures options in code.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3(this IServiceCollection services, Action<IntegratedS3Options> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -75,6 +96,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3CoreServices();
     }
 
+    /// <summary>
+    /// Adds a provider descriptor using simple name/kind arguments.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, string name, string kind, bool isPrimary = false, string? description = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -96,6 +120,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         });
     }
 
+    /// <summary>
+    /// Adds a provider descriptor configured through a delegate.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, Action<StorageProviderDescriptor> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -107,6 +134,9 @@ public static class IntegratedS3ServiceCollectionExtensions
         return services.AddIntegratedS3Provider(provider);
     }
 
+    /// <summary>
+    /// Adds a fully populated provider descriptor to the hosted metadata surface.
+    /// </summary>
     public static IServiceCollection AddIntegratedS3Provider(this IServiceCollection services, StorageProviderDescriptor provider)
     {
         ArgumentNullException.ThrowIfNull(services);

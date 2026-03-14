@@ -24,6 +24,9 @@ using IntegratedS3.Core.Services;
 
 namespace IntegratedS3.AspNetCore.Endpoints;
 
+/// <summary>
+/// Maps the JSON and S3-compatible HTTP routes exposed by the IntegratedS3 ASP.NET package.
+/// </summary>
 public static class IntegratedS3EndpointRouteBuilderExtensions
 {
     private const string SigV4AuthenticationClaimType = "integrateds3:auth-type";
@@ -98,6 +101,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ServerSideEncryptionContextHeaderName
     };
 
+    /// <summary>
+    /// Maps IntegratedS3 endpoints using the configured <see cref="IntegratedS3EndpointOptions"/> from DI.
+    /// </summary>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints)
@@ -107,6 +113,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return endpoints.MapIntegratedS3Endpoints(ResolveConfiguredEndpointOptions(endpoints));
     }
 
+    /// <summary>
+    /// Maps IntegratedS3 endpoints after applying additional endpoint-option overrides in code.
+    /// </summary>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints, Action<IntegratedS3EndpointOptions> configure)
@@ -119,6 +128,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return endpoints.MapIntegratedS3Endpoints(options);
     }
 
+    /// <summary>
+    /// Maps IntegratedS3 endpoints using an explicit <see cref="IntegratedS3EndpointOptions"/> instance.
+    /// </summary>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints, IntegratedS3EndpointOptions endpointOptions)
