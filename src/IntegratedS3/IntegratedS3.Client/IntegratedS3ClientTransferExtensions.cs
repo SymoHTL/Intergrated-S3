@@ -683,15 +683,32 @@ public static class IntegratedS3ClientTransferExtensions
                 cancellationToken);
         }
 
+        var existingLength = new FileInfo(filePath).Length;
+
         await using var fileStream = new FileStream(
             filePath, FileMode.Append, FileAccess.Write, FileShare.None,
             bufferSize: 65536, useAsync: true);
 
-        await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
-            response.Content,
-            fileStream,
-            validation,
-            cancellationToken);
+        try {
+            await IntegratedS3ClientTransferChecksumHelper.CopyToAsync(
+                response.Content,
+                fileStream,
+                validation,
+                cancellationToken);
+        }
+        catch
+        {
+            try
+            {
+                fileStream.SetLength(existingLength);
+            }
+            catch
+            {
+                // Swallow any truncation errors; the original exception is more important.
+            }
+
+            throw;
+        }
     }
 
     private static async Task RewriteDownloadFromStartAsync(
