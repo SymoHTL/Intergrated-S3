@@ -1565,7 +1565,7 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             DestinationBucket = targetBucketName,
             DestinationKey = historicalCopyKey,
             ETagToMatch = historicalMetadata.ETag,
-            UnmodifiedSinceDate = historicalMetadata.LastModified!.Value.ToUniversalTime().AddMinutes(-5)
+            UnmodifiedSinceDate = historicalMetadata.LastModified!.Value.ToUniversalTime().AddMinutes(5)
         });
 
         Assert.Equal(HttpStatusCode.OK, historicalCopy.HttpStatusCode);
