@@ -55,6 +55,10 @@ internal static class IntegratedS3CoreTelemetry
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (!IntegratedS3Observability.ActivitySource.HasListeners()) {
+            return null;
+        }
+
         var activity = IntegratedS3Observability.ActivitySource.StartActivity($"IntegratedS3.Storage.{request.Operation}", ActivityKind.Internal);
         if (activity is null) {
             return null;
