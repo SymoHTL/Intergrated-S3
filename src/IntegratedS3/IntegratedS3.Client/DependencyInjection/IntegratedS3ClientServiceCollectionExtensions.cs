@@ -106,7 +106,7 @@ public static class IntegratedS3ClientServiceCollectionExtensions
         services.AddOptions<IntegratedS3ClientOptions>()
             .PostConfigure(static options => {
                 options.RoutePrefix = IntegratedS3ClientPathUtilities.NormalizeRoutePrefix(options.RoutePrefix);
-                if (options.BaseAddress is not null) {
+                if (options.BaseAddress is { IsAbsoluteUri: true }) {
                     options.BaseAddress = IntegratedS3ClientPathUtilities.NormalizeBaseAddress(options.BaseAddress);
                 }
             })
