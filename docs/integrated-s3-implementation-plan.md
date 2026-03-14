@@ -24,10 +24,10 @@ The repository has already moved beyond initial scaffolding and now contains a w
   - initial object-level server-side encryption (`AES256`, `aws:kms`) request mapping for put/copy/initiate-multipart plus returned SSE metadata on put/copy/get/head results
   - `S3ErrorTranslator` extended with native multipart/checksum error mappings (`NoSuchUpload`, `InvalidPart`, `InvalidPartOrder`, `EntityTooSmall`, `BadDigest`) plus per-error-code object key context
   - `S3StorageCapabilities` updated: `ObjectCrud`, `ObjectMetadata`, `ListObjects`, `Pagination`, `RangeRequests`, `ConditionalRequests`, `ObjectTags`, `Versioning`, `Cors`, `CopyOperations`, `MultipartUploads`, `PresignedUrls`, `Checksums`, and `ServerSideEncryption` are `Native`
-  - `IS3StorageClient` and `AwsS3StorageClient` extended with native copy, multipart, presign, checksum, versioning, bucket CORS, and initial object-level SSE operations using the SDK v4 API surface
+- `IS3StorageClient` and `AwsS3StorageClient` extended with native copy, multipart, direct/delegated presign, checksum, versioning, bucket CORS, and initial object-level SSE operations using the SDK v4 API surface
   - `AddS3Storage(...)` now also registers an S3-backed `IStorageObjectLocationResolver` so delegated read presigns can surface provider URLs with safe proxy fallback
   - Internal model records added/extended: `S3ObjectEntry`, `S3ObjectListPage`, `S3ObjectVersionListPage`, `S3MultipartUploadListPage`, `S3GetObjectResult`, `S3DeleteObjectResult`, `S3VersioningEntry`, `S3CorsConfigurationEntry`
-  - `FakeS3Client` in tests extended; unit tests now cover capabilities, copy, multipart lifecycle/listing, checksum mapping, paged listing, CRUD, tags, versioning, 304/412 flows, and get-object disposal behavior
+- `FakeS3Client` in tests extended; unit tests now cover capabilities, copy, multipart lifecycle/listing, checksum mapping, direct/delegated presign flows, paged listing, CRUD, tags, versioning, 304/412 flows, and get-object disposal behavior
 - modular project structure under `src/IntegratedS3/`
 - initial abstractions package with:
   - canonical error/result model
@@ -888,10 +888,10 @@ Build `IntegratedS3.Provider.S3` next:
 Status: **native copy/multipart/presign/checksum provider slice is now implemented**
 
 - `S3StorageService` now implements bucket CRUD, object CRUD, object/version listing, object tagging, bucket versioning, bucket CORS, native copy, and the multipart upload lifecycle/listing surface through the AWS SDK
-- `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for range, conditional, tagging, version-aware object flows, native copy, multipart upload listing/lifecycle, presigned GET URL generation, and checksum request/response mapping
+- `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for range, conditional, tagging, version-aware object flows, native copy, multipart upload listing/lifecycle, presigned `GET` / `PUT` URL generation, and checksum request/response mapping
 - canonical error translation, DI registration, options, and S3-backed delegated-read resolver registration are in place
 - `S3StorageCapabilities` now declare bucket/object/list/range/conditional/tag/versioning/copy/multipart/presign/checksum/CORS support as `Native`
-- next steps center on broader parity/conformance hardening against local S3-compatible endpoints and deciding whether backend-direct presign adds enough value beyond the current delegated-read resolver path
+- next steps center on broader parity/conformance hardening against local S3-compatible endpoints now that explicit-direct native S3 `GET` / `PUT` presigns are implemented alongside the delegated-read resolver path
 
 ### 3. Future providers later
 
@@ -1081,7 +1081,7 @@ Status: **in progress / partially complete**
 - native S3 provider — **copy/multipart/presign/checksum slice is now implemented on top of the object/list/versioning foundation**:
   - `S3StorageService` implements `ListBucketsAsync`, `CreateBucketAsync`, `HeadBucketAsync`, and `DeleteBucketAsync` via the native AWS SDK
   - `S3StorageService` now also implements `ListObjectsAsync`, `ListObjectVersionsAsync`, `HeadObjectAsync`, `GetObjectAsync`, `PutObjectAsync`, `DeleteObjectAsync`, `CopyObjectAsync`, the multipart upload lifecycle/listing surface, `GetObjectTagsAsync`, `PutObjectTagsAsync`, `DeleteObjectTagsAsync`, `GetBucketVersioningAsync`, `PutBucketVersioningAsync`, `GetBucketCorsAsync`, `PutBucketCorsAsync`, and `DeleteBucketCorsAsync`
-  - `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for object CRUD, paged listings, conditional GETs, range requests, tagging, versioning, bucket CORS, native copy/multipart flows, presigned GET URL generation, and checksum request/response mapping
+  - `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for object CRUD, paged listings, conditional GETs, range requests, tagging, versioning, bucket CORS, native copy/multipart flows, presigned `GET` / `PUT` URL generation, and checksum request/response mapping
   - `S3ErrorTranslator` maps `AmazonS3Exception` to canonical `StorageErrorCode` values (`BucketNotFound`, `CorsConfigurationNotFound`, `BucketAlreadyExists`, `AccessDenied`, `PreconditionFailed`, `Throttled`, `ProviderUnavailable`) with provider name and bucket/object context preserved
   - `CreateBucketAsync` still rejects `EnableVersioning = true` during bucket creation; versioning is enabled afterward through `PutBucketVersioningAsync`
   - `S3StorageCapabilities` now report `BucketOperations`, `ObjectCrud`, `ObjectMetadata`, `ListObjects`, `Pagination`, `RangeRequests`, `ConditionalRequests`, `ObjectTags`, `Versioning`, `Cors`, `MultipartUploads`, `CopyOperations`, `PresignedUrls`, and `Checksums` as `Native`; advanced features remain `Unsupported`
@@ -1206,11 +1206,11 @@ This section is the execution board for the remaining implementation backlog. As
 - Status:
   - the core native S3 copy/multipart/checksum/delegated-read presign slice is now implemented in `IntegratedS3.Provider.S3`
   - `S3StorageCapabilities` now report `CopyOperations`, `MultipartUploads`, `PresignedUrls`, and `Checksums` as `Native`, and provider-specific unit coverage now covers copy, multipart lifecycle/listing, checksum mapping, bucket CORS, and capability/provider-mode reporting
-  - delegated `GET` presign semantics are now wired end-to-end for the native S3 provider: `ResolveObjectLocationRequest` now carries requested expiry, `IntegratedS3HttpPresignStrategy` forwards provider/expiry/version metadata through the resolver seam, `AddS3Storage(...)` registers an S3-backed object-location resolver, and the provider now advertises native presigned-URL plus delegated read-location support while the separate backend-direct presign seam remains available for future providers and native S3 `PUT` presigns stay proxy-only
-  - focused presign/provider tests now cover delegated S3 URL issuance, expiry/version forwarding, proxy fallback for unavailable or incompatible delegated resolution, and the intentional proxy-only `PUT` behavior
+  - delegated `GET` presign semantics remain wired end-to-end for the native S3 provider: `ResolveObjectLocationRequest` carries requested expiry, `IntegratedS3HttpPresignStrategy` forwards provider/expiry/version metadata through the resolver seam, `AddS3Storage(...)` registers an S3-backed object-location resolver, and delegated-mode callers still receive provider URLs with safe proxy fallback
+  - backend-direct native S3 presign is now enabled where it adds value: the provider's existing provider-agnostic `IStorageBackend.PresignObjectDirectAsync(...)` seam now issues native S3 `GET` and `PUT` grants for explicit `Direct` requests, preserving delegated-read behavior for delegated callers and proxy fallback when no compatible direct/delegated grant is available
+  - focused presign/provider tests now cover delegated S3 URL issuance, backend-direct S3 `GET` / `PUT` selection, expiry/version forwarding, and proxy fallback for unavailable or incompatible direct/delegated resolution
 - Remaining scope:
   - harden native S3 behavior against local S3-compatible endpoints and extend provider-specific parity/conformance coverage around the already-landed copy/multipart/checksum/presign slice
-  - evaluate later whether the native S3 backend should also use the now-available backend direct-presign seam for direct `GET` / `PUT` in addition to the implemented delegated-read resolver path
   - keep public contracts provider-agnostic while preserving the clarified provider capability/support-state reporting
 
 ### Track C — First-party presign and client surface
@@ -1225,7 +1225,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `StorageAccessMode` now covers `Proxy`, `Direct`, and `Delegated` modes; `StoragePresignRequest` now carries an optional `PreferredAccessMode` field so callers can express access-mode preference; strategies may honour, downgrade, or ignore the preference depending on provider capabilities
   - `IStorageBackend` now includes a provider-agnostic direct-presign seam for object `GET` / `PUT`; `IntegratedS3HttpPresignStrategy` consults the primary backend first when `PreferredAccessMode` is `Direct`, then falls back to the existing resolver/proxy paths when no backend-native grant is available
   - `IntegratedS3HttpPresignStrategy` still consults `IStorageObjectLocationResolver` when `PreferredAccessMode` is `Direct` or `Delegated` for `GetObject` presigns; maps `StorageObjectAccessMode.Delegated`/`Passthrough` → `StorageAccessMode.Delegated` and `StorageObjectAccessMode.Redirect` → `StorageAccessMode.Direct`; falls back to proxy-mode issuance when the resolver returns null, an incompatible mode, or the operation is not a read
-  - native S3-backed delegated `GET` presigns now flow through that resolver seam: resolver requests carry provider/expiry/version metadata, the S3 provider returns real provider URLs for delegated reads, and unsupported or incompatible requests still fall back to proxy-mode issuance
+  - native S3-backed direct `GET` / `PUT` presigns now flow through that backend seam for explicit `Direct` requests, while delegated S3 `GET` presigns continue to flow through the resolver seam with provider/expiry/version metadata forwarding and safe proxy fallback for unsupported or incompatible requests
   - client transfer helpers now accept explicit preferred access-mode hints, keep streaming/file transfers on the high-level client surface, delete failed download targets instead of leaving partial files behind, and surface presign-endpoint error bodies in thrown `HttpRequestException` messages
   - the first-party client now also exposes explicit resume-aware file download helpers that issue `Range` requests against existing partial files, rewrite from the start when a server ignores the range, treat matching `416 RequestedRangeNotSatisfiable` responses as already complete, and preserve pre-existing partial files while cleaning up files created by the current attempt
   - focused tests lock in: backend-direct selection for read and write presigns; primary-backend-only direct selection with safe proxy fallback; delegated-mode selection when resolver supplies a `Delegated` or `Passthrough` location; direct-mode selection when resolver supplies a `Redirect` location; proxy fallback for null/incompatible resolver results; resolver not consulted for write presigns or when no preferred mode is set; version ID forwarded to resolver and returned in the grant; resolved headers forwarded to the grant; expiry derived from the resolver when provided, falling back to request expiry
