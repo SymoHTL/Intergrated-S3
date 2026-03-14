@@ -1284,7 +1284,7 @@ public sealed class DiskStorageServiceTests
         Assert.False(failedCopy.IsSuccess);
         Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedCopy.Error!.Code);
 
-        var notModifiedCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        var failedIfNoneMatchCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
         {
             SourceBucketName = "source",
             SourceKey = "docs/source.txt",
@@ -1293,9 +1293,21 @@ public sealed class DiskStorageServiceTests
             SourceIfNoneMatchETag = $"\"{putResult.Value!.ETag}\""
         });
 
-        Assert.True(notModifiedCopy.IsSuccess);
-        Assert.Equal("source", notModifiedCopy.Value!.BucketName);
-        Assert.Equal("docs/source.txt", notModifiedCopy.Value.Key);
+        Assert.False(failedIfNoneMatchCopy.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedIfNoneMatchCopy.Error!.Code);
+
+        var failedIfModifiedSinceCopy = await storageService.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "source",
+            SourceKey = "docs/source.txt",
+            DestinationBucketName = "target",
+            DestinationKey = "docs/copied.txt",
+            SourceIfNoneMatchETag = "\"different\"",
+            SourceIfModifiedSinceUtc = putResult.Value.LastModifiedUtc.AddMinutes(5)
+        });
+
+        Assert.False(failedIfModifiedSinceCopy.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedIfModifiedSinceCopy.Error!.Code);
         Assert.False((await storageService.HeadObjectAsync(new HeadObjectRequest
         {
             BucketName = "target",
