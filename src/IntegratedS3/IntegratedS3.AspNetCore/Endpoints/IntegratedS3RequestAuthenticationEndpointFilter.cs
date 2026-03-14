@@ -1,8 +1,9 @@
-using IntegratedS3.Protocol;
+using IntegratedS3.Abstractions.Observability;
 using IntegratedS3.AspNetCore.Services;
+using IntegratedS3.Protocol;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using IntegratedS3.Abstractions.Observability;
+using System.Diagnostics;
 
 namespace IntegratedS3.AspNetCore.Endpoints;
 
@@ -25,7 +26,7 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
                 var authenticationResult = await authenticator.AuthenticateAsync(httpContext, httpContext.RequestAborted);
                 if (authenticationResult.HasAttemptedAuthentication) {
                     if (!authenticationResult.Succeeded) {
-                        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, authenticationResult.ErrorMessage);
+                        activity?.SetStatus(ActivityStatusCode.Error, authenticationResult.ErrorMessage);
                         activity?.SetTag(IntegratedS3Observability.Tags.Result, "failure");
                         activity?.SetTag(IntegratedS3Observability.Tags.ErrorCode, authenticationResult.ErrorCode);
 
@@ -48,12 +49,12 @@ internal sealed class IntegratedS3RequestAuthenticationEndpointFilter(
             return await next(context);
         }
         catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested) {
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "Cancelled");
+            activity?.SetStatus(ActivityStatusCode.Error, "Cancelled");
             activity?.SetTag(IntegratedS3Observability.Tags.Result, "cancelled");
             throw;
         }
         catch (Exception exception) {
-            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, exception.Message);
+            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
             activity?.SetTag(IntegratedS3Observability.Tags.Result, "failure");
             logger.LogError(exception, "IntegratedS3 request handling failed unexpectedly.");
             throw;
