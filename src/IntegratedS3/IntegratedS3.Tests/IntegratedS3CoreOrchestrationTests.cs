@@ -23,6 +23,7 @@ using Xunit;
 
 namespace IntegratedS3.Tests;
 
+[Collection(ObservabilityTestCollection.Name)]
 public sealed class IntegratedS3CoreOrchestrationTests
 {
     [Fact]

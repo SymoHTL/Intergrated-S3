@@ -3,6 +3,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using IntegratedS3.AspNetCore;
@@ -15,6 +16,7 @@ namespace IntegratedS3.Tests;
 
 public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiApplicationFactory>
 {
+    private const string VirtualHostedStyleHostSuffix = "localhost";
     private readonly WebUiApplicationFactory _factory;
 
     public IntegratedS3AwsSdkCompatibilityTests(WebUiApplicationFactory factory)
@@ -589,6 +591,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleSdkGeneratedPresignedUrls_CanUploadAndDownloadObjects()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-presign-access";
         const string secretAccessKey = "aws-sdk-virtual-presign-secret";
 
@@ -597,10 +603,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-presign-bucket";
         const string objectKey = "docs/virtual-presigned.txt";
@@ -657,6 +663,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleSdkGeneratedPresignedUrls_WithSignedContentType_CanUploadAndDownloadObjects()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-presign-content-type-access";
         const string secretAccessKey = "aws-sdk-virtual-presign-content-type-secret";
         const string contentType = "text/plain";
@@ -666,10 +676,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-presign-content-type-bucket";
         const string objectKey = "docs/virtual-presigned-content-type.txt";
@@ -848,6 +858,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleCrudAndListObjectsV2_WorkAgainstIntegratedS3()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-access";
         const string secretAccessKey = "aws-sdk-virtual-secret";
 
@@ -856,10 +870,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-bucket";
         const string objectKey = "docs/virtual-sdk.txt";
@@ -912,6 +926,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleAwsChunkedPutObject_WorksAgainstIntegratedS3()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-chunked-access";
         const string secretAccessKey = "aws-sdk-virtual-chunked-secret";
 
@@ -920,10 +938,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-chunked-bucket";
         const string objectKey = "docs/virtual-chunked.txt";
@@ -957,6 +975,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleCopyObjectAndConditionalRequests_WorkAgainstIntegratedS3()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-copy-access";
         const string secretAccessKey = "aws-sdk-virtual-copy-secret";
 
@@ -965,10 +987,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string sourceBucketName = "aws-sdk-virtual-copy-source";
         const string targetBucketName = "aws-sdk-virtual-copy-target";
@@ -2435,6 +2457,20 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             });
             builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
         });
+    }
+
+    private static bool SupportsVirtualHostedStyleLoopbackHost(string hostSuffix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostSuffix);
+
+        try {
+            var probeHost = $"integrateds3-loopback-probe.{hostSuffix}";
+            var addresses = Dns.GetHostAddresses(probeHost);
+            return addresses.Any(IPAddress.IsLoopback);
+        }
+        catch (SocketException) {
+            return false;
+        }
     }
 
     private static string ComputeSha1Base64(string content)
