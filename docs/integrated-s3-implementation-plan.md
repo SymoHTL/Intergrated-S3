@@ -1262,8 +1262,9 @@ This section is the execution board for the remaining implementation backlog. As
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
+  - multi-object delete now enforces S3-style request-integrity checks (`Content-MD5` or existing checksum headers when supplied) plus the 1000-object batch limit, with focused HTTP coverage for missing, invalid, mismatched, and over-limit delete requests
 - Remaining scope:
-  - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
+  - next: harden conditional precedence, canonical-request edge cases, and any remaining request-header parity gaps now that the bucket/object subresource matrix and multi-delete integrity rules are explicit on the S3-compatible HTTP surface
   - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
   - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
   - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
