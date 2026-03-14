@@ -60,6 +60,8 @@ public static class WebUiApplication
                 throw new InvalidOperationException(
                     $"Unsupported {ReferenceHostSectionPath}:StorageProvider value '{referenceHostOptions.StorageProvider}'.");
         }
+        builder.Services.AddHealthChecks()
+            .AddIntegratedS3BackendHealthCheck();
     }
 
     /// <summary>
@@ -84,6 +86,8 @@ public static class WebUiApplication
         if (app.Services.GetService<IAuthorizationHandlerProvider>() is not null) {
             app.UseAuthorization();
         }
+
+        app.MapIntegratedS3HealthEndpoints();
 
         app.MapGet("/", (IOptions<IntegratedS3Options> options) => TypedResults.Redirect(options.Value.RoutePrefix))
             .ExcludeFromDescription();
