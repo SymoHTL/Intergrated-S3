@@ -922,6 +922,8 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     expiresInSeconds: 60));
 
             Assert.IsType<IOException>(exception.InnerException);
+            Assert.Contains("resume", exception.Message, StringComparison.OrdinalIgnoreCase);
+
             Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
             Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
         }
@@ -956,6 +958,8 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     expiresInSeconds: 60));
 
             Assert.IsType<IOException>(exception.InnerException);
+            Assert.Contains("response body", exception.Message, StringComparison.OrdinalIgnoreCase);
+
             Assert.False(File.Exists(destPath), "Files created during this call should be removed when the transfer fails.");
         }
         finally {

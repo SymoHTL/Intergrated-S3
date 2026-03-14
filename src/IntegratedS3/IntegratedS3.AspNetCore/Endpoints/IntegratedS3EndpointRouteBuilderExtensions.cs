@@ -29,9 +29,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 {
     private const string SigV4AuthenticationClaimType = "integrateds3:auth-type";
     private const string SigV4AuthenticationClaimValue = "sigv4";
-    private const string MetadataHeaderPrefix = "x-integrateds3-meta-";
+    private const string MetadataHeaderPrefix = "x-amz-meta-";
+    private const string LegacyMetadataHeaderPrefix = "x-integrateds3-meta-";
     private const string ContinuationTokenHeaderName = "x-integrateds3-continuation-token";
     private const string CopySourceHeaderName = "x-amz-copy-source";
+    private const string MetadataDirectiveHeaderName = "x-amz-metadata-directive";
     private const string CopySourceIfMatchHeaderName = "x-amz-copy-source-if-match";
     private const string CopySourceIfNoneMatchHeaderName = "x-amz-copy-source-if-none-match";
     private const string CopySourceIfModifiedSinceHeaderName = "x-amz-copy-source-if-modified-since";
@@ -101,7 +103,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName);
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
-    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, CorsQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
@@ -854,6 +856,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         return copyServerSideEncryptionErrorResult!;
                     }
 
+                    var metadataDirective = ParseCopyObjectMetadataDirective(request.Headers[MetadataDirectiveHeaderName].ToString());
                     var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
                     {
                         SourceBucketName = copySource!.BucketName,
@@ -865,6 +868,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         SourceIfNoneMatchETag = request.Headers[CopySourceIfNoneMatchHeaderName].ToString(),
                         SourceIfModifiedSinceUtc = ParseOptionalHttpDateHeader(request.Headers[CopySourceIfModifiedSinceHeaderName].ToString()),
                         SourceIfUnmodifiedSinceUtc = ParseOptionalHttpDateHeader(request.Headers[CopySourceIfUnmodifiedSinceHeaderName].ToString()),
+                        MetadataDirective = metadataDirective,
+                        ContentType = metadataDirective == CopyObjectMetadataDirective.Replace ? request.ContentType : null,
+                        CacheControl = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.CacheControl].ToString()) : null,
+                        ContentDisposition = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.ContentDisposition].ToString()) : null,
+                        ContentEncoding = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.ContentEncoding].ToString()) : null,
+                        ContentLanguage = metadataDirective == CopyObjectMetadataDirective.Replace ? GetOptionalHeaderValue(request.Headers[HeaderNames.ContentLanguage].ToString()) : null,
+                        ExpiresUtc = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseOptionalHttpDateHeader(request.Headers[HeaderNames.Expires].ToString()) : null,
+                        Metadata = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseObjectMetadataHeaders(request.Headers) : null,
                         DestinationServerSideEncryption = copyServerSideEncryption
                     }, innerCancellationToken);
 
@@ -879,12 +890,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return checksumErrorResult!;
                 }
 
-                var metadata = request.Headers
-                    .Where(static pair => pair.Key.StartsWith(MetadataHeaderPrefix, StringComparison.OrdinalIgnoreCase))
-                    .ToDictionary(
-                        static pair => pair.Key[MetadataHeaderPrefix.Length..],
-                        static pair => pair.Value.ToString(),
-                        StringComparer.OrdinalIgnoreCase);
+                var metadata = ParseObjectMetadataHeaders(request.Headers);
 
                 if (!TryParseObjectServerSideEncryptionSettings(request, allowManagedRequestHeaders: true, BuildObjectResource(bucketName, key), bucketName, key, out var serverSideEncryption, out var serverSideEncryptionErrorResult)) {
                     return serverSideEncryptionErrorResult!;
@@ -897,13 +903,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     Content = preparedBody.Content,
                     ContentLength = preparedBody.ContentLength,
                     ContentType = request.ContentType,
-                    Metadata = metadata.Count == 0 ? null : metadata,
+                    CacheControl = GetOptionalHeaderValue(request.Headers[HeaderNames.CacheControl].ToString()),
+                    ContentDisposition = GetOptionalHeaderValue(request.Headers[HeaderNames.ContentDisposition].ToString()),
+                    ContentEncoding = GetOptionalHeaderValue(request.Headers[HeaderNames.ContentEncoding].ToString()),
+                    ContentLanguage = GetOptionalHeaderValue(request.Headers[HeaderNames.ContentLanguage].ToString()),
+                    ExpiresUtc = ParseOptionalHttpDateHeader(request.Headers[HeaderNames.Expires].ToString()),
+                    Metadata = metadata,
                     Checksums = requestedChecksums,
                     ServerSideEncryption = serverSideEncryption
                 }, innerCancellationToken);
 
                 if (result.IsSuccess && result.Value is not null) {
-                    ApplyObjectHeaders(httpContext.Response, result.Value);
+                    ApplyObjectResultHeaders(httpContext.Response, result.Value);
                 }
 
                 return result.IsSuccess
@@ -1577,12 +1588,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return checksumErrorResult!;
                 }
 
-                var metadata = httpContext.Request.Headers
-                    .Where(static pair => pair.Key.StartsWith(MetadataHeaderPrefix, StringComparison.OrdinalIgnoreCase))
-                    .ToDictionary(
-                        static pair => pair.Key[MetadataHeaderPrefix.Length..],
-                        static pair => pair.Value.ToString(),
-                        StringComparer.OrdinalIgnoreCase);
+                var metadata = ParseObjectMetadataHeaders(httpContext.Request.Headers);
 
                 if (!TryParseObjectServerSideEncryptionSettings(httpContext.Request, allowManagedRequestHeaders: true, BuildObjectResource(bucketName, key), bucketName, key, out var serverSideEncryption, out var serverSideEncryptionErrorResult)) {
                     return serverSideEncryptionErrorResult!;
@@ -1593,7 +1599,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     BucketName = bucketName,
                     Key = key,
                     ContentType = httpContext.Request.ContentType,
-                    Metadata = metadata.Count == 0 ? null : metadata,
+                    CacheControl = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.CacheControl].ToString()),
+                    ContentDisposition = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.ContentDisposition].ToString()),
+                    ContentEncoding = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.ContentEncoding].ToString()),
+                    ContentLanguage = GetOptionalHeaderValue(httpContext.Request.Headers[HeaderNames.ContentLanguage].ToString()),
+                    ExpiresUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[HeaderNames.Expires].ToString()),
+                    Metadata = metadata,
                     ChecksumAlgorithm = checksumAlgorithm,
                     ServerSideEncryption = serverSideEncryption
                 }, innerCancellationToken);
@@ -1619,6 +1630,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
         }
         catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+        catch (FormatException exception) {
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
         }
     }
@@ -1795,8 +1809,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         CancellationToken cancellationToken)
     {
         try {
-            encodingType = ParseMultipartUploadsEncodingType(httpContext.Request);
-            maxUploads = ParseMaxUploads(httpContext.Request);
+            var parsedEncodingType = ParseMultipartUploadsEncodingType(httpContext.Request);
+            var parsedMaxUploads = ParseMaxUploads(httpContext.Request);
 
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
                 var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
@@ -1804,7 +1818,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
                 }
 
-                if (maxUploads is <= 0 or > 1000) {
+                if (parsedMaxUploads is <= 0 or > 1000) {
                     return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-uploads must be between 1 and 1000.", BuildObjectResource(bucketName, null), bucketName);
                 }
 
@@ -1814,7 +1828,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 var normalizedUploadIdMarker = normalizedKeyMarker is null || string.IsNullOrWhiteSpace(uploadIdMarker)
                     ? null
                     : uploadIdMarker;
-                var requestedPageSize = maxUploads ?? 1000;
+                var requestedPageSize = parsedMaxUploads ?? 1000;
 
                 try {
                     var uploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
@@ -1832,9 +1846,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         delimiter,
                         normalizedKeyMarker,
                         normalizedUploadIdMarker,
+                        parsedEncodingType,
                         requestedPageSize,
                         uploads,
-                        encodingType,
                         ResolveS3ListingIdentity(httpContext.User));
 
                     return new XmlContentResult(S3XmlResponseWriter.WriteListMultipartUploadsResult(response), StatusCodes.Status200OK, XmlContentType);
@@ -2206,9 +2220,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
-        ApplyObjectHeaders(httpContext.Response, @object);
-        if (!string.IsNullOrWhiteSpace(sourceVersionId))
-        {
+        ApplyObjectResultHeaders(httpContext.Response, @object);
+        if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
             httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
         }
 
@@ -2691,9 +2704,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? keyMarker,
         string? uploadIdMarker,
+        string? encodingType,
         int maxUploads,
         IReadOnlyList<MultipartUploadInfo> uploads,
-        string? encodingType,
         S3BucketOwner owner)
     {
         var normalizedPrefix = prefix ?? string.Empty;
@@ -2747,9 +2760,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             Delimiter = normalizedDelimiter,
             KeyMarker = keyMarker,
             UploadIdMarker = uploadIdMarker,
-            EncodingType = encodingType,
             NextKeyMarker = isTruncated ? page[^1].NextKeyMarker : null,
             NextUploadIdMarker = isTruncated ? page[^1].NextUploadIdMarker : null,
+            EncodingType = encodingType,
             MaxUploads = maxUploads,
             IsTruncated = isTruncated,
             Uploads = page
@@ -3910,6 +3923,55 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return parsedValue;
     }
 
+    private static CopyObjectMetadataDirective ParseCopyObjectMetadataDirective(string? rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue)
+            || string.Equals(rawValue, "COPY", StringComparison.OrdinalIgnoreCase)) {
+            return CopyObjectMetadataDirective.Copy;
+        }
+
+        if (string.Equals(rawValue, "REPLACE", StringComparison.OrdinalIgnoreCase)) {
+            return CopyObjectMetadataDirective.Replace;
+        }
+
+        throw new FormatException($"The '{MetadataDirectiveHeaderName}' header must be either 'COPY' or 'REPLACE'.");
+    }
+
+    private static IReadOnlyDictionary<string, string>? ParseObjectMetadataHeaders(IHeaderDictionary headers)
+    {
+        Dictionary<string, string>? metadata = null;
+
+        AppendMetadataHeaders(headers, LegacyMetadataHeaderPrefix, overwriteExisting: false, ref metadata);
+        AppendMetadataHeaders(headers, MetadataHeaderPrefix, overwriteExisting: true, ref metadata);
+
+        return metadata is { Count: > 0 }
+            ? metadata
+            : null;
+    }
+
+    private static void AppendMetadataHeaders(
+        IHeaderDictionary headers,
+        string prefix,
+        bool overwriteExisting,
+        ref Dictionary<string, string>? metadata)
+    {
+        foreach (var header in headers.Where(pair => pair.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))) {
+            metadata ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            var metadataKey = header.Key[prefix.Length..];
+            if (overwriteExisting || !metadata.ContainsKey(metadataKey)) {
+                metadata[metadataKey] = header.Value.ToString();
+            }
+        }
+    }
+
+    private static string? GetOptionalHeaderValue(string? rawValue)
+    {
+        return string.IsNullOrWhiteSpace(rawValue)
+            ? null
+            : rawValue;
+    }
+
     private static void ApplyDeleteObjectHeaders(HttpResponse httpResponse, DeleteObjectResult result)
     {
         ApplyVersionIdHeader(httpResponse, result.VersionId);
@@ -3994,12 +4056,42 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static void ApplyObjectHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
     {
-        httpResponse.Headers.LastModified = objectInfo.LastModifiedUtc.ToString("R");
-        ApplyObjectIdentityHeaders(httpResponse, objectInfo);
+        ApplyObjectResultHeaders(httpResponse, objectInfo);
+        ApplyObjectRepresentationHeaders(httpResponse, objectInfo);
 
         IEnumerable<KeyValuePair<string, string>> metadataPairs = objectInfo.Metadata ?? Enumerable.Empty<KeyValuePair<string, string>>();
         foreach (var metadataPair in metadataPairs) {
             httpResponse.Headers[$"{MetadataHeaderPrefix}{metadataPair.Key}"] = metadataPair.Value;
+            httpResponse.Headers[$"{LegacyMetadataHeaderPrefix}{metadataPair.Key}"] = metadataPair.Value;
+        }
+    }
+
+    private static void ApplyObjectResultHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
+    {
+        httpResponse.Headers.LastModified = objectInfo.LastModifiedUtc.ToString("R");
+        ApplyObjectIdentityHeaders(httpResponse, objectInfo);
+    }
+
+    private static void ApplyObjectRepresentationHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
+    {
+        if (!string.IsNullOrWhiteSpace(objectInfo.CacheControl)) {
+            httpResponse.Headers.CacheControl = objectInfo.CacheControl;
+        }
+
+        if (!string.IsNullOrWhiteSpace(objectInfo.ContentDisposition)) {
+            httpResponse.Headers[HeaderNames.ContentDisposition] = objectInfo.ContentDisposition;
+        }
+
+        if (!string.IsNullOrWhiteSpace(objectInfo.ContentEncoding)) {
+            httpResponse.Headers[HeaderNames.ContentEncoding] = objectInfo.ContentEncoding;
+        }
+
+        if (!string.IsNullOrWhiteSpace(objectInfo.ContentLanguage)) {
+            httpResponse.Headers[HeaderNames.ContentLanguage] = objectInfo.ContentLanguage;
+        }
+
+        if (objectInfo.ExpiresUtc is { } expiresUtc) {
+            httpResponse.Headers.Expires = expiresUtc.ToString("R");
         }
     }
 
