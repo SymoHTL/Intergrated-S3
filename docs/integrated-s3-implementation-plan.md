@@ -839,7 +839,7 @@ Status:
 The current HTTP surface is real and useful, but it still has some clearly bounded fidelity gaps that should be treated as deliberate backlog rather than invisible debt:
 
 - multipart upload support now covers initiate/upload-part/complete/abort plus bucket-level `GET ?uploads` listing/discovery for the current disk/Core/HTTP surface, but broader parity such as `encoding-type=url`, deeper client-compat edge cases, and richer multipart subresource hardening is still pending
-- object tagging now covers current and archived object versions on the currently supported surface, including S3-compatible delete-tagging; broader S3 tagging edge-case behavior is still pending
+- object tagging now covers current and archived object versions on the currently supported surface, including S3-compatible delete-tagging, `InvalidTag` validation for the documented count/length/duplicate/reserved-prefix rules, and `x-amz-tagging-count` on successful object `GET` / `HEAD`; broader S3 tag-character validation is still pending
 - only the currently supported bucket subresources are implemented; unsupported S3 bucket/object subresources intentionally return `NotImplemented`
 - S3-compatible bucket listing now covers both `list-type=2` and the current `?versions` subresource, while additional subresource combinations are still pending
 - conditional behavior is solid for the current `GET` / `HEAD` paths, but broader S3 precedence and edge-case parity still need hardening
@@ -873,7 +873,7 @@ Status:
 - disk backend validates streaming CRUD, paginated listing, range reads, conditional requests, copy-object, multipart upload lifecycle, bucket versioning controls, historical object version access/tagging/deletion, list-object-versions, delete-marker creation/promotion, delete-marker `GET` / `HEAD` fidelity, and direct put-object checksum validation
 - object metadata, tags, versioning state, and checksums are managed through `IStorageObjectStateStore` (platform-managed via EF catalog by default) with sidecar fallback for standalone deployments
 - multipart upload state is managed through `IStorageMultipartStateStore` (platform-managed via EF by default) with sidecar fallback
-- retention, remaining checksum/header edge cases, and advanced versioning/tagging edge cases are still pending
+- retention, remaining checksum/header edge cases, broader S3 tag-character validation, and any future single-object `NoSuchVersion` fidelity work are still pending
 
 ### 2. Native S3 provider second
 
@@ -1262,9 +1262,10 @@ This section is the execution board for the remaining implementation backlog. As
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
+  - continued versioning/tagging/delete-marker hardening now makes simple deletes idempotent for missing keys, creates current delete markers for missing keys in versioned buckets, emits `x-amz-tagging-count` on successful current and historical object reads, validates documented object-tag limits as `InvalidTag`, and returns `NoSuchVersion` for explicit missing-version entries inside `POST ?delete`
 - Remaining scope:
   - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
-  - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
+  - remaining versioning/tagging parity gaps are now narrowed to deliberately unsupported or not-yet-modeled semantics such as broader S3 tag-character validation and whether single-object explicit missing-version operations should surface a dedicated `NoSuchVersion` contract instead of the current generic not-found behavior
   - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
   - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
 
@@ -1341,7 +1342,8 @@ This section is the execution board for the remaining implementation backlog. As
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
-  - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
+  - extend conformance and protocol hardening into conditional-precedence, checksum/header, and canonical-request edge cases now that the current subresource plus delete-marker/versioning/tagging gaps are narrowed
+  - decide whether single-object explicit missing-version reads/writes should grow a dedicated `NoSuchVersion` contract or remain explicitly normalized to generic not-found behavior
   - add benchmark baselines for representative disk plus HTTP get/put/list paths before broadening the remaining release-polish work
 
 ## Relevant Repository Files
