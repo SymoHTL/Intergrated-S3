@@ -14,5 +14,7 @@ public class MultipartUploadState
 
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
+    public IReadOnlyDictionary<string, string>? Tags { get; init; }
+
     public string? ChecksumAlgorithm { get; init; }
 }

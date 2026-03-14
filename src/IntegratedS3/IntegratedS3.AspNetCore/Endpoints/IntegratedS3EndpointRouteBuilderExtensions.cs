@@ -35,6 +35,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string CopySourceIfNoneMatchHeaderName = "x-amz-copy-source-if-none-match";
     private const string CopySourceIfModifiedSinceHeaderName = "x-amz-copy-source-if-modified-since";
     private const string CopySourceIfUnmodifiedSinceHeaderName = "x-amz-copy-source-if-unmodified-since";
+    private const string TaggingHeaderName = "x-amz-tagging";
+    private const string TaggingDirectiveHeaderName = "x-amz-tagging-directive";
     private const string ServerSideEncryptionHeaderPrefix = "x-amz-server-side-encryption";
     private const string CopySourceServerSideEncryptionHeaderPrefix = "x-amz-copy-source-server-side-encryption";
     private const string ServerSideEncryptionHeaderName = "x-amz-server-side-encryption";
@@ -787,6 +789,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", copySourceError, BuildObjectResource(bucketName, key), bucketName, key);
                     }
 
+                    if (!TryParseTaggingDirective(request, BuildObjectResource(bucketName, key), bucketName, key, out var taggingDirective, out var taggingDirectiveErrorResult)) {
+                        return taggingDirectiveErrorResult!;
+                    }
+
+                    if (!TryParseTaggingHeader(request, BuildObjectResource(bucketName, key), bucketName, key, out var copyTags, out var copyTagsErrorResult)) {
+                        return copyTagsErrorResult!;
+                    }
+
                     if (!TryParseObjectServerSideEncryptionSettings(request, allowManagedRequestHeaders: true, BuildObjectResource(bucketName, key), bucketName, key, out var copyServerSideEncryption, out var copyServerSideEncryptionErrorResult)) {
                         return copyServerSideEncryptionErrorResult!;
                     }
@@ -802,6 +812,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         SourceIfNoneMatchETag = request.Headers[CopySourceIfNoneMatchHeaderName].ToString(),
                         SourceIfModifiedSinceUtc = ParseOptionalHttpDateHeader(request.Headers[CopySourceIfModifiedSinceHeaderName].ToString()),
                         SourceIfUnmodifiedSinceUtc = ParseOptionalHttpDateHeader(request.Headers[CopySourceIfUnmodifiedSinceHeaderName].ToString()),
+                        TaggingDirective = taggingDirective,
+                        Tags = taggingDirective == ObjectTaggingDirective.Replace ? copyTags : null,
                         DestinationServerSideEncryption = copyServerSideEncryption
                     }, innerCancellationToken);
 
@@ -812,6 +824,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                 if (!TryParseRequestChecksums(request, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
                     return checksumErrorResult!;
+                }
+
+                if (!TryParseTaggingHeader(request, BuildObjectResource(bucketName, key), bucketName, key, out var tags, out var taggingErrorResult)) {
+                    return taggingErrorResult!;
                 }
 
                 var metadata = request.Headers
@@ -833,6 +849,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     ContentLength = preparedBody.ContentLength,
                     ContentType = request.ContentType,
                     Metadata = metadata.Count == 0 ? null : metadata,
+                    Tags = tags,
                     Checksums = requestedChecksums,
                     ServerSideEncryption = serverSideEncryption
                 }, innerCancellationToken);
@@ -1459,6 +1476,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return checksumErrorResult!;
                 }
 
+                if (!TryParseTaggingHeader(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key, out var tags, out var taggingErrorResult)) {
+                    return taggingErrorResult!;
+                }
+
                 var metadata = httpContext.Request.Headers
                     .Where(static pair => pair.Key.StartsWith(MetadataHeaderPrefix, StringComparison.OrdinalIgnoreCase))
                     .ToDictionary(
@@ -1476,6 +1497,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     Key = key,
                     ContentType = httpContext.Request.ContentType,
                     Metadata = metadata.Count == 0 ? null : metadata,
+                    Tags = tags,
                     ChecksumAlgorithm = checksumAlgorithm,
                     ServerSideEncryption = serverSideEncryption
                 }, innerCancellationToken);
@@ -2837,6 +2859,73 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static bool TryParseTaggingDirective(
+        HttpRequest request,
+        string resource,
+        string bucketName,
+        string key,
+        out ObjectTaggingDirective taggingDirective,
+        out IResult? errorResult)
+    {
+        var rawValue = request.Headers[TaggingDirectiveHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(rawValue) || string.Equals(rawValue, "COPY", StringComparison.OrdinalIgnoreCase)) {
+            taggingDirective = ObjectTaggingDirective.Copy;
+            errorResult = null;
+            return true;
+        }
+
+        if (string.Equals(rawValue, "REPLACE", StringComparison.OrdinalIgnoreCase)) {
+            taggingDirective = ObjectTaggingDirective.Replace;
+            errorResult = null;
+            return true;
+        }
+
+        taggingDirective = default;
+        errorResult = ToErrorResult(
+            request.HttpContext,
+            StatusCodes.Status400BadRequest,
+            "InvalidArgument",
+            $"The '{TaggingDirectiveHeaderName}' header must be 'COPY' or 'REPLACE'.",
+            resource,
+            bucketName,
+            key);
+        return false;
+    }
+
+    private static bool TryParseTaggingHeader(
+        HttpRequest request,
+        string resource,
+        string bucketName,
+        string key,
+        out IReadOnlyDictionary<string, string>? tags,
+        out IResult? errorResult)
+    {
+        var rawValue = request.Headers[TaggingHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            tags = null;
+            errorResult = null;
+            return true;
+        }
+
+        try {
+            tags = ParseTaggingHeader(rawValue);
+            errorResult = null;
+            return true;
+        }
+        catch (ArgumentException exception) {
+            tags = null;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                exception.Message,
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+    }
+
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         if (!IsAwsChunkedContent(request)) {
@@ -3000,6 +3089,32 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         return new CopySourceReference(pathValue[..separatorIndex], pathValue[(separatorIndex + 1)..], versionId);
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseTaggingHeader(string rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        var parsedQuery = QueryHelpers.ParseQuery(rawValue.StartsWith('?')
+            ? rawValue
+            : $"?{rawValue}");
+
+        var tags = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (tagKey, tagValues) in parsedQuery) {
+            if (string.IsNullOrEmpty(tagKey)) {
+                throw new ArgumentException($"The '{TaggingHeaderName}' header must contain non-empty tag keys.");
+            }
+
+            if (tagValues.Count > 1 || tags.ContainsKey(tagKey)) {
+                throw new ArgumentException($"The '{TaggingHeaderName}' header cannot contain duplicate tag key '{tagKey}'.");
+            }
+
+            tags[tagKey] = tagValues.ToString();
+        }
+
+        return tags;
     }
 
     private static string? ParseVersionId(HttpRequest request)

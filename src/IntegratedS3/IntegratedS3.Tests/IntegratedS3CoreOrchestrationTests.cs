@@ -99,6 +99,10 @@ public sealed class IntegratedS3CoreOrchestrationTests
             Metadata = new Dictionary<string, string>
             {
                 ["source"] = "ef"
+            },
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test"
             }
         };
 
@@ -108,6 +112,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
         Assert.NotNull(storedState);
         Assert.Equal("text/plain", storedState!.ContentType);
         Assert.Equal("ef", storedState.Metadata!["source"]);
+        Assert.Equal("test", storedState.Tags!["environment"]);
 
         await multipartStateStore.RemoveMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123");
         Assert.Null(await multipartStateStore.GetMultipartUploadStateAsync("catalog-disk", "catalog-bucket", "docs/multipart.txt", "upload-123"));
@@ -2795,6 +2800,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
         public ValueTask<StorageResult<DeleteObjectResult>> DeleteObjectAsync(DeleteObjectRequest request, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            string? deletedVersionId = null;
 
             if (_objects.TryGetValue((request.BucketName, request.Key), out var storedObject)
                 && !MatchesRequestedVersion(request.VersionId, storedObject.Info.VersionId)) {
@@ -2803,6 +2809,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
                     request.BucketName,
                     request.Key)));
             }
+
+            if (storedObject is not null)
+                deletedVersionId = storedObject.Info.VersionId;
 
             if (!_objects.Remove((request.BucketName, request.Key))) {
                 return ValueTask.FromResult(StorageResult<DeleteObjectResult>.Failure(new StorageError
@@ -2820,7 +2829,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
             {
                 BucketName = request.BucketName,
                 Key = request.Key,
-                VersionId = storedObject.Info.VersionId
+                VersionId = deletedVersionId
             }));
         }
 

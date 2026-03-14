@@ -1540,6 +1540,64 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatiblePutObject_WithTaggingHeader_PersistsObjectTags()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/tagging-header-put-bucket", content: null);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-header-put-bucket/docs/tagged.txt")
+        {
+            Content = new StringContent("hello tags", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "environment=test&owner=copilot");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var tags = await GetObjectTagsAsync(client, "tagging-header-put-bucket", "docs/tagged.txt");
+        Assert.Equal("test", tags["environment"]);
+        Assert.Equal("copilot", tags["owner"]);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithReplaceTaggingDirective_PersistsReplacementTags()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/tagging-copy-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/tagging-copy-bucket/objects/docs/source.txt",
+            new StringContent("copy me", Encoding.UTF8, "text/plain"));
+
+        using var putTaggingRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-copy-bucket/docs/source.txt?tagging")
+        {
+            Content = new StringContent("""
+<Tagging>
+  <TagSet>
+    <Tag><Key>environment</Key><Value>source</Value></Tag>
+    <Tag><Key>owner</Key><Value>original</Value></Tag>
+  </TagSet>
+</Tagging>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putTaggingRequest)).StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-copy-bucket/docs/copied.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/tagging-copy-bucket/docs/source.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-tagging-directive", "REPLACE");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "environment=target&owner=copilot");
+
+        var copyResponse = await client.SendAsync(copyRequest);
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+
+        var copiedTags = await GetObjectTagsAsync(client, "tagging-copy-bucket", "docs/copied.txt");
+        Assert.Equal("target", copiedTags["environment"]);
+        Assert.Equal("copilot", copiedTags["owner"]);
+        Assert.DoesNotContain("original", copiedTags.Values);
+    }
+
+    [Fact]
     public async Task VirtualHostedStyleRequests_ResolveBucketFromHost()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(builder => {
@@ -2128,6 +2186,49 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var multipartChecksum = Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256"));
         Assert.False(string.IsNullOrWhiteSpace(multipartChecksum));
         Assert.Equal("hello world", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_WithTaggingHeader_PersistsCompletedObjectTags()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/multipart-tagging-bucket", content: null);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/multipart-tagging-bucket/docs/tagged.txt?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "environment=test&owner=copilot");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        var partResponse = await client.PutAsync(
+            $"/integrated-s3/multipart-tagging-bucket/docs/tagged.txt?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("multipart payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/multipart-tagging-bucket/docs/tagged.txt?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var tags = await GetObjectTagsAsync(client, "multipart-tagging-bucket", "docs/tagged.txt");
+        Assert.Equal("test", tags["environment"]);
+        Assert.Equal("copilot", tags["owner"]);
     }
 
     [Fact]
@@ -3439,6 +3540,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         return document.Root?.Element(elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
+    }
+
+    private static async Task<IReadOnlyDictionary<string, string>> GetObjectTagsAsync(HttpClient client, string bucketName, string key)
+    {
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}/{key}?tagging");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.Root!.Element("TagSet")!.Elements("Tag")
+            .ToDictionary(
+                static tag => tag.Element("Key")?.Value ?? string.Empty,
+                static tag => tag.Element("Value")?.Value ?? string.Empty,
+                StringComparer.Ordinal);
     }
 
     private static async Task AssertNotImplementedResponseAsync(HttpResponseMessage response)

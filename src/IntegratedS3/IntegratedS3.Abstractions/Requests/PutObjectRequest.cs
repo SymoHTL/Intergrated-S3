@@ -16,6 +16,8 @@ public sealed class PutObjectRequest
 
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
+    public IReadOnlyDictionary<string, string>? Tags { get; init; }
+
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
 
     public ObjectServerSideEncryptionSettings? ServerSideEncryption { get; init; }

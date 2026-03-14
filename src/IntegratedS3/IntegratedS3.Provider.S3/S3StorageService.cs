@@ -489,6 +489,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.ContentLength,
                 request.ContentType,
                 request.Metadata,
+                request.Tags,
                 request.Checksums,
                 request.ServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
@@ -621,6 +622,8 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.SourceIfModifiedSinceUtc,
                 request.SourceIfUnmodifiedSinceUtc,
                 request.OverwriteIfExists,
+                request.TaggingDirective,
+                request.Tags,
                 request.DestinationServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
 
@@ -657,6 +660,7 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.Key,
                 request.ContentType,
                 request.Metadata,
+                request.Tags,
                 request.ChecksumAlgorithm,
                 request.ServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);

@@ -627,6 +627,9 @@ internal sealed class DiskStorageService(
 
             var sourceMetadata = sourceObject.Metadata;
             var checksums = sourceMetadata.Checksums ?? await ComputeChecksumsAsync(destinationPath, cancellationToken);
+            var tags = request.TaggingDirective == ObjectTaggingDirective.Replace
+                ? NormalizeTags(request.Tags)
+                : NormalizeTags(sourceMetadata.Tags);
             var versionId = CreateVersionId();
             await WriteStoredObjectStateAsync(
                 request.DestinationBucketName,
@@ -635,7 +638,7 @@ internal sealed class DiskStorageService(
                 versionId,
                 sourceMetadata.ContentType,
                 sourceMetadata.Metadata,
-                sourceMetadata.Tags,
+                tags,
                 checksums,
                 isDeleteMarker: false,
                 isLatest: true,
@@ -712,7 +715,7 @@ internal sealed class DiskStorageService(
                 versionId,
                 string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
                 request.Metadata,
-                tags: null,
+                NormalizeTags(request.Tags),
                 actualChecksums,
                 isDeleteMarker: false,
                 isLatest: true,
@@ -761,9 +764,7 @@ internal sealed class DiskStorageService(
 
         var metadata = storedObject.Metadata;
 
-        var normalizedTags = tags is null || tags.Count == 0
-            ? null
-            : new Dictionary<string, string>(tags, StringComparer.Ordinal);
+        var normalizedTags = NormalizeTags(tags);
 
         if (storedObject.IsCurrent) {
             await WriteStoredObjectStateAsync(
@@ -1065,7 +1066,7 @@ internal sealed class DiskStorageService(
                 versionId,
                 string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? "application/octet-stream" : uploadState.State.ContentType,
                 uploadState.State.Metadata,
-                tags: null,
+                uploadState.State.Tags,
                 checksums,
                 isDeleteMarker: false,
                 isLatest: true,
@@ -2179,6 +2180,7 @@ internal sealed class DiskStorageService(
             InitiatedAtUtc = diskState.InitiatedAtUtc,
             ContentType = diskState.ContentType,
             Metadata = diskState.Metadata,
+            Tags = NormalizeTags(diskState.Tags),
             ChecksumAlgorithm = diskState.ChecksumAlgorithm
         };
     }
@@ -2193,6 +2195,7 @@ internal sealed class DiskStorageService(
             InitiatedAtUtc = state.InitiatedAtUtc,
             ContentType = state.ContentType,
             Metadata = state.Metadata is null ? null : new Dictionary<string, string>(state.Metadata, StringComparer.Ordinal),
+            Tags = NormalizeTags(state.Tags) is { } tags ? new Dictionary<string, string>(tags, StringComparer.Ordinal) : null,
             ChecksumAlgorithm = state.ChecksumAlgorithm
         };
     }
@@ -2396,6 +2399,7 @@ internal sealed class DiskStorageService(
             InitiatedAtUtc = uploadInfo.InitiatedAtUtc,
             ContentType = request.ContentType,
             Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata),
+            Tags = NormalizeTags(request.Tags),
             ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm
         };
 
@@ -2523,6 +2527,13 @@ internal sealed class DiskStorageService(
             ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
             ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
         };
+    }
+
+    private static IReadOnlyDictionary<string, string>? NormalizeTags(IReadOnlyDictionary<string, string>? tags)
+    {
+        return tags is null || tags.Count == 0
+            ? null
+            : new Dictionary<string, string>(tags, StringComparer.Ordinal);
     }
 
     private static StorageError? GetUnsupportedServerSideEncryptionError(

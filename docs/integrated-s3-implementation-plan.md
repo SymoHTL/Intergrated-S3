@@ -1262,9 +1262,11 @@ This section is the execution board for the remaining implementation backlog. As
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
+  - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
+  - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
 - Remaining scope:
   - next: harden conditional precedence, checksum/header behavior, and canonical-request edge cases now that the bucket/object subresource matrix is explicit on the S3-compatible HTTP surface
-  - continue versioning/tagging/delete-marker parity work for the remaining advanced edge cases
+  - continue versioning/delete-marker parity work plus any remaining advanced object-tagging edge cases outside the newly landed upload/copy/multipart header paths
   - keep `aws-chunked`, presigned-query, and virtual-hosted-style compatibility tightening against real client behavior
   - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
 
