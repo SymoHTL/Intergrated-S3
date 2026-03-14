@@ -390,8 +390,8 @@ Status:
   - useful for backend callers and Blazor-hosted consumers
 
 - `IntegratedS3.Testing`
-  - placeholder package for future shared fakes/test helpers; currently minimal
-  - provider verification tools
+  - reusable provider contract/conformance harness for custom `IStorageBackend` implementations
+  - shared xUnit contract tests, in-memory support-state stores, and checksum helpers
 
 - `IntegratedS3.Tests`
   - current automated test project for unit/integration coverage while the broader testing package strategy evolves
@@ -1325,6 +1325,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3SigV4ConformanceTests` now cover presigned bucket-versioning reads, presigned historical-version reads, and presigned expiry/clock-skew XML error behavior, while `IntegratedS3SigV4ProtocolTests` lock in canonical empty-value subresource signing.
   - `IntegratedS3HttpEndpointsTests` now cover unsupported mixed bucket subresources and multipart `encoding-type=url` rejection, and `IntegratedS3AwsSdkCompatibilityTests` now include version-id-aware metadata/read coverage.
   - `IntegratedS3CoreOrchestrationTests` now cover provider-unavailable read failover, no failover on not-found, unhealthy snapshot expiry recovery, probe-timeout handling, async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read policy, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for replicas that remain stale.
+  - `IntegratedS3.Testing` now ships a supported provider contract harness via `StorageProviderContractFixture`, `StorageProviderContractTests`, reusable in-memory support-state stores, checksum helpers, and DI registration helpers, with the disk provider consuming that path in first-party tests and onboarding documented in `docs/provider-contract-testing.md`.
   - `src\IntegratedS3\WebUi` now has a dedicated reference-host guide in `docs/webui-reference-host.md`, with local sample storage kept under `App_Data` and excluded from build/publish outputs.
   - CI automation now lives in `.github\workflows\trackh-publish-aot-ci.yml`, and `eng\Invoke-AotPublishValidation.ps1` enforces the current self-contained publish warning posture without depending on exact line numbers.
 - Verification status (March 2026):
@@ -1332,16 +1333,16 @@ This section is the execution board for the remaining implementation backlog. As
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
   - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
 - Remaining scope:
-  - extend conformance beyond the current versioned-read, presigned-expiry/clock-skew, and AWS SDK version-id coverage into the remaining protocol edge cases and broader client-compatibility scenarios
+  - extend the new provider contract harness beyond the current bucket/object/versioning/CORS/tags/copy/multipart/state-store coverage into the remaining protocol edge cases and broader client-compatibility scenarios
   - extend fault-injection beyond the current unhealthy-provider, async-replication/backlog, partial-write-through, and newly added multi-replica replay coverage into broader repair/reconciliation scenarios
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
   - add the planned MVC/Razor and Blazor WebAssembly sample consumers
-  - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
+  - continue package polish with deeper XML docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
-  - extend conformance and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
+  - extend the provider contract harness and protocol hardening into conditional-precedence, checksum/header, and delete-marker/versioning edge cases now that the current subresource/presign gaps are covered
   - add benchmark baselines for representative disk plus HTTP get/put/list paths before broadening the remaining release-polish work
 
 ## Relevant Repository Files
@@ -1508,7 +1509,7 @@ To maximize safe parallel execution without reopening shared abstractions too ea
    - Depends on: none
 6. `track-h-local-conformance-harness`
    - Packages: `IntegratedS3.Tests`, `IntegratedS3.Testing`
-   - Scope: expand reusable local S3-compatible integration coverage and fault-injection harnesses around the already-landed provider/protocol slices
+   - Scope: expand the reusable provider contract harness plus local S3-compatible integration/fault-injection coverage around the already-landed provider/protocol slices
    - Depends on: none
 7. `track-h-publish-benchmark-validation`
    - Packages: `eng\`, `.github\workflows\`, `docs\`, `WebUi`
