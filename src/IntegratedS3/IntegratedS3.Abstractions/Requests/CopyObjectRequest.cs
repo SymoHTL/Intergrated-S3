@@ -42,5 +42,9 @@ public sealed class CopyObjectRequest
 
     public ObjectServerSideEncryptionSettings? DestinationServerSideEncryption { get; init; }
 
+    public ObjectTaggingDirective TaggingDirective { get; init; } = ObjectTaggingDirective.Copy;
+
+    public IReadOnlyDictionary<string, string>? Tags { get; init; }
+
     public bool OverwriteIfExists { get; init; } = true;
 }

@@ -24,5 +24,7 @@ internal sealed class DiskMultipartUploadState
 
     public Dictionary<string, string>? Metadata { get; init; }
 
+    public Dictionary<string, string>? Tags { get; init; }
+
     public string? ChecksumAlgorithm { get; init; }
 }

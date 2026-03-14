@@ -921,8 +921,9 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
-            Assert.IsType<IOException>(exception.InnerException);
-            Assert.Contains("resume", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("The resumed download failed while appending to the destination file.", exception.Message);
+            var innerException = Assert.IsType<IOException>(exception.InnerException);
+            Assert.Equal("Simulated resume failure.", innerException.Message);
             Assert.True(File.Exists(destPath), "Pre-existing partial files should be preserved on resume failure.");
             Assert.Equal("partial-ta", await File.ReadAllTextAsync(destPath));
         }
@@ -956,8 +957,9 @@ public sealed class IntegratedS3ClientTransferTests(WebUiApplicationFactory fact
                     destPath,
                     expiresInSeconds: 60));
 
-            Assert.IsType<IOException>(exception.InnerException);
-            Assert.Contains("response body", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("The download failed while writing the response body.", exception.Message);
+            var innerException = Assert.IsType<IOException>(exception.InnerException);
+            Assert.Equal("Simulated new file failure.", innerException.Message);
             Assert.False(File.Exists(destPath), "Files created during this call should be removed when the transfer fails.");
         }
         finally {

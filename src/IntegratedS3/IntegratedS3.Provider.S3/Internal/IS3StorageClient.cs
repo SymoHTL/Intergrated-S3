@@ -85,6 +85,7 @@ internal interface IS3StorageClient : IDisposable
         string? contentLanguage,
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default);
@@ -115,6 +116,8 @@ internal interface IS3StorageClient : IDisposable
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
+        ObjectTaggingDirective taggingDirective,
+        IReadOnlyDictionary<string, string>? tags,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default);
 
@@ -128,6 +131,7 @@ internal interface IS3StorageClient : IDisposable
         string? contentLanguage,
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default);

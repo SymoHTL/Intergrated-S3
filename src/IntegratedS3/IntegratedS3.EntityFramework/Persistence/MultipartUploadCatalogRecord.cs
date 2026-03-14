@@ -28,6 +28,8 @@ public sealed class MultipartUploadCatalogRecord
 
     public string? MetadataJson { get; set; }
 
+    public string? TagsJson { get; set; }
+
     public string? ChecksumAlgorithm { get; set; }
 
     public DateTimeOffset LastSyncedAtUtc { get; set; }

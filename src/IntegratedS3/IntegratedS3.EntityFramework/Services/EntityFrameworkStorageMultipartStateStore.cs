@@ -118,6 +118,7 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         record.ExpiresUtc = state.ExpiresUtc;
         record.ChecksumAlgorithm = state.ChecksumAlgorithm;
         record.MetadataJson = state.Metadata is null ? null : JsonSerializer.Serialize(state.Metadata);
+        record.TagsJson = state.Tags is null ? null : JsonSerializer.Serialize(state.Tags);
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
         await dbContext.SaveChangesAsync(cancellationToken);
@@ -196,7 +197,10 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             ChecksumAlgorithm = record.ChecksumAlgorithm,
             Metadata = string.IsNullOrWhiteSpace(record.MetadataJson)
                 ? null
-                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.MetadataJson)
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.MetadataJson),
+            Tags = string.IsNullOrWhiteSpace(record.TagsJson)
+                ? null
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(record.TagsJson)
         };
     }
 }

@@ -754,6 +754,30 @@ public sealed class S3StorageServiceTests
     }
 
     [Fact]
+    public async Task PutObjectAsync_ForwardsTagsToClient()
+    {
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+
+        var result = await svc.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Content = new MemoryStream([1, 2, 3]),
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["owner"] = "copilot"
+            }
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastPutObjectTags);
+        Assert.Equal("test", fake.LastPutObjectTags!["environment"]);
+        Assert.Equal("copilot", fake.LastPutObjectTags["owner"]);
+    }
+
+    [Fact]
     public async Task PutObjectAsync_RejectsAes256WithKmsOnlyFields()
     {
         var svc = BuildService(new FakeS3Client());
@@ -1078,6 +1102,33 @@ public sealed class S3StorageServiceTests
     }
 
     [Fact]
+    public async Task CopyObjectAsync_ForwardsReplacementTagsToClient()
+    {
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+
+        var result = await svc.CopyObjectAsync(new CopyObjectRequest
+        {
+            SourceBucketName = "src-b",
+            SourceKey = "src-k",
+            DestinationBucketName = "dest-b",
+            DestinationKey = "dest-k",
+            TaggingDirective = ObjectTaggingDirective.Replace,
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["owner"] = "copilot"
+            }
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastCopyRequest);
+        Assert.Equal(ObjectTaggingDirective.Replace, fake.LastCopyRequest!.TaggingDirective);
+        Assert.Equal("test", fake.LastCopyRequest.Tags!["environment"]);
+        Assert.Equal("copilot", fake.LastCopyRequest.Tags["owner"]);
+    }
+
+    [Fact]
     public async Task CopyObjectAsync_TranslatesSourceObjectNotFound_WhenClientThrows()
     {
         var fake = new FakeS3Client
@@ -1206,6 +1257,29 @@ public sealed class S3StorageServiceTests
         Assert.Equal("copilot", fake.LastInitiateMultipartUploadRequest.Metadata!["author"]);
         Assert.NotNull(fake.LastInitiateMultipartUploadServerSideEncryption);
         Assert.Same(serverSideEncryption, fake.LastInitiateMultipartUploadServerSideEncryption);
+    }
+
+    [Fact]
+    public async Task InitiateMultipartUploadAsync_ForwardsTagsToClient()
+    {
+        var fake = new FakeS3Client();
+        var svc = BuildService(fake);
+
+        var result = await svc.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "b",
+            Key = "k",
+            Tags = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["environment"] = "test",
+                ["owner"] = "copilot"
+            }
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(fake.LastInitiateMultipartUploadTags);
+        Assert.Equal("test", fake.LastInitiateMultipartUploadTags!["environment"]);
+        Assert.Equal("copilot", fake.LastInitiateMultipartUploadTags["owner"]);
     }
 
     [Fact]
@@ -1468,6 +1542,7 @@ internal sealed class FakeS3Client : IS3StorageClient
     public AmazonS3Exception? PutObjectException { get; set; }
     public PutObjectRequest? LastPutObjectRequest { get; private set; }
     public ObjectServerSideEncryptionSettings? LastPutObjectServerSideEncryption { get; private set; }
+    public IReadOnlyDictionary<string, string>? LastPutObjectTags { get; private set; }
 
     // Delete object
     public S3DeleteObjectResult? DeleteObjectResult { get; set; }
@@ -1482,6 +1557,7 @@ internal sealed class FakeS3Client : IS3StorageClient
     public AmazonS3Exception? InitiateMultipartUploadException { get; set; }
     public InitiateMultipartUploadRequest? LastInitiateMultipartUploadRequest { get; private set; }
     public ObjectServerSideEncryptionSettings? LastInitiateMultipartUploadServerSideEncryption { get; private set; }
+    public IReadOnlyDictionary<string, string>? LastInitiateMultipartUploadTags { get; private set; }
     public MultipartUploadPart? UploadMultipartPartResult { get; set; }
     public AmazonS3Exception? UploadMultipartPartException { get; set; }
     public S3ObjectEntry? CompleteMultipartUploadResult { get; set; }
@@ -1656,6 +1732,7 @@ internal sealed class FakeS3Client : IS3StorageClient
         string? contentLanguage,
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
@@ -1674,10 +1751,12 @@ internal sealed class FakeS3Client : IS3StorageClient
             ContentLanguage = contentLanguage,
             ExpiresUtc = expiresUtc,
             Metadata = metadata,
+                Tags = tags,
             Checksums = checksums,
             ServerSideEncryption = serverSideEncryption
         };
         LastPutObjectServerSideEncryption = serverSideEncryption;
+        LastPutObjectTags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal);
         return Task.FromResult(PutObjectResult ?? new S3ObjectEntry(
             key,
             contentLength ?? 0,
@@ -1716,6 +1795,8 @@ internal sealed class FakeS3Client : IS3StorageClient
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
+        ObjectTaggingDirective taggingDirective,
+        IReadOnlyDictionary<string, string>? tags,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default)
     {
@@ -1740,6 +1821,8 @@ internal sealed class FakeS3Client : IS3StorageClient
             ContentLanguage = contentLanguage,
             ExpiresUtc = expiresUtc,
             Metadata = metadata,
+            TaggingDirective = taggingDirective,
+            Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
             DestinationServerSideEncryption = destinationServerSideEncryption,
             OverwriteIfExists = overwriteIfExists
         };
@@ -1757,6 +1840,7 @@ internal sealed class FakeS3Client : IS3StorageClient
         string? contentLanguage,
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
@@ -1777,6 +1861,7 @@ internal sealed class FakeS3Client : IS3StorageClient
             ServerSideEncryption = serverSideEncryption
         };
         LastInitiateMultipartUploadServerSideEncryption = serverSideEncryption;
+        LastInitiateMultipartUploadTags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal);
 
         return Task.FromResult(InitiateMultipartUploadResult ?? new MultipartUploadInfo
         {

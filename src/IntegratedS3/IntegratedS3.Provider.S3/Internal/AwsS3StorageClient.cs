@@ -421,6 +421,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? contentLanguage,
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
@@ -445,6 +446,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 request.Metadata[k] = v;
         }
 
+        request.TagSet = BuildTagSet(tags);
         ApplyChecksumHeaders(request, checksumAlgorithm: null, checksums);
         S3ServerSideEncryptionMapper.ApplyTo(request, serverSideEncryption);
 
@@ -518,6 +520,8 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
         bool overwriteIfExists,
+        ObjectTaggingDirective taggingDirective,
+        IReadOnlyDictionary<string, string>? tags,
         ObjectServerSideEncryptionSettings? destinationServerSideEncryption,
         CancellationToken cancellationToken = default)
     {
@@ -555,6 +559,15 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 foreach (var (name, value) in metadata)
                     request.Metadata[name] = value;
             }
+        }
+
+        request.TaggingDirective = taggingDirective == ObjectTaggingDirective.Replace
+            ? TaggingDirective.REPLACE
+            : TaggingDirective.COPY;
+
+        if (taggingDirective == ObjectTaggingDirective.Replace)
+        {
+            request.TagSet = BuildTagSet(tags) ?? new List<Tag>();
         }
 
         S3ServerSideEncryptionMapper.ApplyTo(request, destinationServerSideEncryption);
@@ -596,6 +609,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         string? contentLanguage,
         DateTimeOffset? expiresUtc,
         IReadOnlyDictionary<string, string>? metadata,
+        IReadOnlyDictionary<string, string>? tags,
         string? checksumAlgorithm,
         ObjectServerSideEncryptionSettings? serverSideEncryption,
         CancellationToken cancellationToken = default)
@@ -615,6 +629,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 request.Metadata[name] = value;
         }
 
+        request.TagSet = BuildTagSet(tags);
         var sdkChecksumAlgorithm = MapChecksumAlgorithm(checksumAlgorithm);
         if (sdkChecksumAlgorithm is not null)
             request.ChecksumAlgorithm = sdkChecksumAlgorithm;
@@ -890,6 +905,16 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         checksums ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         checksums[algorithm] = value;
     }
+
+    private static List<Tag>? BuildTagSet(IReadOnlyDictionary<string, string>? tags)
+    {
+        return tags is null || tags.Count == 0
+            ? null
+            : tags.Select(static pair => new Tag
+            {
+                Key = pair.Key,
+                Value = pair.Value
+            }).ToList();
 
     private static void ApplyStandardObjectHeaders(
         HeadersCollection headers,
