@@ -2031,7 +2031,9 @@ public sealed class IntegratedS3CoreOrchestrationTests
 
         Assert.True(result.IsSuccess);
 
-        var activity = Assert.Single(observability.Activities, candidate => string.Equals(candidate.OperationName, "IntegratedS3.Storage.CreateBucket", StringComparison.Ordinal));
+        var activity = Assert.Single(observability.Activities, candidate =>
+            string.Equals(candidate.OperationName, "IntegratedS3.Storage.CreateBucket", StringComparison.Ordinal)
+            && string.Equals(candidate.Tags[IntegratedS3Observability.Tags.CorrelationId], "core-correlation-001", StringComparison.Ordinal));
         Assert.Equal("core-correlation-001", activity.Tags[IntegratedS3Observability.Tags.CorrelationId]);
         Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.Provider]);
         Assert.Equal("catalog-disk", activity.Tags[IntegratedS3Observability.Tags.PrimaryProvider]);

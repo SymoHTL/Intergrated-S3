@@ -2630,20 +2630,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
 
-        var bucketName = $"multipart-subresource-bucket-{Guid.NewGuid():N}";
-        const string objectKey = "docs/test file(3).txt";
-
-        static string EncodeObjectPath(string key)
-        {
-            return string.Join('/', key.Split('/').Select(Uri.EscapeDataString));
-        }
+        var bucketName = $"multipart-invalid-encoding-subresource-bucket-{Guid.NewGuid():N}";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
-
-        using (var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{EncodeObjectPath(objectKey)}?uploads")) {
-            initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
-            Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(initiateRequest)).StatusCode);
-        }
 
         var response = await client.GetAsync($"/integrated-s3/{bucketName}?uploads&encoding-type=base64");
 

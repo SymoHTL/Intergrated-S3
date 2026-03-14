@@ -1032,7 +1032,7 @@ Status:
 - ASP.NET integration tests exist
 - Core orchestration tests exist
 - pagination/range/conditional/copy/multipart/tagging behavior is covered in automated tests today
-- AWS SDK compatibility coverage now includes virtual-hosted-style CRUD/list plus host-style presigned URL, multipart upload, and copy/conditional flows
+- AWS SDK compatibility coverage now includes path-style plus virtual-hosted-style CRUD/list, `aws-chunked` PUT uploads, host-style and virtual-hosted-style presigned URL round-trips, multipart upload, and copy/conditional flows
 - focused fault-injection/orchestration coverage now exists for async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, and failed-repair visibility in Core orchestration tests
 - S3 conformance, broader multi-provider fault-injection coverage, trimming/AOT publish verification, and benchmark automation are still pending, while the Minimal API, MVC/Razor, and Blazor WebAssembly sample consumers now ship under `src\IntegratedS3`
 
@@ -1291,6 +1291,12 @@ This section is the execution board for the remaining implementation backlog. As
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
   - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
   - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
+  - presigned-query authentication now keeps host-only presigned URLs valid when a client also sends an unsigned `x-amz-content-sha256` header, which matches common SDK/browser request behavior
+  - AWS SDK compatibility coverage now locks in path-style `aws-chunked` PUT uploads, virtual-hosted-style `aws-chunked` PUT uploads, and virtual-hosted-style presigned PUT uploads that sign `content-type`
+  - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
+  - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
+  - presigned-query authentication now keeps host-only presigned URLs valid when a client also sends an unsigned `x-amz-content-sha256` header, which matches common SDK/browser request behavior
+  - AWS SDK compatibility coverage now locks in path-style `aws-chunked` PUT uploads, virtual-hosted-style `aws-chunked` PUT uploads, and virtual-hosted-style presigned PUT uploads that sign `content-type`
   - copy-object source conditionals now return S3-style `412 PreconditionFailed` responses for `x-amz-copy-source-if-none-match` / `x-amz-copy-source-if-modified-since` failures while preserving the existing `if-match` / `if-unmodified-since` precedence behavior
   - direct write validation now rejects ambiguous multi-checksum `x-amz-checksum-*` request header combinations instead of accepting them silently on the current S3-compatible write surface
   - SigV4 request canonicalization now parses the raw query string so signed literal `+` values and duplicate query parameters survive canonical-request construction, with focused protocol plus HTTP conformance coverage
@@ -1301,6 +1307,8 @@ This section is the execution board for the remaining implementation backlog. As
   - continue versioning/delete-marker parity work plus any remaining advanced object-tagging edge cases outside the newly landed upload/copy/multipart header paths
   - remaining versioning/tagging parity gaps are now narrowed to deliberately unsupported or not-yet-modeled semantics such as broader S3 tag-character validation and whether single-object explicit missing-version operations should surface a dedicated `NoSuchVersion` contract instead of the current generic not-found behavior
   - keep `aws-chunked`, presigned-query, checksum-override, and virtual-hosted-style compatibility tightening against real client behavior
+  - keep `aws-chunked`, presigned-query, checksum-override, and virtual-hosted-style compatibility tightening against real client behavior beyond the now-covered PUT/presign routing flows
+  - temporary-session SigV4 credentials plus trailer-backed `aws-chunked` checksum/signature flows are still not modeled end-to-end on the current HTTP surface, so they should continue to be treated as unsupported compatibility gaps for now
   - decide whether multipart `encoding-type=url` and further multipart-listing edge semantics should be implemented next or remain explicitly unsupported for now
   - continue tightening deeper multipart-listing/client-compat edge semantics beyond the now-supported `encoding-type=url`, ignored lone `upload-id-marker`, and explicit `max-uploads` validation behavior
 
