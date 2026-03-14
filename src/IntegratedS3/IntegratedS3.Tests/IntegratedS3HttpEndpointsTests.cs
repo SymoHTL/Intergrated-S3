@@ -1396,7 +1396,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         using var historicalCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{targetBucketName}/docs/historical-copy.txt");
         historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{sourceBucketName}/{sourceKey}?versionId={Uri.EscapeDataString(v1VersionId)}");
         historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", historicalMetadata.ETag);
-        historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", historicalMetadata.LastModifiedUtc.AddMinutes(-5).ToString("R"));
+        historicalCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-unmodified-since", historicalMetadata.LastModifiedUtc.AddMinutes(5).ToString("R"));
 
         var historicalCopyResponse = await client.SendAsync(historicalCopyRequest);
         Assert.Equal(HttpStatusCode.OK, historicalCopyResponse.StatusCode);
