@@ -1023,7 +1023,7 @@ Status:
 - pagination/range/conditional/copy/multipart/tagging behavior is covered in automated tests today
 - AWS SDK compatibility coverage now includes virtual-hosted-style CRUD/list plus host-style presigned URL, multipart upload, and copy/conditional flows
 - focused fault-injection/orchestration coverage now exists for async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, and failed-repair visibility in Core orchestration tests
-- S3 conformance, broader multi-provider fault-injection coverage, trimming/AOT publish verification, and benchmark automation are still pending
+- S3 conformance, broader multi-provider fault-injection coverage, trimming/AOT publish verification, and benchmark automation are still pending, while the Minimal API, MVC/Razor, and Blazor WebAssembly sample consumers now ship under `src\IntegratedS3`
 
 ### Consumer validation
 
@@ -1174,7 +1174,8 @@ Status: **in progress / partially complete**
 - conformance coverage now includes version-aware presigned reads, mixed bucket-subresource rejection, multipart `encoding-type=url` rejection, and additional AWS SDK compatibility cases
 - build/test/self-contained publish validation plus the current AOT warning posture are now automated through `.github\workflows\trackh-publish-aot-ci.yml` and `eng\Invoke-AotPublishValidation.ps1`
 - `docs/webui-reference-host.md` now captures the current reference-host surface and validation commands
-- benchmark baselines and additional sample consumers remain pending
+- `src\IntegratedS3\WebUi.MvcRazor`, `src\IntegratedS3\WebUi.BlazorWasm`, and `src\IntegratedS3\WebUi.BlazorWasm.Client` now provide the planned additional sample consumers, and `docs/web-consumer-samples.md` documents how to run them
+- benchmark baselines remain pending
 
 ## Remaining Implementation Work by Parallel Track
 
@@ -1347,6 +1348,10 @@ This section is the execution board for the remaining implementation backlog. As
   - `docs\performance-benchmarks.md` now documents the supported benchmark workflow, metric model, provider-breakdown strategy, and the currently supported limitations for repo-local baseline refreshes.
   - `IntegratedS3.Tests` now verifies benchmark scenario coverage plus the summary/report generation path without requiring the full benchmark suite to run inside `dotnet test`.
 - Verification status (March 2026):
+  - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
+  - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track E/H worktree.
+  - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track E/H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
+  - MVC/Razor plus hosted Blazor WebAssembly sample consumers now ship under `src\IntegratedS3`, with focused integration coverage in `IntegratedS3.Tests` and run guidance in `docs/web-consumer-samples.md`.
   - `dotnet build src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` passed in the current Track H worktree.
   - `dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj` passed in the current Track H worktree, and `eng\Invoke-AotPublishValidation.ps1` now tracks the remaining Minimal API / trimming-sensitive warning posture without depending on exact line numbers.
@@ -1357,7 +1362,6 @@ This section is the execution board for the remaining implementation backlog. As
   - add structured logs, metrics, traces, correlation IDs, provider tags, auth-failure visibility, mirror-lag visibility, and reconciliation-backlog visibility
   - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and reduce or document the remaining publish warnings alongside benchmark baselines
-  - add the planned MVC/Razor and Blazor WebAssembly sample consumers
   - finish package polish items such as XML docs, onboarding docs, versioned protocol compatibility guidance, and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - triage the remaining observed IL2026/IL3050 native AOT warnings in `IntegratedS3.AspNetCore` / `WebUi` and decide whether they should be eliminated further, annotated more precisely, or explicitly documented for consumers
@@ -1379,6 +1383,18 @@ This section is the execution board for the remaining implementation backlog. As
 - `src/IntegratedS3/WebUi/WebUi.csproj`
   - current AOT-enabled ASP.NET app
   - useful as the initial sample host
+
+- `src/IntegratedS3/WebUi.MvcRazor/`
+  - MVC/Razor sample consumer showing direct `IStorageService` usage plus the HTTP surface
+
+- `src/IntegratedS3/WebUi.BlazorWasm/`
+  - hosted Blazor WebAssembly sample server that maps the IntegratedS3 endpoints and serves the browser client
+
+- `src/IntegratedS3/WebUi.BlazorWasm.Client/`
+  - browser-side sample client using `IntegratedS3.Client` presign helpers alongside JSON endpoint calls
+
+- `docs/web-consumer-samples.md`
+  - run guide and scope notes for the additional MVC/Razor and Blazor WebAssembly samples
 
 - `src/IntegratedS3/WebUi/appsettings.json`
   - should evolve into provider/auth/endpoint examples
@@ -1475,7 +1491,7 @@ This section is the execution board for the remaining implementation backlog. As
 10. Verify service overrideability via DI in tests.
 11. Validate end-to-end behavior with a Minimal API sample, an MVC/Razor sample, and a Blazor WebAssembly sample.
 
-Status note (March 2026): current Track H validation covers checklist items 5, 6, 8, and 10 at the command/test level; item 5 still carries 12 native AOT publish warnings, while items 9 and 11 remain open work.
+Status note (March 2026): current Track H validation covers checklist items 5, 6, 8, 10, and 11 at the command/test level; item 5 still carries 12 native AOT publish warnings, while item 9 remains open work.
 
 ## Key Decisions
 

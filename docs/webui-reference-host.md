@@ -2,6 +2,8 @@
 
 `src\IntegratedS3\WebUi` is the current reference/sample host for IntegratedS3. It exists to demonstrate the minimal ASP.NET hosting, DI registration, and endpoint-mapping experience with the disk provider. It is intentionally **not** the final architecture container for the broader platform.
 
+For the additional MVC/Razor and Blazor WebAssembly consumer samples, see `docs/web-consumer-samples.md`.
+
 ## Run locally
 
 ```powershell
