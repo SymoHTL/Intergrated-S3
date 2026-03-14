@@ -19,7 +19,7 @@ public sealed class StoragePresignRequest
     /// When <see langword="null" />, the server keeps proxy-mode issuance as the stable default
     /// rather than inferring <see cref="StorageAccessMode.Direct" /> or
     /// <see cref="StorageAccessMode.Delegated" /> from provider discovery.
-    /// Strategies may honour, downgrade, or ignore an explicit preference depending on provider capabilities.
+    /// Strategies may honor, downgrade, or ignore an explicit preference depending on provider capabilities.
     /// </summary>
     public StorageAccessMode? PreferredAccessMode { get; init; }
 }
