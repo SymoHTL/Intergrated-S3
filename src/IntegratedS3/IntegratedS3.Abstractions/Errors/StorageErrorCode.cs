@@ -14,6 +14,7 @@ public enum StorageErrorCode
     MethodNotAllowed,
     VersionConflict,
     BucketAlreadyExists,
+    BucketNotEmpty,
     MultipartConflict,
     Throttled,
     ProviderUnavailable,
