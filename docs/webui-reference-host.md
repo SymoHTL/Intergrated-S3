@@ -11,6 +11,12 @@ It is intentionally **not** the final architecture container for the broader pla
 
 For the additional MVC/Razor and Blazor WebAssembly consumer samples, see `docs/web-consumer-samples.md`.
 
+For package-first onboarding and compatibility guidance, start with:
+
+- `docs\getting-started.md`
+- `docs\protocol-compatibility.md`
+- `docs\aot-trimming-guidance.md`
+
 ## Run locally
 
 ```powershell
@@ -47,6 +53,7 @@ Core `IntegratedS3` settings:
 
 - `IntegratedS3:ServiceName` — display name shown by the service document
 - `IntegratedS3:RoutePrefix` — base path for the IntegratedS3 HTTP surface
+- `IntegratedS3:Endpoints:*RouteAuthorization:*` — optional whole-route, shared-route, and per-feature authorization conventions (`RequireAuthorization`, named `PolicyNames`, or `AllowAnonymous`) applied when `MapIntegratedS3Endpoints(...)` maps the HTTP surface
 - `IntegratedS3:EnableAwsSignatureV4Authentication` — enables SigV4 header and presigned-query request authentication on the IntegratedS3 HTTP surface
 - `IntegratedS3:SignatureAuthenticationRegion` / `IntegratedS3:SignatureAuthenticationService` — expected SigV4 credential-scope values
 - `IntegratedS3:AccessKeyCredentials` — access keys used for SigV4 request authentication and first-party presign generation
@@ -61,6 +68,8 @@ Reference-host-specific settings:
 - `IntegratedS3:S3:*` — native S3 provider settings (`ProviderName`, `Region`, `ServiceUrl`, `ForcePathStyle`, `AccessKey`, `SecretKey`)
 
 By default, sample data is stored under `App_Data\IntegratedS3`. Runtime storage data is ignored by source control and excluded from build/publish outputs so local sample usage does not leak into release artifacts.
+
+The reference host does not register authentication or authorization services by default. If a consumer enables any `IntegratedS3:Endpoints:*RouteAuthorization:*` settings or `IntegratedS3:ReferenceHost:RoutePolicies:*` entries, the consuming host should also register the matching ASP.NET authentication/authorization services and policies before calling `MapIntegratedS3Endpoints(...)`.
 
 ## Disk baseline
 
@@ -200,6 +209,7 @@ builder.Services.AddSingleton<IIntegratedS3PresignCredentialResolver, MyPresignC
 ```
 
 Optional replay/cleanup jobs remain opt-in host composition. When a consumer wants background mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, or expired-artifact cleanup, register `AddIntegratedS3MaintenanceJob(...)` after the normal `AddIntegratedS3(...)` / provider wiring and follow `docs\host-maintenance-jobs.md`.
+
 ## Health check wiring
 
 The reference host shows the supported ASP.NET Core integration path for backend health:
@@ -214,6 +224,7 @@ app.MapIntegratedS3HealthEndpoints();
 ```
 
 `/health/live` stays a process liveness probe, while `/health/ready` runs the IntegratedS3 backend readiness check. The readiness mapper treats both `Degraded` and `Unhealthy` results as HTTP `503` by default so hosts can use it directly for readiness probes.
+
 ## Custom backend registration
 
 Hosts that implement their own `IStorageBackend` can now use `AddIntegratedS3Backend(...)` instead of manually pairing `AddSingleton<IStorageBackend>(...)` with the rest of the IntegratedS3 runtime wiring.
@@ -260,9 +271,21 @@ Use the existing repository validation commands when polishing or updating the s
 dotnet build src\IntegratedS3\IntegratedS3.slnx
 dotnet test src\IntegratedS3\IntegratedS3.slnx
 dotnet publish -c Release --self-contained src\IntegratedS3\WebUi\WebUi.csproj
+powershell -ExecutionPolicy Bypass -File .\eng\Invoke-AotPublishValidation.ps1
 ```
 
-Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command.
+Treat the publish step as the trimming/AOT validation pass for the reference host, not just as an optional packaging command. The checked-in CI workflow at `.github\workflows\trackh-publish-aot-ci.yml` uses the PowerShell validation script so the warning baseline stays enforced in automation, not just during local smoke testing.
+
+## AOT warning posture
+
+The current reference host intentionally keeps the remaining IL2026/IL3050 warnings scoped to the `WebUi` composition entry points rather than letting them surface from deeper package internals.
+
+- `WebUiApplication.ConfigureServices(...)` is annotated because the supported host wiring still relies on configuration binding for `IntegratedS3Options` and `IntegratedS3EndpointOptions`
+- `WebUiApplication.ConfigurePipeline(...)` is annotated because the supported host wiring still relies on Minimal API endpoint registration for `MapIntegratedS3Endpoints(...)`
+
+During `dotnet publish`, those annotations currently surface as the two `Program.cs` calls into `WebUiApplication.ConfigureServices(...)` and `WebUiApplication.ConfigurePipeline(...)`. The linker reports both the direct call-site warning and the trim/AOT analysis warning for each call, so the current supported baseline is eight IL2026/IL3050 lines total.
+
+`eng\Invoke-AotPublishValidation.ps1` is the supported validation gate for this posture. It fails the publish validation if any new IL2026/IL3050 warnings appear or if the known reference-host warning baseline changes unexpectedly.
 
 ## Observability
 

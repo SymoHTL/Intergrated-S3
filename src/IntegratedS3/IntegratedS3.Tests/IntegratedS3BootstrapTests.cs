@@ -9,10 +9,13 @@ using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.Core.DependencyInjection;
 using IntegratedS3.Provider.Disk;
 using IntegratedS3.Provider.Disk.DependencyInjection;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Xunit;
 
 namespace IntegratedS3.Tests;
@@ -70,7 +73,10 @@ public sealed class IntegratedS3BootstrapTests
             {
                 ["IntegratedS3:Endpoints:EnableAdminEndpoints"] = "false",
                 ["IntegratedS3:Endpoints:EnableObjectEndpoints"] = "false",
-                ["IntegratedS3:Endpoints:EnableMultipartEndpoints"] = "false"
+                ["IntegratedS3:Endpoints:EnableMultipartEndpoints"] = "false",
+                ["IntegratedS3:Endpoints:RouteAuthorization:RequireAuthorization"] = "true",
+                ["IntegratedS3:Endpoints:BucketRouteAuthorization:PolicyNames:0"] = "IntegratedS3BucketRoute",
+                ["IntegratedS3:Endpoints:CompatibilityRouteAuthorization:AllowAnonymous"] = "true"
             })
             .Build();
 
@@ -85,6 +91,12 @@ public sealed class IntegratedS3BootstrapTests
         Assert.False(endpointOptions.EnableAdminEndpoints);
         Assert.False(endpointOptions.EnableObjectEndpoints);
         Assert.False(endpointOptions.EnableMultipartEndpoints);
+        Assert.NotNull(endpointOptions.RouteAuthorization);
+        Assert.True(endpointOptions.RouteAuthorization!.RequireAuthorization);
+        Assert.NotNull(endpointOptions.BucketRouteAuthorization);
+        Assert.Equal(["IntegratedS3BucketRoute"], endpointOptions.BucketRouteAuthorization!.PolicyNames);
+        Assert.NotNull(endpointOptions.CompatibilityRouteAuthorization);
+        Assert.True(endpointOptions.CompatibilityRouteAuthorization!.AllowAnonymous);
     }
 
     [Fact]
@@ -432,6 +444,64 @@ public sealed class IntegratedS3BootstrapTests
         });
 
         Assert.Null(location);
+    }
+
+    [Fact]
+    public void ConfigurationBindingOverloads_AreExplicitlyAnnotatedForTrimAndAot()
+    {
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfiguration)
+                ]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfiguration),
+                    typeof(Action<IntegratedS3Options>)
+                ]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfigurationSection)
+                ]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(IntegratedS3ServiceCollectionExtensions).GetMethod(
+                nameof(IntegratedS3ServiceCollectionExtensions.AddIntegratedS3),
+                [
+                    typeof(IServiceCollection),
+                    typeof(IConfigurationSection),
+                    typeof(Action<IntegratedS3Options>)
+                ]));
+    }
+
+    [Fact]
+    public void ReferenceHostCompositionMethods_AreExplicitlyAnnotatedForTrimAndAot()
+    {
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(WebUiApplication).GetMethod(
+                nameof(WebUiApplication.ConfigureServices),
+                [typeof(WebApplicationBuilder)]));
+        AssertRequiresTrimAndAotAnnotations(
+            typeof(WebUiApplication).GetMethod(
+                nameof(WebUiApplication.ConfigurePipeline),
+                [
+                    typeof(WebApplication),
+                    typeof(Action<IntegratedS3EndpointOptions>)
+                ]));
+    }
+
+    private static void AssertRequiresTrimAndAotAnnotations(MethodInfo? methodInfo)
+    {
+        Assert.NotNull(methodInfo);
+        Assert.NotNull(methodInfo!.GetCustomAttribute<RequiresUnreferencedCodeAttribute>());
+        Assert.NotNull(methodInfo.GetCustomAttribute<RequiresDynamicCodeAttribute>());
     }
 
     private sealed class TestBackendRegistrationOptions
