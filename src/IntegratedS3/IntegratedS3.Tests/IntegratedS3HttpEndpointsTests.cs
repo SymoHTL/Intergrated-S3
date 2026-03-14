@@ -2762,7 +2762,6 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
 
-        var bucketName = $"multipart-invalid-encoding-subresource-bucket-{Guid.NewGuid():N}";
         var bucketName = $"multipart-subresource-invalid-encoding-{Guid.NewGuid():N}";
 
         Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);

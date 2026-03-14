@@ -915,6 +915,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                 Key = pair.Key,
                 Value = pair.Value
             }).ToList();
+    }
 
     private static void ApplyStandardObjectHeaders(
         HeadersCollection headers,
