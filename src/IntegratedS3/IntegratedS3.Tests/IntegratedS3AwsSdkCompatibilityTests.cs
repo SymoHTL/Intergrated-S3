@@ -1810,6 +1810,8 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
                 Core.Models.StorageOperationType.ListBuckets => "storage.read",
                 Core.Models.StorageOperationType.HeadBucket => "storage.read",
                 Core.Models.StorageOperationType.ListObjects => "storage.read",
+                Core.Models.StorageOperationType.ListObjectVersions => "storage.read",
+                Core.Models.StorageOperationType.ListMultipartUploads => "storage.read",
                 Core.Models.StorageOperationType.GetObject => "storage.read",
                 Core.Models.StorageOperationType.GetBucketCors => "storage.read",
                 Core.Models.StorageOperationType.GetObjectTags => "storage.read",
