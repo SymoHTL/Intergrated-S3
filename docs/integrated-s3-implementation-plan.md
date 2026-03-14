@@ -894,7 +894,9 @@ Status: **native copy/multipart/presign/checksum provider slice is now implement
 - `IS3StorageClient` / `AwsS3StorageClient` now bridge the AWS SDK v4 surface for range, conditional, tagging, version-aware object flows, native copy, multipart upload listing/lifecycle, presigned GET URL generation, and checksum request/response mapping
 - canonical error translation, DI registration, options, and S3-backed delegated-read resolver registration are in place
 - `S3StorageCapabilities` now declare bucket/object/list/range/conditional/tag/versioning/copy/multipart/presign/checksum/CORS support as `Native`
-- next steps center on broader parity/conformance hardening against local S3-compatible endpoints and deciding whether backend-direct presign adds enough value beyond the current delegated-read resolver path
+- custom `ServiceUrl` endpoints now use explicit signing-region + required-only flexible-checksum defaults and preserve the configured endpoint scheme for delegated `GET` presigns, reducing common MinIO/LocalStack mismatches without changing provider-agnostic contracts
+- `IntegratedS3.Tests` now includes focused custom-endpoint config/presign coverage plus an opt-in local S3-compatible conformance test that exercises copy, multipart, checksum, AES256 SSE, versioning, and delegated-read flows when `INTEGRATEDS3_S3COMPAT_*` environment variables are provided
+- next steps center on continuously running that local S3-compatible harness against concrete endpoints and deciding whether backend-direct presign adds enough value beyond the current delegated-read resolver path
 
 ### 3. Future providers later
 
@@ -1215,8 +1217,10 @@ This section is the execution board for the remaining implementation backlog. As
   - `S3StorageCapabilities` now report `CopyOperations`, `MultipartUploads`, `PresignedUrls`, and `Checksums` as `Native`, and provider-specific unit coverage now covers copy, multipart lifecycle/listing, checksum mapping, bucket CORS, and capability/provider-mode reporting
   - delegated `GET` presign semantics are now wired end-to-end for the native S3 provider: `ResolveObjectLocationRequest` now carries requested expiry, `IntegratedS3HttpPresignStrategy` forwards provider/expiry/version metadata through the resolver seam, `AddS3Storage(...)` registers an S3-backed object-location resolver, and the provider now advertises native presigned-URL plus delegated read-location support while the separate backend-direct presign seam remains available for future providers and native S3 `PUT` presigns stay proxy-only
   - focused presign/provider tests now cover delegated S3 URL issuance, expiry/version forwarding, proxy fallback for unavailable or incompatible delegated resolution, and the intentional proxy-only `PUT` behavior
+  - custom `ServiceUrl` endpoints now use the configured region as the AWS SDK authentication region, preserve `http` delegated-read presigns instead of silently upgrading to `https`, and reduce AWS SDK v4 flexible-checksum behavior to required-only mode so copy/multipart/checksum flows are less brittle against local S3-compatible backends
+  - `IntegratedS3.Tests` now adds focused config/presign regression coverage for those custom-endpoint defaults plus an opt-in local S3-compatible conformance test that exercises copy, multipart, checksum, AES256 SSE, versioning, and delegated-read flows via `INTEGRATEDS3_S3COMPAT_SERVICE_URL`, `..._ACCESS_KEY`, `..._SECRET_KEY`, optional `..._REGION`, and optional `..._FORCE_PATH_STYLE`
 - Remaining scope:
-  - harden native S3 behavior against local S3-compatible endpoints and extend provider-specific parity/conformance coverage around the already-landed copy/multipart/checksum/presign slice
+  - run the new local S3-compatible conformance harness continuously against concrete MinIO/LocalStack-style endpoints, capture any intentionally unsupported checksum/SSE differences explicitly, and extend provider-specific parity coverage from those findings
   - evaluate later whether the native S3 backend should also use the now-available backend direct-presign seam for direct `GET` / `PUT` in addition to the implemented delegated-read resolver path
   - keep public contracts provider-agnostic while preserving the clarified provider capability/support-state reporting
 
