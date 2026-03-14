@@ -395,6 +395,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var preflightResponse = await client.SendAsync(preflightRequest);
         Assert.Equal(HttpStatusCode.OK, preflightResponse.StatusCode);
         Assert.Equal("https://app.example", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Origin")));
+        Assert.Equal("true", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Credentials")));
         Assert.Equal("PUT", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Methods")));
         Assert.Equal("authorization, x-amz-meta-test", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Headers")));
         Assert.Equal("etag", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Expose-Headers")));
@@ -412,6 +413,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var getResponse = await client.SendAsync(getRequest);
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
         Assert.Equal("https://app.example", Assert.Single(getResponse.Headers.GetValues("Access-Control-Allow-Origin")));
+        Assert.Equal("true", Assert.Single(getResponse.Headers.GetValues("Access-Control-Allow-Credentials")));
         Assert.Equal("etag", Assert.Single(getResponse.Headers.GetValues("Access-Control-Expose-Headers")));
         Assert.Contains("Origin", string.Join(", ", getResponse.Headers.Vary), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("hello browser", await getResponse.Content.ReadAsStringAsync());
@@ -453,6 +455,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var preflightResponse = await client.SendAsync(preflightRequest);
         Assert.Equal(HttpStatusCode.Forbidden, preflightResponse.StatusCode);
         Assert.False(preflightResponse.Headers.Contains("Access-Control-Allow-Origin"));
+        Assert.False(preflightResponse.Headers.Contains("Access-Control-Allow-Credentials"));
         var preflightVary = string.Join(", ", preflightResponse.Headers.Vary);
         Assert.Contains("Origin", preflightVary, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Access-Control-Request-Method", preflightVary, StringComparison.OrdinalIgnoreCase);
@@ -464,7 +467,60 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var getResponse = await client.SendAsync(getRequest);
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
         Assert.False(getResponse.Headers.Contains("Access-Control-Allow-Origin"));
+        Assert.False(getResponse.Headers.Contains("Access-Control-Allow-Credentials"));
         Assert.Contains("Origin", string.Join(", ", getResponse.Headers.Vary), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("hello browser", await getResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task BucketCors_WildcardOriginsReturnAsteriskAndOmitCredentialsHeaders()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/browser-cors-wildcard-bucket", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            "/integrated-s3/buckets/browser-cors-wildcard-bucket/objects/docs/browser.txt",
+            new StringContent("hello browser", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var putCorsRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/browser-cors-wildcard-bucket?cors")
+        {
+            Content = new StringContent("""
+<CORSConfiguration>
+  <CORSRule>
+    <AllowedOrigin>*</AllowedOrigin>
+    <AllowedMethod>GET</AllowedMethod>
+    <AllowedMethod>PUT</AllowedMethod>
+    <AllowedHeader>*</AllowedHeader>
+    <ExposeHeader>etag</ExposeHeader>
+    <MaxAgeSeconds>600</MaxAgeSeconds>
+  </CORSRule>
+</CORSConfiguration>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putCorsRequest)).StatusCode);
+
+        using var preflightRequest = new HttpRequestMessage(HttpMethod.Options, "/integrated-s3/buckets/browser-cors-wildcard-bucket/objects/docs/browser.txt");
+        preflightRequest.Headers.Add("Origin", "https://any.example");
+        preflightRequest.Headers.TryAddWithoutValidation("Access-Control-Request-Method", "PUT");
+        preflightRequest.Headers.TryAddWithoutValidation("Access-Control-Request-Headers", "x-amz-meta-test");
+
+        var preflightResponse = await client.SendAsync(preflightRequest);
+        Assert.Equal(HttpStatusCode.OK, preflightResponse.StatusCode);
+        Assert.Equal("*", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Origin")));
+        Assert.False(preflightResponse.Headers.Contains("Access-Control-Allow-Credentials"));
+        Assert.Equal("PUT", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Methods")));
+        Assert.Equal("x-amz-meta-test", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Allow-Headers")));
+        Assert.Equal("etag", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Expose-Headers")));
+        Assert.Equal("600", Assert.Single(preflightResponse.Headers.GetValues("Access-Control-Max-Age")));
+
+        using var getRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/browser-cors-wildcard-bucket/docs/browser.txt");
+        getRequest.Headers.Add("Origin", "https://any.example");
+
+        var getResponse = await client.SendAsync(getRequest);
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal("*", Assert.Single(getResponse.Headers.GetValues("Access-Control-Allow-Origin")));
+        Assert.False(getResponse.Headers.Contains("Access-Control-Allow-Credentials"));
+        Assert.Equal("etag", Assert.Single(getResponse.Headers.GetValues("Access-Control-Expose-Headers")));
         Assert.Equal("hello browser", await getResponse.Content.ReadAsStringAsync());
     }
 

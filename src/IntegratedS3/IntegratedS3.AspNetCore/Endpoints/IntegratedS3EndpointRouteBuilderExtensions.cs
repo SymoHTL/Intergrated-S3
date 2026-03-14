@@ -73,6 +73,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AccessControlRequestMethodHeaderName = "Access-Control-Request-Method";
     private const string AccessControlRequestHeadersHeaderName = "Access-Control-Request-Headers";
     private const string AccessControlAllowOriginHeaderName = "Access-Control-Allow-Origin";
+    private const string AccessControlAllowCredentialsHeaderName = "Access-Control-Allow-Credentials";
     private const string AccessControlAllowMethodsHeaderName = "Access-Control-Allow-Methods";
     private const string AccessControlAllowHeadersHeaderName = "Access-Control-Allow-Headers";
     private const string AccessControlExposeHeadersHeaderName = "Access-Control-Expose-Headers";
@@ -3578,6 +3579,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static void ApplyBucketCorsActualHeaders(HttpResponse httpResponse, BucketCorsActualResponse response)
     {
         httpResponse.Headers[AccessControlAllowOriginHeaderName] = response.AllowOrigin;
+        if (response.AllowCredentials) {
+            httpResponse.Headers[AccessControlAllowCredentialsHeaderName] = "true";
+        }
+
         if (response.ExposeHeaders.Count > 0) {
             httpResponse.Headers[AccessControlExposeHeadersHeaderName] = string.Join(", ", response.ExposeHeaders);
         }
@@ -3588,6 +3593,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static void ApplyBucketCorsPreflightHeaders(HttpResponse httpResponse, BucketCorsPreflightResponse response)
     {
         httpResponse.Headers[AccessControlAllowOriginHeaderName] = response.AllowOrigin;
+        if (response.AllowCredentials) {
+            httpResponse.Headers[AccessControlAllowCredentialsHeaderName] = "true";
+        }
+
         httpResponse.Headers[AccessControlAllowMethodsHeaderName] = response.AllowMethod;
         if (response.AllowHeaders.Count > 0) {
             httpResponse.Headers[AccessControlAllowHeadersHeaderName] = string.Join(", ", response.AllowHeaders);
