@@ -6,6 +6,28 @@ namespace IntegratedS3.Protocol;
 
 public static class S3XmlResponseWriter
 {
+    public static string WriteBucketLocation(S3BucketLocationResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var builder = new StringBuilder();
+        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
+        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+
+        xmlWriter.WriteStartDocument();
+        xmlWriter.WriteStartElement("LocationConstraint");
+
+        if (!string.IsNullOrWhiteSpace(response.LocationConstraint)) {
+            xmlWriter.WriteString(response.LocationConstraint);
+        }
+
+        xmlWriter.WriteEndElement();
+        xmlWriter.WriteEndDocument();
+        xmlWriter.Flush();
+
+        return builder.ToString();
+    }
+
     public static string WriteBucketVersioningConfiguration(S3BucketVersioningConfiguration response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -372,6 +394,7 @@ public static class S3XmlResponseWriter
         var builder = new StringBuilder();
         using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
+        var urlEncodeResponseValues = string.Equals(response.EncodingType, "url", StringComparison.Ordinal);
 
         xmlWriter.WriteStartDocument();
         xmlWriter.WriteStartElement("ListMultipartUploadsResult");
@@ -386,6 +409,16 @@ public static class S3XmlResponseWriter
 
         if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
             xmlWriter.WriteElementString("NextKeyMarker", EncodeS3ListValue(response.NextKeyMarker, response.EncodingType));
+        xmlWriter.WriteElementString("KeyMarker", EncodeMultipartResponseValue(response.KeyMarker, urlEncodeResponseValues) ?? string.Empty);
+        xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
+        xmlWriter.WriteElementString("Prefix", EncodeMultipartResponseValue(response.Prefix, urlEncodeResponseValues) ?? string.Empty);
+
+        if (!string.IsNullOrWhiteSpace(response.Delimiter)) {
+            xmlWriter.WriteElementString("Delimiter", EncodeMultipartResponseValue(response.Delimiter, urlEncodeResponseValues));
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.NextKeyMarker)) {
+            xmlWriter.WriteElementString("NextKeyMarker", EncodeMultipartResponseValue(response.NextKeyMarker, urlEncodeResponseValues));
         }
 
         if (!string.IsNullOrWhiteSpace(response.NextUploadIdMarker)) {
@@ -402,6 +435,7 @@ public static class S3XmlResponseWriter
         foreach (var upload in response.Uploads) {
             xmlWriter.WriteStartElement("Upload");
             xmlWriter.WriteElementString("Key", EncodeS3ListValue(upload.Key, response.EncodingType));
+            xmlWriter.WriteElementString("Key", EncodeMultipartResponseValue(upload.Key, urlEncodeResponseValues));
             xmlWriter.WriteElementString("UploadId", upload.UploadId);
 
             if (upload.Initiator is not null) {
@@ -425,7 +459,12 @@ public static class S3XmlResponseWriter
         foreach (var commonPrefix in response.CommonPrefixes) {
             xmlWriter.WriteStartElement("CommonPrefixes");
             xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(commonPrefix.Prefix, response.EncodingType));
+            xmlWriter.WriteElementString("Prefix", EncodeMultipartResponseValue(commonPrefix.Prefix, urlEncodeResponseValues));
             xmlWriter.WriteEndElement();
+        }
+
+        if (!string.IsNullOrWhiteSpace(response.EncodingType)) {
+            xmlWriter.WriteElementString("EncodingType", response.EncodingType);
         }
 
         xmlWriter.WriteEndElement();
@@ -433,6 +472,13 @@ public static class S3XmlResponseWriter
         xmlWriter.Flush();
 
         return builder.ToString();
+    }
+
+    private static string EncodeMultipartResponseValue(string? value, bool urlEncode)
+    {
+        return urlEncode && !string.IsNullOrEmpty(value)
+            ? Uri.EscapeDataString(value)
+            : value ?? string.Empty;
     }
 
     public static string WriteListAllMyBucketsResult(S3ListAllMyBucketsResult response)
