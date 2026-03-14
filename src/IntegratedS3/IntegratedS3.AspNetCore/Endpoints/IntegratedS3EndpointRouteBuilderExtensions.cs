@@ -35,6 +35,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string CopySourceIfNoneMatchHeaderName = "x-amz-copy-source-if-none-match";
     private const string CopySourceIfModifiedSinceHeaderName = "x-amz-copy-source-if-modified-since";
     private const string CopySourceIfUnmodifiedSinceHeaderName = "x-amz-copy-source-if-unmodified-since";
+    private const string CopySourceVersionIdHeaderName = "x-amz-copy-source-version-id";
     private const string ServerSideEncryptionHeaderPrefix = "x-amz-server-side-encryption";
     private const string CopySourceServerSideEncryptionHeaderPrefix = "x-amz-copy-source-server-side-encryption";
     private const string ServerSideEncryptionHeaderName = "x-amz-server-side-encryption";
@@ -806,7 +807,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     }, innerCancellationToken);
 
                     return copyResult.IsSuccess
-                        ? ToCopyObjectResult(httpContext, copyResult.Value!)
+                        ? ToCopyObjectResult(httpContext, copyResult.Value!, copySource.VersionId)
                         : ToErrorResult(httpContext, copyResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
                 }
 
@@ -1999,9 +2000,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             XmlContentType);
     }
 
-    private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object)
+    private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
         ApplyObjectHeaders(httpContext.Response, @object);
+        if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
+            httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
+        }
 
         return new XmlContentResult(
             S3XmlResponseWriter.WriteCopyObjectResult(new S3CopyObjectResult
