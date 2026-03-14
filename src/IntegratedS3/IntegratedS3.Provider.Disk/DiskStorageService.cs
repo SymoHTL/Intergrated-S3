@@ -702,20 +702,33 @@ internal sealed class DiskStorageService(
 
             var sourceMetadata = sourceObject.Metadata;
             var checksums = sourceMetadata.Checksums ?? await ComputeChecksumsAsync(destinationPath, cancellationToken);
+            var tags = request.TaggingDirective == ObjectTaggingDirective.Replace
+                ? NormalizeTags(request.Tags)
+                : NormalizeTags(sourceMetadata.Tags);
             var versionId = CreateVersionId();
+            var useReplacementMetadata = request.MetadataDirective == CopyObjectMetadataDirective.Replace;
             await WriteStoredObjectStateAsync(
                 request.DestinationBucketName,
                 request.DestinationKey,
                 destinationPath,
                 versionId,
-                sourceMetadata.ContentType,
-                sourceMetadata.Metadata,
-                sourceMetadata.Tags,
+                useReplacementMetadata
+                    ? string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType
+                    : sourceMetadata.ContentType,
+                useReplacementMetadata
+                    ? request.Metadata
+                    : sourceMetadata.Metadata,
+                tags,
                 checksums,
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: useReplacementMetadata ? request.CacheControl : sourceMetadata.CacheControl,
+                contentDisposition: useReplacementMetadata ? request.ContentDisposition : sourceMetadata.ContentDisposition,
+                contentEncoding: useReplacementMetadata ? request.ContentEncoding : sourceMetadata.ContentEncoding,
+                contentLanguage: useReplacementMetadata ? request.ContentLanguage : sourceMetadata.ContentLanguage,
+                expiresUtc: useReplacementMetadata ? request.ExpiresUtc : sourceMetadata.ExpiresUtc);
         }
         finally {
             if (File.Exists(tempDestinationPath)) {
@@ -787,12 +800,17 @@ internal sealed class DiskStorageService(
                 versionId,
                 string.IsNullOrWhiteSpace(request.ContentType) ? "application/octet-stream" : request.ContentType,
                 request.Metadata,
-                tags: null,
+                NormalizeTags(request.Tags),
                 actualChecksums,
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: request.CacheControl,
+                contentDisposition: request.ContentDisposition,
+                contentEncoding: request.ContentEncoding,
+                contentLanguage: request.ContentLanguage,
+                expiresUtc: request.ExpiresUtc);
         }
         finally {
             if (File.Exists(tempFilePath)) {
@@ -841,9 +859,7 @@ internal sealed class DiskStorageService(
 
         var metadata = storedObject.Metadata;
 
-        var normalizedTags = tags is null || tags.Count == 0
-            ? null
-            : new Dictionary<string, string>(tags, StringComparer.Ordinal);
+        var normalizedTags = NormalizeTags(tags);
 
         if (storedObject.IsCurrent) {
             await WriteStoredObjectStateAsync(
@@ -858,7 +874,12 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: metadata.LastModifiedUtc,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: metadata.CacheControl,
+                contentDisposition: metadata.ContentDisposition,
+                contentEncoding: metadata.ContentEncoding,
+                contentLanguage: metadata.ContentLanguage,
+                expiresUtc: metadata.ExpiresUtc);
         }
         else {
             await WriteStoredObjectStateAsync(
@@ -873,7 +894,12 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: false,
                 lastModifiedUtc: metadata.LastModifiedUtc,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: metadata.CacheControl,
+                contentDisposition: metadata.ContentDisposition,
+                contentEncoding: metadata.ContentEncoding,
+                contentLanguage: metadata.ContentLanguage,
+                expiresUtc: metadata.ExpiresUtc);
         }
 
         return StorageResult<ObjectTagSet>.Success(new ObjectTagSet
@@ -1145,12 +1171,17 @@ internal sealed class DiskStorageService(
                 versionId,
                 string.IsNullOrWhiteSpace(uploadState.State.ContentType) ? "application/octet-stream" : uploadState.State.ContentType,
                 uploadState.State.Metadata,
-                tags: null,
+                uploadState.State.Tags,
                 checksums,
                 isDeleteMarker: false,
                 isLatest: true,
                 lastModifiedUtc: null,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: uploadState.State.CacheControl,
+                contentDisposition: uploadState.State.ContentDisposition,
+                contentEncoding: uploadState.State.ContentEncoding,
+                contentLanguage: uploadState.State.ContentLanguage,
+                expiresUtc: uploadState.State.ExpiresUtc);
 
             await DeleteStoredMultipartStateAsync(request.BucketName, request.Key, request.UploadId, uploadState.UploadDirectoryPath, cancellationToken);
             Directory.Delete(uploadState.UploadDirectoryPath, recursive: true);
@@ -1550,6 +1581,11 @@ internal sealed class DiskStorageService(
             IsDeleteMarker = metadata.IsDeleteMarker,
             ContentLength = metadata.IsDeleteMarker ? 0 : fileInfo?.Length ?? 0,
             ContentType = metadata.IsDeleteMarker ? null : metadata.ContentType ?? "application/octet-stream",
+            CacheControl = metadata.IsDeleteMarker ? null : metadata.CacheControl,
+            ContentDisposition = metadata.IsDeleteMarker ? null : metadata.ContentDisposition,
+            ContentEncoding = metadata.IsDeleteMarker ? null : metadata.ContentEncoding,
+            ContentLanguage = metadata.IsDeleteMarker ? null : metadata.ContentLanguage,
+            ExpiresUtc = metadata.IsDeleteMarker ? null : metadata.ExpiresUtc,
             ETag = metadata.IsDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
             LastModifiedUtc = lastModifiedUtc,
             Metadata = metadata.Metadata,
@@ -1676,7 +1712,12 @@ internal sealed class DiskStorageService(
             metadata.IsDeleteMarker,
             isLatest,
             metadata.LastModifiedUtc,
-            cancellationToken);
+            cancellationToken: cancellationToken,
+            cacheControl: metadata.CacheControl,
+            contentDisposition: metadata.ContentDisposition,
+            contentEncoding: metadata.ContentEncoding,
+            contentLanguage: metadata.ContentLanguage,
+            expiresUtc: metadata.ExpiresUtc);
 
         var hydratedObjectInfo = await _objectStateStore.GetObjectInfoAsync(Name, bucketName, key, resolvedVersionId, cancellationToken);
         return hydratedObjectInfo is null
@@ -1696,7 +1737,12 @@ internal sealed class DiskStorageService(
         bool isDeleteMarker,
         bool isLatest,
         DateTimeOffset? lastModifiedUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default,
+        string? cacheControl = null,
+        string? contentDisposition = null,
+        string? contentEncoding = null,
+        string? contentLanguage = null,
+        DateTimeOffset? expiresUtc = null)
     {
         if (_objectStateStore is null) {
             await WriteMetadataAsync(objectPath, new DiskObjectMetadata
@@ -1706,6 +1752,11 @@ internal sealed class DiskStorageService(
                 IsDeleteMarker = isDeleteMarker,
                 LastModifiedUtc = lastModifiedUtc,
                 ContentType = contentType,
+                CacheControl = isDeleteMarker ? null : cacheControl,
+                ContentDisposition = isDeleteMarker ? null : contentDisposition,
+                ContentEncoding = isDeleteMarker ? null : contentEncoding,
+                ContentLanguage = isDeleteMarker ? null : contentLanguage,
+                ExpiresUtc = isDeleteMarker ? null : expiresUtc,
                 Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
                 Tags = tags is null ? null : new Dictionary<string, string>(tags, StringComparer.Ordinal),
                 Checksums = checksums is null ? null : new Dictionary<string, string>(checksums, StringComparer.OrdinalIgnoreCase)
@@ -1727,6 +1778,11 @@ internal sealed class DiskStorageService(
             IsDeleteMarker = isDeleteMarker,
             ContentLength = isDeleteMarker ? 0 : fileInfo?.Length ?? 0,
             ContentType = isDeleteMarker ? null : contentType,
+            CacheControl = isDeleteMarker ? null : cacheControl,
+            ContentDisposition = isDeleteMarker ? null : contentDisposition,
+            ContentEncoding = isDeleteMarker ? null : contentEncoding,
+            ContentLanguage = isDeleteMarker ? null : contentLanguage,
+            ExpiresUtc = isDeleteMarker ? null : expiresUtc,
             ETag = isDeleteMarker ? null : fileInfo is null ? null : BuildETag(fileInfo),
             LastModifiedUtc = lastModifiedUtc ?? fileInfo?.LastWriteTimeUtc ?? DateTimeOffset.UtcNow,
             Metadata = metadata is null ? null : new Dictionary<string, string>(metadata, StringComparer.Ordinal),
@@ -1746,7 +1802,12 @@ internal sealed class DiskStorageService(
         IReadOnlyDictionary<string, string>? metadata,
         IReadOnlyDictionary<string, string>? tags,
         IReadOnlyDictionary<string, string>? checksums,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default,
+        string? cacheControl = null,
+        string? contentDisposition = null,
+        string? contentEncoding = null,
+        string? contentLanguage = null,
+        DateTimeOffset? expiresUtc = null)
     {
         return WriteStoredObjectStateAsync(
             bucketName,
@@ -1760,7 +1821,12 @@ internal sealed class DiskStorageService(
             isDeleteMarker: false,
             isLatest: true,
             lastModifiedUtc: null,
-            cancellationToken);
+            cancellationToken: cancellationToken,
+            cacheControl: cacheControl,
+            contentDisposition: contentDisposition,
+            contentEncoding: contentEncoding,
+            contentLanguage: contentLanguage,
+            expiresUtc: expiresUtc);
     }
 
     private async Task DeleteStoredObjectStateAsync(string bucketName, string key, string objectPath, string? versionId, CancellationToken cancellationToken)
@@ -1883,7 +1949,12 @@ internal sealed class DiskStorageService(
             currentObject.IsDeleteMarker,
             isLatest: false,
             currentObject.Metadata.LastModifiedUtc,
-            cancellationToken);
+            cancellationToken: cancellationToken,
+            cacheControl: currentObject.Metadata.CacheControl,
+            contentDisposition: currentObject.Metadata.ContentDisposition,
+            contentEncoding: currentObject.Metadata.ContentEncoding,
+            contentLanguage: currentObject.Metadata.ContentLanguage,
+            expiresUtc: currentObject.Metadata.ExpiresUtc);
     }
 
     private ArchivedVersionEntry? TryParseArchivedVersionPath(string bucketName, string archivedMetadataPath)
@@ -2110,7 +2181,12 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: true,
                 isLatest: true,
                 latestArchived.Metadata.LastModifiedUtc,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: latestArchived.Metadata.CacheControl,
+                contentDisposition: latestArchived.Metadata.ContentDisposition,
+                contentEncoding: latestArchived.Metadata.ContentEncoding,
+                contentLanguage: latestArchived.Metadata.ContentLanguage,
+                expiresUtc: latestArchived.Metadata.ExpiresUtc);
         }
         else {
             if (string.IsNullOrWhiteSpace(latestArchived.ContentPath) || !File.Exists(latestArchived.ContentPath)) {
@@ -2130,7 +2206,12 @@ internal sealed class DiskStorageService(
                 isDeleteMarker: false,
                 isLatest: true,
                 latestArchived.Metadata.LastModifiedUtc,
-                cancellationToken);
+                cancellationToken: cancellationToken,
+                cacheControl: latestArchived.Metadata.CacheControl,
+                contentDisposition: latestArchived.Metadata.ContentDisposition,
+                contentEncoding: latestArchived.Metadata.ContentEncoding,
+                contentLanguage: latestArchived.Metadata.ContentLanguage,
+                expiresUtc: latestArchived.Metadata.ExpiresUtc);
         }
 
         if (_objectStateStore is null) {
@@ -2287,7 +2368,13 @@ internal sealed class DiskStorageService(
             UploadId = diskState.UploadId,
             InitiatedAtUtc = diskState.InitiatedAtUtc,
             ContentType = diskState.ContentType,
+            CacheControl = diskState.CacheControl,
+            ContentDisposition = diskState.ContentDisposition,
+            ContentEncoding = diskState.ContentEncoding,
+            ContentLanguage = diskState.ContentLanguage,
+            ExpiresUtc = diskState.ExpiresUtc,
             Metadata = diskState.Metadata,
+            Tags = NormalizeTags(diskState.Tags),
             ChecksumAlgorithm = diskState.ChecksumAlgorithm
         };
     }
@@ -2301,7 +2388,13 @@ internal sealed class DiskStorageService(
             UploadId = state.UploadId,
             InitiatedAtUtc = state.InitiatedAtUtc,
             ContentType = state.ContentType,
+            CacheControl = state.CacheControl,
+            ContentDisposition = state.ContentDisposition,
+            ContentEncoding = state.ContentEncoding,
+            ContentLanguage = state.ContentLanguage,
+            ExpiresUtc = state.ExpiresUtc,
             Metadata = state.Metadata is null ? null : new Dictionary<string, string>(state.Metadata, StringComparer.Ordinal),
+            Tags = NormalizeTags(state.Tags) is { } tags ? new Dictionary<string, string>(tags, StringComparer.Ordinal) : null,
             ChecksumAlgorithm = state.ChecksumAlgorithm
         };
     }
@@ -2327,6 +2420,11 @@ internal sealed class DiskStorageService(
                 IsDeleteMarker = objectInfo.IsDeleteMarker,
                 LastModifiedUtc = objectInfo.LastModifiedUtc,
                 ContentType = objectInfo.ContentType,
+                CacheControl = objectInfo.CacheControl,
+                ContentDisposition = objectInfo.ContentDisposition,
+                ContentEncoding = objectInfo.ContentEncoding,
+                ContentLanguage = objectInfo.ContentLanguage,
+                ExpiresUtc = objectInfo.ExpiresUtc,
                 Metadata = objectInfo.Metadata is null ? null : new Dictionary<string, string>(objectInfo.Metadata, StringComparer.Ordinal),
                 Tags = objectInfo.Tags is null ? null : new Dictionary<string, string>(objectInfo.Tags, StringComparer.Ordinal),
                 Checksums = objectInfo.Checksums is null ? null : new Dictionary<string, string>(objectInfo.Checksums, StringComparer.OrdinalIgnoreCase)
@@ -2504,7 +2602,13 @@ internal sealed class DiskStorageService(
             UploadId = uploadInfo.UploadId,
             InitiatedAtUtc = uploadInfo.InitiatedAtUtc,
             ContentType = request.ContentType,
+            CacheControl = request.CacheControl,
+            ContentDisposition = request.ContentDisposition,
+            ContentEncoding = request.ContentEncoding,
+            ContentLanguage = request.ContentLanguage,
+            ExpiresUtc = request.ExpiresUtc,
             Metadata = request.Metadata is null ? null : new Dictionary<string, string>(request.Metadata),
+            Tags = NormalizeTags(request.Tags),
             ChecksumAlgorithm = uploadInfo.ChecksumAlgorithm
         };
 
@@ -2637,6 +2741,13 @@ internal sealed class DiskStorageService(
             ["crc32"] = Convert.ToBase64String(crc32.GetHashBytes()),
             ["crc32c"] = Convert.ToBase64String(crc32c.GetHashBytes())
         };
+    }
+
+    private static IReadOnlyDictionary<string, string>? NormalizeTags(IReadOnlyDictionary<string, string>? tags)
+    {
+        return tags is null || tags.Count == 0
+            ? null
+            : new Dictionary<string, string>(tags, StringComparer.Ordinal);
     }
 
     private static StorageError? GetUnsupportedServerSideEncryptionError(
