@@ -230,7 +230,7 @@ internal sealed class OrchestratedStorageService(
 
     public async IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var backend = await SelectReadBackendAsync(cancellationToken);
+        var backend = _primaryBackend.Value;
         await foreach (var upload in backend.ListMultipartUploadsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
             yield return upload;
         }
@@ -431,11 +431,6 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<MultipartUploadInfo>> InitiateMultipartUploadAsync(InitiateMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         var backend = _primaryBackend.Value;
-        var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
-        if (replicationError is not null) {
-            return StorageResult<MultipartUploadInfo>.Failure(replicationError);
-        }
-
         var result = await backend.InitiateMultipartUploadAsync(request, cancellationToken);
         ObserveResult(backend, result);
         return result;
@@ -444,11 +439,6 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
     {
         var backend = _primaryBackend.Value;
-        var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
-        if (replicationError is not null) {
-            return StorageResult<MultipartUploadPart>.Failure(replicationError);
-        }
-
         var result = await backend.UploadMultipartPartAsync(request, cancellationToken);
         ObserveResult(backend, result);
         return result;
@@ -457,15 +447,28 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         var backend = _primaryBackend.Value;
-        var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
-        if (replicationError is not null) {
-            return StorageResult<ObjectInfo>.Failure(replicationError);
+        var strictReplicationError = await GetStrictReplicaWritePreflightErrorAsync(backend, request.BucketName, request.Key, versionId: null, cancellationToken: cancellationToken);
+        if (strictReplicationError is not null) {
+            return StorageResult<ObjectInfo>.Failure(strictReplicationError);
         }
 
         var result = await backend.CompleteMultipartUploadAsync(request, cancellationToken);
         ObserveResult(backend, result);
         if (result.IsSuccess && result.Value is not null) {
             await catalogStore.UpsertObjectAsync(backend.Name, result.Value, cancellationToken);
+
+            var replicationError = await ApplyReplicaWritePolicyAsync(
+                StorageOperationType.CompleteMultipartUpload,
+                backend,
+                request.BucketName,
+                request.Key,
+                result.Value.VersionId,
+                writeThroughOperation: (replicaBackend, ct) => RepairReplicaObjectFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, result.Value.VersionId, ct),
+                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, result.Value.VersionId, ct),
+                CancellationToken.None);
+            if (replicationError is not null) {
+                return StorageResult<ObjectInfo>.Failure(replicationError);
+            }
         }
 
         return result;
@@ -474,11 +477,6 @@ internal sealed class OrchestratedStorageService(
     public async ValueTask<StorageResult> AbortMultipartUploadAsync(AbortMultipartUploadRequest request, CancellationToken cancellationToken = default)
     {
         var backend = _primaryBackend.Value;
-        var replicationError = GetMultipartReplicationError(backend, request.BucketName, request.Key);
-        if (replicationError is not null) {
-            return StorageResult.Failure(replicationError);
-        }
-
         var result = await backend.AbortMultipartUploadAsync(request, cancellationToken);
         ObserveResult(backend, result);
         return result;
@@ -1266,22 +1264,6 @@ internal sealed class OrchestratedStorageService(
     {
         return options.Value.ConsistencyMode == StorageConsistencyMode.WriteThroughAll
             && GetReplicaBackends(primaryBackend).Count > 0;
-    }
-
-    private bool UsesAsyncReplicaWrites(IStorageBackend primaryBackend)
-    {
-        return options.Value.ConsistencyMode == StorageConsistencyMode.WriteToPrimaryAsyncReplicas
-            && GetReplicaBackends(primaryBackend).Count > 0;
-    }
-
-    private StorageError? GetMultipartReplicationError(IStorageBackend primaryBackend, string bucketName, string key)
-    {
-        return UsesSynchronousReplicaWrites(primaryBackend) || UsesAsyncReplicaWrites(primaryBackend)
-            ? StorageError.Unsupported(
-                $"Multipart uploads are not yet supported when the '{options.Value.ConsistencyMode}' consistency mode is enabled.",
-                bucketName,
-                key)
-            : null;
     }
 
     private IReadOnlyList<IStorageBackend> GetReplicaBackends(IStorageBackend primaryBackend)

@@ -1607,7 +1607,7 @@ public sealed class IntegratedS3CoreOrchestrationTests
     }
 
     [Fact]
-    public async Task OrchestratedStorageService_WriteThroughAll_RejectsMultipartUploads()
+    public async Task OrchestratedStorageService_WriteThroughAll_ReplicatesCompletedMultipartObjects()
     {
         await using var fixture = new CoreStorageFixture(configureServices: services => {
             services.Configure<IntegratedS3CoreOptions>(options => {
@@ -1623,21 +1623,257 @@ public sealed class IntegratedS3CoreOrchestrationTests
         });
 
         var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var backends = fixture.Services.GetServices<IStorageBackend>()
+            .OrderBy(static backend => backend.Name, StringComparer.Ordinal)
+            .ToArray();
 
-        var createBucket = await storageService.CreateBucketAsync(new CreateBucketRequest
+        Assert.True((await storageService.CreateBucketAsync(new CreateBucketRequest
         {
-            BucketName = "multipart-rejected"
-        });
-        Assert.True(createBucket.IsSuccess);
+            BucketName = "multipart-replicated"
+        })).IsSuccess);
 
         var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
         {
-            BucketName = "multipart-rejected",
-            Key = "docs/blocked.txt"
+            BucketName = "multipart-replicated",
+            Key = "docs/replicated.txt",
+            ContentType = "text/plain",
+            Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["source"] = "multipart"
+            }
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        var part1Result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-replicated",
+            Key = "docs/replicated.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream,
+            ContentLength = part1Stream.Length
+        });
+        Assert.True(part1Result.IsSuccess);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes("world"));
+        var part2Result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-replicated",
+            Key = "docs/replicated.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream,
+            ContentLength = part2Stream.Length
+        });
+        Assert.True(part2Result.IsSuccess);
+
+        var pendingUpload = Assert.Single(await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-replicated"
+        }).ToArrayAsync());
+        Assert.Equal(initiateResult.Value.UploadId, pendingUpload.UploadId);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-replicated",
+            Key = "docs/replicated.txt",
+            UploadId = initiateResult.Value.UploadId,
+            Parts =
+            [
+                part1Result.Value!,
+                part2Result.Value!
+            ]
+        });
+        Assert.True(completeResult.IsSuccess);
+
+        foreach (var backend in backends) {
+            var getResult = await backend.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = "multipart-replicated",
+                Key = "docs/replicated.txt"
+            });
+
+            Assert.True(getResult.IsSuccess);
+            await using var response = getResult.Value!;
+            Assert.Equal("hello world", await ReadContentAsStringAsync(response.Content));
+            Assert.Equal("multipart", response.Object.Metadata!["source"]);
+        }
+
+        Assert.Empty(await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-replicated"
+        }).ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_WriteToPrimaryAsyncReplicas_ReplicatesCompletedMultipartObjectsThroughDispatch()
+    {
+        await using var fixture = new CoreStorageFixture(overrideCatalogStore: true, configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+            });
+            services.AddDiskStorage(new DiskStorageOptions
+            {
+                ProviderName = "replica-disk",
+                RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Core.Tests", Guid.NewGuid().ToString("N")),
+                CreateRootDirectory = true,
+                IsPrimary = false
+            });
+            services.AddSingleton<RecordingReplicaRepairDispatcher>();
+            services.AddSingleton<IStorageReplicaRepairDispatcher>(static serviceProvider => serviceProvider.GetRequiredService<RecordingReplicaRepairDispatcher>());
         });
 
-        Assert.False(initiateResult.IsSuccess);
-        Assert.Equal(StorageErrorCode.UnsupportedCapability, initiateResult.Error!.Code);
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var repairBacklog = fixture.Services.GetRequiredService<IStorageReplicaRepairBacklog>();
+        var repairDispatcher = fixture.Services.GetRequiredService<RecordingReplicaRepairDispatcher>();
+        var catalogStore = Assert.IsType<FakeCatalogStore>(fixture.Services.GetRequiredService<IStorageCatalogStore>());
+        var backends = fixture.Services.GetServices<IStorageBackend>().ToArray();
+        var primaryBackend = backends.Single(static backend => backend.IsPrimary);
+        var replicaBackend = backends.Single(static backend => !backend.IsPrimary);
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "async-multipart"
+        })).IsSuccess);
+        Assert.True((await replicaBackend.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "async-multipart"
+        })).IsSuccess);
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "async-multipart",
+            Key = "docs/async.txt",
+            ContentType = "text/plain"
+        });
+        Assert.True(initiateResult.IsSuccess);
+        Assert.Empty(repairDispatcher.Dispatches);
+        Assert.Empty(await repairBacklog.ListOutstandingAsync());
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes("hello "));
+        var part1Result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "async-multipart",
+            Key = "docs/async.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            Content = part1Stream,
+            ContentLength = part1Stream.Length
+        });
+        Assert.True(part1Result.IsSuccess);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes("world"));
+        var part2Result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "async-multipart",
+            Key = "docs/async.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 2,
+            Content = part2Stream,
+            ContentLength = part2Stream.Length
+        });
+        Assert.True(part2Result.IsSuccess);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "async-multipart",
+            Key = "docs/async.txt",
+            UploadId = initiateResult.Value.UploadId,
+            Parts =
+            [
+                part1Result.Value!,
+                part2Result.Value!
+            ]
+        });
+        Assert.True(completeResult.IsSuccess);
+
+        var outstandingRepair = Assert.Single(await repairBacklog.ListOutstandingAsync());
+        Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, outstandingRepair.Origin);
+        Assert.Equal(StorageReplicaRepairStatus.Pending, outstandingRepair.Status);
+        Assert.Equal(StorageOperationType.CompleteMultipartUpload, outstandingRepair.Operation);
+        Assert.Equal(primaryBackend.Name, outstandingRepair.PrimaryBackendName);
+        Assert.Equal(replicaBackend.Name, outstandingRepair.ReplicaBackendName);
+        Assert.Equal("async-multipart", outstandingRepair.BucketName);
+        Assert.Equal("docs/async.txt", outstandingRepair.ObjectKey);
+
+        Assert.Equal(StorageErrorCode.ObjectNotFound, (await replicaBackend.HeadObjectAsync(new HeadObjectRequest
+        {
+            BucketName = "async-multipart",
+            Key = "docs/async.txt"
+        })).Error!.Code);
+
+        var recordedDispatch = Assert.Single(repairDispatcher.Dispatches);
+        Assert.Equal(outstandingRepair.Id, recordedDispatch.Entry.Id);
+        Assert.Null(await recordedDispatch.ExecuteAsync());
+
+        var replicaObject = await replicaBackend.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "async-multipart",
+            Key = "docs/async.txt"
+        });
+        Assert.True(replicaObject.IsSuccess);
+        await using (var response = replicaObject.Value!) {
+            Assert.Equal("hello world", await ReadContentAsStringAsync(response.Content));
+        }
+
+        Assert.Empty(await repairBacklog.ListOutstandingAsync());
+
+        var catalogProviders = catalogStore.Objects
+            .Where(entry => entry.BucketName == "async-multipart" && entry.Key == "docs/async.txt")
+            .Select(entry => entry.ProviderName)
+            .OrderBy(static providerName => providerName, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal([primaryBackend.Name, replicaBackend.Name], catalogProviders);
+    }
+
+    [Fact]
+    public async Task OrchestratedStorageService_ListMultipartUploads_UsesPrimaryBackendEvenWhenReplicaReadsArePreferred()
+    {
+        await using var fixture = new CoreStorageFixture(configureServices: services => {
+            services.Configure<IntegratedS3CoreOptions>(options => {
+                options.ConsistencyMode = StorageConsistencyMode.WriteToPrimaryAsyncReplicas;
+                options.ReadRoutingMode = StorageReadRoutingMode.PreferHealthyReplica;
+            });
+            services.AddDiskStorage(new DiskStorageOptions
+            {
+                ProviderName = "replica-disk",
+                RootPath = Path.Combine(Path.GetTempPath(), "IntegratedS3.Core.Tests", Guid.NewGuid().ToString("N")),
+                CreateRootDirectory = true,
+                IsPrimary = false
+            });
+            services.AddSingleton<IStorageBackendHealthEvaluator>(new ConfigurableStorageBackendHealthEvaluator(new Dictionary<string, StorageBackendHealthStatus>(StringComparer.Ordinal)
+            {
+                ["catalog-disk"] = StorageBackendHealthStatus.Unhealthy,
+                ["replica-disk"] = StorageBackendHealthStatus.Healthy
+            }));
+        });
+
+        var storageService = fixture.Services.GetRequiredService<IStorageService>();
+        var backends = fixture.Services.GetServices<IStorageBackend>().ToArray();
+        var primaryBackend = backends.Single(static backend => backend.IsPrimary);
+        var replicaBackend = backends.Single(static backend => !backend.IsPrimary);
+
+        Assert.True((await primaryBackend.CreateBucketAsync(new CreateBucketRequest
+        {
+            BucketName = "multipart-primary-authority"
+        })).IsSuccess);
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-primary-authority",
+            Key = "docs/pending.txt"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        var uploads = await storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+        {
+            BucketName = "multipart-primary-authority"
+        }).ToArrayAsync();
+
+        var upload = Assert.Single(uploads);
+        Assert.Equal(initiateResult.Value!.UploadId, upload.UploadId);
+        Assert.Equal(StorageErrorCode.BucketNotFound, (await replicaBackend.HeadBucketAsync("multipart-primary-authority")).Error!.Code);
     }
 
     private sealed class CoreStorageFixture : IAsyncDisposable
