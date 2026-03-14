@@ -45,10 +45,25 @@ public static class HotPathBenchmarkScenarioCatalog
     private static BenchmarkScenarioRegistration Create(Func<IHotPathBenchmarkScenario> factory)
     {
         var scenario = factory();
-        return new BenchmarkScenarioRegistration
+
+        try
         {
-            Definition = scenario.Definition,
-            CreateScenario = factory
-        };
+            return new BenchmarkScenarioRegistration
+            {
+                Definition = scenario.Definition,
+                CreateScenario = factory
+            };
+        }
+        finally
+        {
+            if (scenario is IAsyncDisposable asyncDisposable)
+            {
+                asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+            else if (scenario is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
     }
 }
