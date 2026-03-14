@@ -26,6 +26,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -59,7 +60,6 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         uploadRequest.Headers.Add("x-integrateds3-meta-author", "copilot");
         var expectedChecksum = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes("hello from xunit")));
         var expectedChecksumCrc32c = ChecksumTestAlgorithms.ComputeCrc32cBase64("hello from xunit");
-
         var uploadResponse = await client.SendAsync(uploadRequest);
         Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
 
@@ -96,6 +96,59 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var deleteBucketResponse = await client.DeleteAsync("/integrated-s3/buckets/test-bucket");
         Assert.Equal(HttpStatusCode.NoContent, deleteBucketResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectRoutes_RoundTripStandardHeadersAndMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+        var expiresUtc = new DateTimeOffset(2026, 3, 14, 15, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/standard-header-bucket", content: null)).StatusCode);
+
+        using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/standard-header-bucket/docs/headers.txt")
+        {
+            Content = new StringContent("standard headers payload", Encoding.UTF8, "text/plain")
+        };
+        uploadRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-store");
+        uploadRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+        {
+            FileName = "headers.txt"
+        };
+        uploadRequest.Content.Headers.ContentEncoding.Add("identity");
+        uploadRequest.Content.Headers.ContentLanguage.Add("en-US");
+        uploadRequest.Content.Headers.Expires = expiresUtc;
+        uploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-author", "copilot");
+        uploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "s3-compatible");
+
+        var uploadResponse = await client.SendAsync(uploadRequest);
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/standard-header-bucket/docs/headers.txt");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("copilot", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-author")));
+        Assert.Equal("copilot", Assert.Single(headResponse.Headers.GetValues("x-integrateds3-meta-author")));
+        Assert.Equal("s3-compatible", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-origin")));
+        Assert.Equal("no-store", headResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", headResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("headers.txt", headResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", headResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", headResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresUtc, headResponse.Content.Headers.Expires);
+        Assert.Equal("text/plain", headResponse.Content.Headers.ContentType?.MediaType);
+
+        var downloadResponse = await client.GetAsync("/integrated-s3/standard-header-bucket/docs/headers.txt");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("copilot", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-author")));
+        Assert.Equal("copilot", Assert.Single(downloadResponse.Headers.GetValues("x-integrateds3-meta-author")));
+        Assert.Equal("no-store", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("headers.txt", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresUtc, downloadResponse.Content.Headers.Expires);
+        Assert.Equal("standard headers payload", await downloadResponse.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -1558,6 +1611,79 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleCopyObject_WithMetadataDirectiveReplace_ReplacesHeadersAndMetadata()
+    {
+        using var client = await _factory.CreateClientAsync();
+        var replacementExpiresUtc = new DateTimeOffset(2026, 3, 14, 16, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-replace-source", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync("/integrated-s3/buckets/copy-replace-target", content: null)).StatusCode);
+
+        using var sourceUploadRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-replace-source/docs/source.txt")
+        {
+            Content = new StringContent("copy me", Encoding.UTF8, "text/plain")
+        };
+        sourceUploadRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("public, max-age=60");
+        sourceUploadRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+        {
+            FileName = "source.txt"
+        };
+        sourceUploadRequest.Content.Headers.ContentEncoding.Add("identity");
+        sourceUploadRequest.Content.Headers.ContentLanguage.Add("de-DE");
+        sourceUploadRequest.Content.Headers.Expires = replacementExpiresUtc.AddHours(-1);
+        sourceUploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "source");
+        sourceUploadRequest.Headers.TryAddWithoutValidation("x-amz-meta-source-only", "keep-me");
+
+        var sourceUploadResponse = await client.SendAsync(sourceUploadRequest);
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/copy-replace-target/docs/copied.txt")
+        {
+            Content = new ByteArrayContent([])
+        };
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/copy-replace-source/docs/source.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-metadata-directive", "REPLACE");
+        copyRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-store");
+        copyRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/markdown");
+        copyRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("inline")
+        {
+            FileName = "copied.txt"
+        };
+        copyRequest.Content.Headers.ContentEncoding.Add("identity");
+        copyRequest.Content.Headers.ContentLanguage.Add("en-US");
+        copyRequest.Content.Headers.Expires = replacementExpiresUtc;
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "replaced");
+
+        var copyResponse = await client.SendAsync(copyRequest);
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+
+        using var headRequest = new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/copy-replace-target/docs/copied.txt");
+        var headResponse = await client.SendAsync(headRequest);
+        Assert.Equal(HttpStatusCode.OK, headResponse.StatusCode);
+        Assert.Equal("replaced", Assert.Single(headResponse.Headers.GetValues("x-amz-meta-origin")));
+        Assert.False(headResponse.Headers.Contains("x-amz-meta-source-only"));
+        Assert.Equal("no-store", headResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("inline", headResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("copied.txt", headResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", headResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", headResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(replacementExpiresUtc, headResponse.Content.Headers.Expires);
+        Assert.Equal("text/markdown", headResponse.Content.Headers.ContentType?.MediaType);
+
+        var downloadResponse = await client.GetAsync("/integrated-s3/copy-replace-target/docs/copied.txt");
+        Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("replaced", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-origin")));
+        Assert.False(downloadResponse.Headers.Contains("x-amz-meta-source-only"));
+        Assert.Equal("no-store", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("inline", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("copied.txt", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(replacementExpiresUtc, downloadResponse.Content.Headers.Expires);
+        Assert.Equal("copy me", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task PutObject_WithCopySourcePreconditionHeader_ReturnsPreconditionFailed()
     {
         using var client = await _factory.CreateClientAsync();
@@ -1650,10 +1776,16 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Empty(document.Root.S3Elements("NextContinuationToken"));
         Assert.Empty(document.Root.S3Elements("NextMarker"));
 
-        var listedObject = Assert.Single(document.Root.S3Elements("Contents"));
-        Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.S3Element("Key")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(listedObject.S3Element("Owner")?.S3Element("ID")?.Value));
+    var listedObject = Assert.Single(document.Root.S3Elements("Contents"));
+    Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.S3Element("Key")?.Value);
+    Assert.False(string.IsNullOrWhiteSpace(listedObject.S3Element("Owner")?.S3Element("ID")?.Value));
 
+    var secondPageResponse = await client.GetAsync(
+        $"/integrated-s3/{bucketName}?prefix={Uri.EscapeDataString("docs/")}&marker={Uri.EscapeDataString("docs/b file(2).txt")}&max-keys=10&encoding-type=url");
+
+    Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+    var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+    Assert.Equal("docs%2Fc%20file%283%29.txt", Assert.Single(secondPageDocument.Root!.S3Elements("Contents")).S3Element("Key")?.Value);
     }
 
     [Fact]
@@ -2066,6 +2198,64 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var errorDocument = XDocument.Parse(await putTaggingResponse.Content.ReadAsStringAsync());
         Assert.Equal("InvalidTag", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatiblePutObject_WithTaggingHeader_PersistsObjectTags()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/tagging-header-put-bucket", content: null);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-header-put-bucket/docs/tagged.txt")
+        {
+            Content = new StringContent("hello tags", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "environment=test&owner=copilot");
+
+        var putResponse = await client.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        var tags = await GetObjectTagsAsync(client, "tagging-header-put-bucket", "docs/tagged.txt");
+        Assert.Equal("test", tags["environment"]);
+        Assert.Equal("copilot", tags["owner"]);
+    }
+
+    [Fact]
+    public async Task S3CompatibleCopyObject_WithReplaceTaggingDirective_PersistsReplacementTags()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/tagging-copy-bucket", content: null);
+        await client.PutAsync(
+            "/integrated-s3/buckets/tagging-copy-bucket/objects/docs/source.txt",
+            new StringContent("copy me", Encoding.UTF8, "text/plain"));
+
+        using var putTaggingRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-copy-bucket/docs/source.txt?tagging")
+        {
+            Content = new StringContent("""
+<Tagging>
+  <TagSet>
+    <Tag><Key>environment</Key><Value>source</Value></Tag>
+    <Tag><Key>owner</Key><Value>original</Value></Tag>
+  </TagSet>
+</Tagging>
+""", Encoding.UTF8, "application/xml")
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(putTaggingRequest)).StatusCode);
+
+        using var copyRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/tagging-copy-bucket/docs/copied.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", "/tagging-copy-bucket/docs/source.txt");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-tagging-directive", "REPLACE");
+        copyRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "environment=target&owner=copilot");
+
+        var copyResponse = await client.SendAsync(copyRequest);
+        Assert.Equal(HttpStatusCode.OK, copyResponse.StatusCode);
+
+        var copiedTags = await GetObjectTagsAsync(client, "tagging-copy-bucket", "docs/copied.txt");
+        Assert.Equal("target", copiedTags["environment"]);
+        Assert.Equal("copilot", copiedTags["owner"]);
+        Assert.DoesNotContain("original", copiedTags.Values);
     }
 
     [Fact]
@@ -2500,7 +2690,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("acl")]
+    [InlineData("ownershipControls")]
     [InlineData("versioning&list-type=2")]
     [InlineData("cors&versioning")]
     public async Task S3CompatibleBucketRoute_UnsupportedSubresource_ReturnsNotImplemented(string query)
@@ -2515,7 +2705,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("PUT", "acl")]
+    [InlineData("DELETE", "acl")]
     [InlineData("DELETE", "versioning")]
     [InlineData("POST", "versioning")]
     [InlineData("PUT", "cors&versioning")]
@@ -2561,10 +2751,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
         Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
-        var upload = Assert.Single(document.Root!.S3Elements("Upload"));
-        Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
-        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
+    var upload = Assert.Single(document.Root!.S3Elements("Upload"));
+    Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
+    Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
+    Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
     }
 
     [Fact]
@@ -2572,8 +2762,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     {
         using var client = await _factory.CreateClientAsync();
 
-        var bucketName = $"multipart-subresource-bucket-{Guid.NewGuid():N}";
-        await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null);
+        var bucketName = $"multipart-subresource-invalid-encoding-{Guid.NewGuid():N}";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
 
         var response = await client.GetAsync($"/integrated-s3/{bucketName}?uploads&encoding-type=base64");
 
@@ -2617,7 +2808,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
-    [InlineData("GET", "acl")]
+    [InlineData("GET", "retention")]
     [InlineData("PUT", "legal-hold")]
     [InlineData("DELETE", "retention")]
     [InlineData("POST", "versionId=historical-version")]
@@ -2640,6 +2831,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Theory]
+    [InlineData("GET", "acl&versionId=historical-version")]
     [InlineData("GET", "tagging&uploadId=upload-123")]
     [InlineData("GET", "versionId=historical-version&uploadId=upload-123")]
     [InlineData("PUT", "tagging&partNumber=1&uploadId=upload-123")]
@@ -2723,12 +2915,24 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     public async Task S3CompatibleMultipartUpload_RoundTripsXmlWorkflow()
     {
         using var client = await _factory.CreateClientAsync();
+        var expiresUtc = new DateTimeOffset(2026, 3, 14, 17, 0, 0, TimeSpan.Zero);
 
         await client.PutAsync("/integrated-s3/buckets/multipart-bucket", content: null);
 
-        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/multipart-bucket/docs/multipart.txt?uploads");
-        initiateRequest.Headers.Add("x-integrateds3-meta-origin", "http-test");
-        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/multipart-bucket/docs/multipart.txt?uploads")
+        {
+            Content = new ByteArrayContent([])
+        };
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-meta-origin", "http-test");
+        initiateRequest.Headers.TryAddWithoutValidation("Cache-Control", "no-store");
+        initiateRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        initiateRequest.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
+        {
+            FileName = "multipart.txt"
+        };
+        initiateRequest.Content.Headers.ContentEncoding.Add("identity");
+        initiateRequest.Content.Headers.ContentLanguage.Add("en-US");
+        initiateRequest.Content.Headers.Expires = expiresUtc;
 
         var initiateResponse = await client.SendAsync(initiateRequest);
         Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
@@ -2778,12 +2982,155 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("multipart-bucket", GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal("docs/multipart.txt", GetRequiredElementValue(completeDocument, "Key"));
 
-        var downloadResponse = await client.GetAsync("/integrated-s3/buckets/multipart-bucket/objects/docs/multipart.txt");
+        var downloadResponse = await client.GetAsync("/integrated-s3/multipart-bucket/docs/multipart.txt");
         Assert.Equal(HttpStatusCode.OK, downloadResponse.StatusCode);
+        Assert.Equal("http-test", Assert.Single(downloadResponse.Headers.GetValues("x-amz-meta-origin")));
         Assert.Equal("http-test", Assert.Single(downloadResponse.Headers.GetValues("x-integrateds3-meta-origin")));
+        Assert.Equal("no-store", downloadResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("attachment", downloadResponse.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal("multipart.txt", downloadResponse.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Contains("identity", downloadResponse.Content.Headers.ContentEncoding);
+        Assert.Contains("en-US", downloadResponse.Content.Headers.ContentLanguage);
+        Assert.Equal(expiresUtc, downloadResponse.Content.Headers.Expires);
         var multipartChecksum = Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-sha256"));
         Assert.False(string.IsNullOrWhiteSpace(multipartChecksum));
         Assert.Equal("hello world", await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_WithTaggingHeader_PersistsCompletedObjectTags()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/multipart-tagging-bucket", content: null);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/multipart-tagging-bucket/docs/tagged.txt?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-tagging", "environment=test&owner=copilot");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        var partResponse = await client.PutAsync(
+            $"/integrated-s3/multipart-tagging-bucket/docs/tagged.txt?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}",
+            new StringContent("multipart payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, partResponse.StatusCode);
+        var partETag = partResponse.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected multipart part ETag header.");
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/multipart-tagging-bucket/docs/tagged.txt?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent($"""
+<CompleteMultipartUpload>
+  <Part>
+    <PartNumber>1</PartNumber>
+    <ETag>{partETag}</ETag>
+  </Part>
+</CompleteMultipartUpload>
+""", Encoding.UTF8, "application/xml")
+        };
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var tags = await GetObjectTagsAsync(client, "multipart-tagging-bucket", "docs/tagged.txt");
+        Assert.Equal("test", tags["environment"]);
+        Assert.Equal("copilot", tags["owner"]);
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_WithCopySourceRange_ReturnsCopyPartXmlAndCompletesObject()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-copy-range-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var sourceUploadResponse = await client.PutAsync(
+            $"/integrated-s3/buckets/{bucketName}/objects/{sourceKey}",
+            new StringContent("0123456789", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+        var sourceObject = await sourceUploadResponse.Content.ReadFromJsonAsync<ObjectInfo>(JsonOptions);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var copyPartRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{targetKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-range", "bytes=2-6");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", $"\"{sourceObject!.ETag}\"");
+
+        var copyPartResponse = await client.SendAsync(copyPartRequest);
+        Assert.Equal(HttpStatusCode.OK, copyPartResponse.StatusCode);
+        Assert.Equal("application/xml", copyPartResponse.Content.Headers.ContentType?.MediaType);
+
+        var copyPartDocument = XDocument.Parse(await copyPartResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyPartResult", copyPartDocument.Root?.Name.LocalName);
+        var partEtag = GetRequiredElementValue(copyPartDocument, "ETag");
+        var partChecksum = GetRequiredElementValue(copyPartDocument, "ChecksumSHA256");
+        Assert.Equal(partChecksum, Assert.Single(copyPartResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var completeBody = $"""
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>{partEtag}</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var downloadedResponse = await client.GetAsync($"/integrated-s3/buckets/{bucketName}/objects/{targetKey}");
+        Assert.Equal(HttpStatusCode.OK, downloadedResponse.StatusCode);
+        Assert.Equal("23456", await downloadedResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithFailedPrecondition_ReturnsPreconditionFailed()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-copy-precondition-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            $"/integrated-s3/buckets/{bucketName}/objects/{sourceKey}",
+            new StringContent("0123456789", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var initiateResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploads"));
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var failedCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{targetKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        failedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        failedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", "\"different\"");
+
+        var failedCopyResponse = await client.SendAsync(failedCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedCopyResponse.StatusCode);
+        Assert.Equal("application/xml", failedCopyResponse.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await failedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(errorDocument, "Code"));
     }
 
     [Fact]
@@ -3064,6 +3411,89 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(compositeChecksum, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-crc32c")));
         Assert.Equal("COMPOSITE", Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-type")));
         Assert.Equal(part1Payload + part2Payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_ListParts_EmitsPagedChecksumAwareXml()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-listparts-bucket";
+        const string objectKey = "docs/listparts.txt";
+        const string part1Payload = "first";
+        const string part2Payload = "second";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var part1Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part1Payload, Encoding.UTF8, "text/plain")
+        };
+        part1Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part1Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part1Checksum);
+
+        var part1Response = await client.SendAsync(part1Request);
+        Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
+        var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected first multipart part ETag header.");
+
+        using var part2Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part2Payload, Encoding.UTF8, "text/plain")
+        };
+        part2Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part2Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part2Checksum);
+
+        var part2Response = await client.SendAsync(part2Request);
+        Assert.Equal(HttpStatusCode.OK, part2Response.StatusCode);
+        var part2ETag = part2Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected second multipart part ETag header.");
+
+        var firstPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&max-parts=1");
+        Assert.Equal(HttpStatusCode.OK, firstPageResponse.StatusCode);
+
+        var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListPartsResult", firstPageDocument.Root?.Name.LocalName);
+        Assert.Equal(bucketName, GetRequiredElementValue(firstPageDocument, "Bucket"));
+        Assert.Equal(objectKey, GetRequiredElementValue(firstPageDocument, "Key"));
+        Assert.Equal(uploadId, GetRequiredElementValue(firstPageDocument, "UploadId"));
+        Assert.Equal("0", GetRequiredElementValue(firstPageDocument, "PartNumberMarker"));
+        Assert.Equal("1", GetRequiredElementValue(firstPageDocument, "NextPartNumberMarker"));
+        Assert.Equal("1", GetRequiredElementValue(firstPageDocument, "MaxParts"));
+        Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
+        Assert.Equal("STANDARD", GetRequiredElementValue(firstPageDocument, "StorageClass"));
+        Assert.Equal("SHA256", GetRequiredElementValue(firstPageDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(firstPageDocument, "ChecksumType"));
+
+        var firstPart = Assert.Single(firstPageDocument.Root!.Elements(), static element => element.Name.LocalName == "Part");
+        Assert.Equal("1", firstPart.Elements().Single(static element => element.Name.LocalName == "PartNumber").Value);
+        Assert.Equal(part1ETag, firstPart.Elements().Single(static element => element.Name.LocalName == "ETag").Value);
+        Assert.Equal(part1Checksum, firstPart.Elements().Single(static element => element.Name.LocalName == "ChecksumSHA256").Value);
+
+        var secondPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&part-number-marker=1");
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("1", GetRequiredElementValue(secondPageDocument, "PartNumberMarker"));
+        Assert.Equal("1000", GetRequiredElementValue(secondPageDocument, "MaxParts"));
+        Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
+        Assert.Null(secondPageDocument.Root!.Elements().FirstOrDefault(static element => element.Name.LocalName == "NextPartNumberMarker"));
+
+        var secondPart = Assert.Single(secondPageDocument.Root.Elements(), static element => element.Name.LocalName == "Part");
+        Assert.Equal("2", secondPart.Elements().Single(static element => element.Name.LocalName == "PartNumber").Value);
+        Assert.Equal(part2ETag, secondPart.Elements().Single(static element => element.Name.LocalName == "ETag").Value);
+        Assert.Equal(part2Checksum, secondPart.Elements().Single(static element => element.Name.LocalName == "ChecksumSHA256").Value);
     }
 
     [Theory]
@@ -3379,6 +3809,267 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleBucketAcl_PublicRead_AllowsAnonymousBucketListing()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"bucket-acl-public-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await authClient.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/docs/private.txt",
+                new StringContent("bucket acl payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var putAclRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?acl");
+        putAclRequest.Headers.TryAddWithoutValidation("x-amz-acl", "public-read");
+        var putAclResponse = await authClient.SendAsync(putAclRequest);
+        Assert.Equal(HttpStatusCode.OK, putAclResponse.StatusCode);
+
+        var getAclResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}?acl");
+        Assert.Equal(HttpStatusCode.OK, getAclResponse.StatusCode);
+        var aclDocument = XDocument.Parse(await getAclResponse.Content.ReadAsStringAsync());
+        Assert.Equal("AccessControlPolicy", aclDocument.Root?.Name.LocalName);
+        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Root!.Descendants().Where(static element => element.Name.LocalName == "URI").Select(static element => element.Value));
+
+        var anonymousListResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, anonymousListResponse.StatusCode);
+        var listDocument = XDocument.Parse(await anonymousListResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListBucketResult", listDocument.Root?.Name.LocalName);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/private.txt");
+        Assert.Equal(HttpStatusCode.Forbidden, anonymousGetResponse.StatusCode);
+        var anonymousGetError = XDocument.Parse(await anonymousGetResponse.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(anonymousGetError, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectAcl_PublicRead_AllowsAnonymousRead_AndOverwriteResetsToPrivate()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"object-acl-public-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var putRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/public.txt")
+        {
+            Content = new StringContent("public acl payload", Encoding.UTF8, "text/plain")
+        };
+        putRequest.Headers.TryAddWithoutValidation("x-amz-acl", "public-read");
+        var putResponse = await authClient.SendAsync(putRequest);
+        Assert.Equal(HttpStatusCode.OK, putResponse.StatusCode);
+
+        using var anonymousHeadRequest = new HttpRequestMessage(HttpMethod.Head, $"/integrated-s3/{bucketName}/docs/public.txt");
+        var anonymousHeadResponse = await anonymousClient.SendAsync(anonymousHeadRequest);
+        Assert.Equal(HttpStatusCode.OK, anonymousHeadResponse.StatusCode);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.OK, anonymousGetResponse.StatusCode);
+        Assert.Equal("public acl payload", await anonymousGetResponse.Content.ReadAsStringAsync());
+
+        var getAclResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt?acl");
+        Assert.Equal(HttpStatusCode.OK, getAclResponse.StatusCode);
+        var aclDocument = XDocument.Parse(await getAclResponse.Content.ReadAsStringAsync());
+        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Root!.Descendants().Where(static element => element.Name.LocalName == "URI").Select(static element => element.Value));
+
+        var overwriteResponse = await authClient.PutAsync(
+            $"/integrated-s3/{bucketName}/docs/public.txt",
+            new StringContent("private overwrite payload", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, overwriteResponse.StatusCode);
+
+        var anonymousGetAfterOverwrite = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.Forbidden, anonymousGetAfterOverwrite.StatusCode);
+        var errorDocument = XDocument.Parse(await anonymousGetAfterOverwrite.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPolicy_PublicReadAndList_AllowsAnonymousReads_AndCanBeDeleted()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"bucket-policy-public-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await authClient.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/docs/public.txt",
+                new StringContent("bucket policy payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var policyBody = $$"""
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::{{bucketName}}"
+    },
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "*"
+      },
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::{{bucketName}}/*"
+    }
+  ]
+}
+""";
+
+        using var putPolicyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?policy")
+        {
+            Content = new StringContent(policyBody, Encoding.UTF8, "application/json")
+        };
+        var putPolicyResponse = await authClient.SendAsync(putPolicyRequest);
+        Assert.Equal(HttpStatusCode.NoContent, putPolicyResponse.StatusCode);
+
+        var getPolicyResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}?policy");
+        Assert.Equal(HttpStatusCode.OK, getPolicyResponse.StatusCode);
+        using var returnedPolicyDocument = JsonDocument.Parse(await getPolicyResponse.Content.ReadAsStringAsync());
+        Assert.Equal(JsonValueKind.Object, returnedPolicyDocument.RootElement.ValueKind);
+        Assert.True(returnedPolicyDocument.RootElement.TryGetProperty("Statement", out _));
+
+        var anonymousListResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
+        Assert.Equal(HttpStatusCode.OK, anonymousListResponse.StatusCode);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.OK, anonymousGetResponse.StatusCode);
+        Assert.Equal("bucket policy payload", await anonymousGetResponse.Content.ReadAsStringAsync());
+
+        var deletePolicyResponse = await authClient.DeleteAsync($"/integrated-s3/{bucketName}?policy");
+        Assert.Equal(HttpStatusCode.NoContent, deletePolicyResponse.StatusCode);
+
+        var missingPolicyResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}?policy");
+        Assert.Equal(HttpStatusCode.NotFound, missingPolicyResponse.StatusCode);
+        var missingPolicyDocument = XDocument.Parse(await missingPolicyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("NoSuchBucketPolicy", GetRequiredElementValue(missingPolicyDocument, "Code"));
+
+        var anonymousGetAfterDelete = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt");
+        Assert.Equal(HttpStatusCode.Forbidden, anonymousGetAfterDelete.StatusCode);
+        var anonymousErrorDocument = XDocument.Parse(await anonymousGetAfterDelete.Content.ReadAsStringAsync());
+        Assert.Equal("AccessDenied", GetRequiredElementValue(anonymousErrorDocument, "Code"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBucketPolicy_WithCondition_ReturnsNotImplemented()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        var bucketName = $"bucket-policy-condition-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var policyBody = $$"""
+{
+  "Version": "2012-10-17",
+  "Statement": {
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::{{bucketName}}/*",
+    "Condition": {
+      "StringEquals": {
+        "aws:PrincipalOrgID": "o-test"
+      }
+    }
+  }
+}
+""";
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}?policy")
+        {
+            Content = new StringContent(policyBody, Encoding.UTF8, "application/json")
+        };
+        var response = await authClient.SendAsync(request);
+
+        await AssertNotImplementedResponseAsync(response);
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectAcl_WithAccessControlPolicyBody_PublicReadIsSupported()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        using var anonymousClient = isolatedClient.CreateAdditionalClient();
+        var bucketName = $"object-acl-body-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await authClient.PutAsync(
+                $"/integrated-s3/buckets/{bucketName}/objects/docs/public-body.txt",
+                new StringContent("body acl payload", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        using var putAclRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/public-body.txt?acl")
+        {
+            Content = new StringContent("""
+<AccessControlPolicy xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Owner>
+    <ID>ignored-owner</ID>
+  </Owner>
+  <AccessControlList>
+    <Grant>
+      <Grantee xsi:type="CanonicalUser">
+        <ID>ignored-owner</ID>
+      </Grantee>
+      <Permission>FULL_CONTROL</Permission>
+    </Grant>
+    <Grant>
+      <Grantee xsi:type="Group">
+        <URI>http://acs.amazonaws.com/groups/global/AllUsers</URI>
+      </Grantee>
+      <Permission>READ</Permission>
+    </Grant>
+  </AccessControlList>
+</AccessControlPolicy>
+""", Encoding.UTF8, "application/xml")
+        };
+        var putAclResponse = await authClient.SendAsync(putAclRequest);
+        Assert.Equal(HttpStatusCode.OK, putAclResponse.StatusCode);
+
+        var anonymousGetResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}/docs/public-body.txt");
+        Assert.Equal(HttpStatusCode.OK, anonymousGetResponse.StatusCode);
+        Assert.Equal("body acl payload", await anonymousGetResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleObjectWrite_WithGrantReadHeader_ReturnsNotImplemented()
+    {
+        await using var isolatedClient = await CreateScopeAuthorizationIsolatedClientAsync();
+        using var authClient = isolatedClient.Client;
+        var bucketName = $"object-acl-grant-{Guid.NewGuid():N}";
+
+        authClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.write");
+        Assert.Equal(HttpStatusCode.Created, (await authClient.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/docs/unsupported.txt")
+        {
+            Content = new StringContent("unsupported acl grant", Encoding.UTF8, "text/plain")
+        };
+        request.Headers.TryAddWithoutValidation("x-amz-grant-read", "uri=\"http://acs.amazonaws.com/groups/global/AllUsers\"");
+
+        var response = await authClient.SendAsync(request);
+
+        await AssertNotImplementedResponseAsync(response);
+    }
+
+    [Fact]
     public async Task EndpointFeatureToggles_CanDisableAdminObjectAndMultipartGroups()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
@@ -3536,6 +4227,41 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task EndpointRouteGroupAuthorization_CanBeConfiguredThroughBoundEndpointOptions()
+    {
+        await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
+            builder => {
+                builder.Services.AddAuthentication("TestHeader")
+                    .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+                builder.Services.AddAuthorization(options => {
+                    options.AddPolicy("IntegratedS3Route", policy => {
+                        policy.AddAuthenticationSchemes("TestHeader");
+                        policy.RequireAuthenticatedUser();
+                    });
+                });
+            },
+            configureConfiguration: configuration => {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["IntegratedS3:Endpoints:RouteAuthorization:PolicyNames:0"] = "IntegratedS3Route"
+                });
+            });
+
+        using var client = isolatedClient.Client;
+
+        var anonymousResponse = await client.GetAsync("/integrated-s3/capabilities");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("TestHeader", "storage.read");
+
+        var authenticatedResponse = await client.GetAsync("/integrated-s3/capabilities");
+        Assert.Equal(HttpStatusCode.OK, authenticatedResponse.StatusCode);
+
+        var authenticatedRepairsResponse = await client.GetAsync("/integrated-s3/admin/repairs");
+        Assert.Equal(HttpStatusCode.OK, authenticatedRepairsResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task EndpointFeatureRouteGroupAuthorization_CanBeConfiguredThroughFeatureRegistry()
     {
         await using var isolatedClient = await _factory.CreateIsolatedClientAsync(
@@ -3577,6 +4303,21 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var adminResponse = await client.GetAsync("/integrated-s3/admin/repairs");
         Assert.Equal(HttpStatusCode.OK, adminResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task EndpointAuthorizationConventions_RejectConflictingAnonymousAndAuthorizedConfiguration()
+    {
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => _factory.CreateIsolatedClientAsync(
+            configureConfiguration: configuration => {
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["IntegratedS3:Endpoints:RouteAuthorization:AllowAnonymous"] = "true",
+                    ["IntegratedS3:Endpoints:RouteAuthorization:RequireAuthorization"] = "true"
+                });
+            }));
+
+        Assert.Contains(nameof(IntegratedS3EndpointOptions.RouteAuthorization), exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -4032,6 +4773,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 StorageOperationType.ListBuckets => "storage.read",
                 StorageOperationType.HeadBucket => "storage.read",
                 StorageOperationType.ListObjects => "storage.read",
+                StorageOperationType.ListObjectVersions => "storage.read",
+                StorageOperationType.ListMultipartUploads => "storage.read",
                 StorageOperationType.GetObject => "storage.read",
                 StorageOperationType.PresignGetObject => "storage.read",
                 StorageOperationType.GetBucketLocation => "storage.read",
@@ -4055,6 +4798,15 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 SuggestedHttpStatusCode = 403
             }));
         }
+    }
+
+    private Task<WebUiApplicationFactory.IsolatedWebUiClient> CreateScopeAuthorizationIsolatedClientAsync()
+    {
+        return _factory.CreateIsolatedClientAsync(builder => {
+            builder.Services.AddAuthentication("TestHeader")
+                .AddScheme<AuthenticationSchemeOptions, TestHeaderAuthenticationHandler>("TestHeader", static _ => { });
+            builder.Services.AddSingleton<IIntegratedS3AuthorizationService, ScopeBasedIntegratedS3AuthorizationService>();
+        });
     }
 
     private sealed class ConfigurableStorageBackendHealthEvaluator(IReadOnlyDictionary<string, StorageBackendHealthStatus> statuses) : IStorageBackendHealthEvaluator
@@ -4132,6 +4884,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         public IAsyncEnumerable<ObjectInfo> ListObjectVersionsAsync(ListObjectVersionsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
         {
@@ -4481,6 +5235,19 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 
+    private static async Task<IReadOnlyDictionary<string, string>> GetObjectTagsAsync(HttpClient client, string bucketName, string key)
+    {
+        var response = await client.GetAsync($"/integrated-s3/{bucketName}/{key}?tagging");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.Root!.S3Element("TagSet")!.S3Elements("Tag")
+            .ToDictionary(
+                static tag => tag.S3Element("Key")?.Value ?? string.Empty,
+                static tag => tag.S3Element("Value")?.Value ?? string.Empty,
+                StringComparer.Ordinal);
+    }
+
     private static async Task AssertNotImplementedResponseAsync(HttpResponseMessage response)
     {
         Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
@@ -4611,10 +5378,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         };
 
         var signedHeaders = new[] { "host", "x-amz-content-sha256", "x-amz-date" };
+        var requestUri = CreateUri(pathAndQuery, host);
         var canonicalRequest = S3SigV4Signer.BuildCanonicalRequest(
             method.Method,
-            CreateUri(pathAndQuery, host).AbsolutePath,
-            EnumerateQueryParameters(CreateUri(pathAndQuery, host)),
+            requestUri.AbsolutePath,
+            EnumerateQueryParameters(requestUri),
             [
                 new KeyValuePair<string, string?>("host", host),
                 new KeyValuePair<string, string?>("x-amz-content-sha256", payloadHash),
@@ -4646,7 +5414,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var uri = CreateUri(pathAndQuery, host);
         var baseQuery = S3SigV4QueryStringParser.Parse(uri.Query).ToList();
 
-        baseQuery.AddRange([
+        baseQuery.AddRange(
+        [
             new KeyValuePair<string, string?>("X-Amz-Algorithm", "AWS4-HMAC-SHA256"),
             new KeyValuePair<string, string?>("X-Amz-Credential", $"{accessKeyId}/{credentialScope.Scope}"),
             new KeyValuePair<string, string?>("X-Amz-Date", timestampUtc.ToString("yyyyMMdd'T'HHmmss'Z'")),
