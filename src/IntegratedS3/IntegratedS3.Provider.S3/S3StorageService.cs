@@ -58,6 +58,47 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         });
     }
 
+    public async ValueTask<StorageResult<StorageDirectObjectAccessGrant>> PresignObjectDirectAsync(
+        StorageDirectObjectAccessRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(request.ExpiresInSeconds);
+
+        try
+        {
+            var presignedUrl = request.Operation switch
+            {
+                StorageDirectObjectAccessOperation.GetObject => await _client.CreatePresignedGetObjectUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.VersionId,
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
+                StorageDirectObjectAccessOperation.PutObject => await _client.CreatePresignedPutObjectUrlAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.ContentType,
+                    expiresAtUtc,
+                    cancellationToken).ConfigureAwait(false),
+                _ => throw new ArgumentOutOfRangeException(nameof(request), request.Operation, "The requested direct-presign operation is not supported.")
+            };
+
+            return StorageResult<StorageDirectObjectAccessGrant>.Success(new StorageDirectObjectAccessGrant
+            {
+                Url = presignedUrl,
+                ExpiresAtUtc = expiresAtUtc,
+                Headers = BuildDirectPresignHeaders(request)
+            });
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return StorageResult<StorageDirectObjectAccessGrant>.Failure(S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key));
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Bucket operations
     // -------------------------------------------------------------------------
@@ -396,6 +437,56 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         while (keyMarker is not null || uploadIdMarker is not null);
     }
 
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PageSize is <= 0)
+            throw new ArgumentException("Page size must be greater than zero.", nameof(request));
+
+        var partNumberMarker = request.PartNumberMarker;
+        var remaining = request.PageSize;
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            S3MultipartUploadPartListPage page;
+            try
+            {
+                page = await _client.ListMultipartUploadPartsAsync(
+                    request.BucketName,
+                    request.Key,
+                    request.UploadId,
+                    partNumberMarker,
+                    remaining,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (AmazonS3Exception ex)
+            {
+                throw new InvalidOperationException(
+                    S3ErrorTranslator.Translate(ex, Name, request.BucketName, request.Key).Message, ex);
+            }
+
+            foreach (var entry in page.Entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return entry;
+
+                if (remaining.HasValue)
+                {
+                    remaining--;
+                    if (remaining <= 0)
+                        yield break;
+                }
+            }
+
+            if (!page.NextPartNumberMarker.HasValue)
+                yield break;
+
+            partNumberMarker = page.NextPartNumberMarker;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Object CRUD
     // -------------------------------------------------------------------------
@@ -507,7 +598,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.Content,
                 request.ContentLength,
                 request.ContentType,
+                request.CacheControl,
+                request.ContentDisposition,
+                request.ContentEncoding,
+                request.ContentLanguage,
+                request.ExpiresUtc,
                 request.Metadata,
+                request.Tags,
                 request.Checksums,
                 request.ServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
@@ -639,7 +736,17 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.SourceIfNoneMatchETag,
                 request.SourceIfModifiedSinceUtc,
                 request.SourceIfUnmodifiedSinceUtc,
+                request.MetadataDirective,
+                request.ContentType,
+                request.CacheControl,
+                request.ContentDisposition,
+                request.ContentEncoding,
+                request.ContentLanguage,
+                request.ExpiresUtc,
+                request.Metadata,
                 request.OverwriteIfExists,
+                request.TaggingDirective,
+                request.Tags,
                 request.DestinationServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
 
@@ -675,7 +782,13 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 request.BucketName,
                 request.Key,
                 request.ContentType,
+                request.CacheControl,
+                request.ContentDisposition,
+                request.ContentEncoding,
+                request.ContentLanguage,
+                request.ExpiresUtc,
                 request.Metadata,
+                request.Tags,
                 request.ChecksumAlgorithm,
                 request.ServerSideEncryption,
                 cancellationToken).ConfigureAwait(false);
@@ -808,6 +921,11 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         IsDeleteMarker = entry.IsDeleteMarker,
         ContentLength = entry.ContentLength,
         ContentType = entry.ContentType,
+        CacheControl = entry.CacheControl,
+        ContentDisposition = entry.ContentDisposition,
+        ContentEncoding = entry.ContentEncoding,
+        ContentLanguage = entry.ContentLanguage,
+        ExpiresUtc = entry.ExpiresUtc,
         ETag = entry.ETag,
         LastModifiedUtc = entry.LastModifiedUtc,
         Metadata = entry.Metadata,
@@ -881,6 +999,11 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
         return preferred with
         {
             ContentType = preferred.ContentType ?? fallback.ContentType,
+            CacheControl = preferred.CacheControl ?? fallback.CacheControl,
+            ContentDisposition = preferred.ContentDisposition ?? fallback.ContentDisposition,
+            ContentEncoding = preferred.ContentEncoding ?? fallback.ContentEncoding,
+            ContentLanguage = preferred.ContentLanguage ?? fallback.ContentLanguage,
+            ExpiresUtc = preferred.ExpiresUtc ?? fallback.ExpiresUtc,
             ETag = preferred.ETag ?? fallback.ETag,
             LastModifiedUtc = preferred.LastModifiedUtc == default ? fallback.LastModifiedUtc : preferred.LastModifiedUtc,
             Metadata = MergeValueDictionaries(preferred.Metadata, fallback.Metadata),
@@ -947,6 +1070,20 @@ internal sealed class S3StorageService(S3StorageOptions options, IS3StorageClien
                 $"Server-side encryption algorithm '{serverSideEncryption.Algorithm}' is not supported by the native S3 provider.",
                 bucketName,
                 key)
+        };
+    }
+
+    private static Dictionary<string, string> BuildDirectPresignHeaders(StorageDirectObjectAccessRequest request)
+    {
+        if (request.Operation != StorageDirectObjectAccessOperation.PutObject
+            || string.IsNullOrWhiteSpace(request.ContentType))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Content-Type"] = request.ContentType
         };
     }
 
