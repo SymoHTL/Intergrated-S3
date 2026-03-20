@@ -2718,6 +2718,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var upload = await FindMultipartUploadAsync(storageService, bucketName, key, uploadId!, innerCancellationToken);
+                if (upload is null) {
+                    return ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status404NotFound,
+                        "NoSuchUpload",
+                        "The specified multipart upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.",
+                        BuildObjectResource(bucketName, key),
+                        bucketName,
+                        key);
+                }
+
                 var result = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
                 {
                     BucketName = bucketName,
