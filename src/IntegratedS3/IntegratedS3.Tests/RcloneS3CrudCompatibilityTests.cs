@@ -469,6 +469,7 @@ public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteXml, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.ContentMD5 = MD5.HashData(Encoding.UTF8.GetBytes(deleteXml));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
@@ -520,6 +521,7 @@ public sealed class RcloneS3CrudCompatibilityTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteXml, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.ContentMD5 = MD5.HashData(Encoding.UTF8.GetBytes(deleteXml));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);

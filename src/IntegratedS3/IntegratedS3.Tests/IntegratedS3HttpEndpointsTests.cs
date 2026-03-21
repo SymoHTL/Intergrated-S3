@@ -36,6 +36,7 @@ using Xunit;
 
 namespace IntegratedS3.Tests;
 
+[Collection(ObservabilityTestCollection.Name)]
 public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicationFactory>
 {
     private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
@@ -211,7 +212,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var getTaggingResponse = await client.GetAsync($"/integrated-s3/versioned-bucket/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}");
         Assert.Equal(HttpStatusCode.OK, getTaggingResponse.StatusCode);
         var taggingDocument = XDocument.Parse(await getTaggingResponse.Content.ReadAsStringAsync());
-        Assert.Equal("copilot", taggingDocument.Root!.Element(S3Ns + "TagSet")!.Element(S3Ns + "Tag")!.Element(S3Ns + "Value")!.Value);
+        Assert.Equal("copilot", taggingDocument.Root!.S3Element("TagSet")!.S3Element("Tag")!.S3Element("Value")!.Value);
 
         var wrongVersionResponse = await client.GetAsync("/integrated-s3/versioned-bucket/docs/versioned.txt?versionId=missing-version");
         Assert.Equal(HttpStatusCode.NotFound, wrongVersionResponse.StatusCode);
@@ -999,8 +1000,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var initialGet = await client.GetAsync("/integrated-s3/versioning-config-bucket?versioning");
         Assert.Equal(HttpStatusCode.OK, initialGet.StatusCode);
         var initialDocument = XDocument.Parse(await initialGet.Content.ReadAsStringAsync());
-        Assert.Equal("VersioningConfiguration", initialDocument.Root?.Name.LocalName);
-        Assert.Null(initialDocument.Root?.Element(S3Ns + "Status"));
+        S3XmlTestHelper.AssertRoot(initialDocument, "VersioningConfiguration");
+        Assert.Null(initialDocument.Root?.S3Element("Status"));
 
         using var putVersioningRequest = new HttpRequestMessage(HttpMethod.Put, "/integrated-s3/versioning-config-bucket?versioning")
         {
@@ -1074,14 +1075,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", getCorsResponse.Content.Headers.ContentType?.MediaType);
 
         var corsDocument = XDocument.Parse(await getCorsResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CORSConfiguration", corsDocument.Root?.Name.LocalName);
-        var rule = Assert.Single(corsDocument.Root!.Elements(S3Ns + "CORSRule"));
-        Assert.Equal("browser-rule", rule.Element(S3Ns + "ID")?.Value);
-        Assert.Equal(["GET", "PUT"], rule.Elements(S3Ns + "AllowedMethod").Select(static element => element.Value).ToArray());
-        Assert.Equal(["https://app.example"], rule.Elements(S3Ns + "AllowedOrigin").Select(static element => element.Value).ToArray());
-        Assert.Equal(["authorization", "x-amz-*"], rule.Elements(S3Ns + "AllowedHeader").Select(static element => element.Value).ToArray());
-        Assert.Equal("etag", rule.Element(S3Ns + "ExposeHeader")?.Value);
-        Assert.Equal("600", rule.Element(S3Ns + "MaxAgeSeconds")?.Value);
+        S3XmlTestHelper.AssertRoot(corsDocument, "CORSConfiguration");
+        var rule = Assert.Single(corsDocument.Root!.S3Elements("CORSRule"));
+        Assert.Equal("browser-rule", rule.S3Element("ID")?.Value);
+        Assert.Equal(["GET", "PUT"], rule.S3Elements("AllowedMethod").Select(static element => element.Value).ToArray());
+        Assert.Equal(["https://app.example"], rule.S3Elements("AllowedOrigin").Select(static element => element.Value).ToArray());
+        Assert.Equal(["authorization", "x-amz-*"], rule.S3Elements("AllowedHeader").Select(static element => element.Value).ToArray());
+        Assert.Equal("etag", rule.S3Element("ExposeHeader")?.Value);
+        Assert.Equal("600", rule.S3Element("MaxAgeSeconds")?.Value);
 
         var deleteCorsResponse = await client.DeleteAsync("/integrated-s3/cors-config-bucket?cors");
         Assert.Equal(HttpStatusCode.NoContent, deleteCorsResponse.StatusCode);
@@ -1858,13 +1859,13 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, currentTagsResponse.StatusCode);
         Assert.Equal(v2VersionId, Assert.Single(currentTagsResponse.Headers.GetValues("x-amz-version-id")));
         var currentTagsDocument = XDocument.Parse(await currentTagsResponse.Content.ReadAsStringAsync());
-        Assert.Empty(currentTagsDocument.Root!.Element(S3Ns + "TagSet")!.Elements(S3Ns + "Tag"));
+        Assert.Empty(currentTagsDocument.Root!.S3Element("TagSet")!.S3Elements("Tag"));
 
         var historicalTagsBeforeDelete = await client.GetAsync($"/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(v1VersionId)}");
         Assert.Equal(HttpStatusCode.OK, historicalTagsBeforeDelete.StatusCode);
         Assert.Equal(v1VersionId, Assert.Single(historicalTagsBeforeDelete.Headers.GetValues("x-amz-version-id")));
         var historicalTagsDocument = XDocument.Parse(await historicalTagsBeforeDelete.Content.ReadAsStringAsync());
-        Assert.Equal("one", historicalTagsDocument.Root!.Element(S3Ns + "TagSet")!.Element(S3Ns + "Tag")!.Element(S3Ns + "Value")!.Value);
+        Assert.Equal("one", historicalTagsDocument.Root!.S3Element("TagSet")!.S3Element("Tag")!.S3Element("Value")!.Value);
 
         var deleteHistoricalTags = await client.DeleteAsync($"/integrated-s3/tag-delete-bucket/docs/tagged.txt?tagging&versionId={Uri.EscapeDataString(v1VersionId)}");
         Assert.Equal(HttpStatusCode.NoContent, deleteHistoricalTags.StatusCode);
@@ -1874,7 +1875,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, historicalTagsAfterDelete.StatusCode);
         Assert.Equal(v1VersionId, Assert.Single(historicalTagsAfterDelete.Headers.GetValues("x-amz-version-id")));
         var clearedHistoricalTagsDocument = XDocument.Parse(await historicalTagsAfterDelete.Content.ReadAsStringAsync());
-        Assert.Empty(clearedHistoricalTagsDocument.Root!.Element(S3Ns + "TagSet")!.Elements(S3Ns + "Tag"));
+        Assert.Empty(clearedHistoricalTagsDocument.Root!.S3Element("TagSet")!.S3Elements("Tag"));
     }
 
     [Fact]
@@ -1960,8 +1961,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var versionsResponse = await client.GetAsync("/integrated-s3/delete-marker-read-bucket?versions&prefix=docs/deleted.txt");
         Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
         var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
-        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements(S3Ns + "DeleteMarker"));
-        var expectedLastModified = DateTimeOffset.Parse(deleteMarker.Element(S3Ns + "LastModified")!.Value).ToString("R");
+        var deleteMarker = Assert.Single(versionsDocument.Root!.S3Elements("DeleteMarker"));
+        var expectedLastModified = DateTimeOffset.Parse(deleteMarker.S3Element("LastModified")!.Value).ToString("R");
 
         var currentGet = await client.GetAsync("/integrated-s3/delete-marker-read-bucket/docs/deleted.txt");
         Assert.Equal(HttpStatusCode.NotFound, currentGet.StatusCode);
@@ -2015,8 +2016,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var versionsResponse = await client.GetAsync("/integrated-s3/delete-marker-conditional-bucket?versions&prefix=docs/deleted.txt");
         Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
         var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
-        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements(S3Ns + "DeleteMarker"));
-        var expectedLastModified = DateTimeOffset.Parse(deleteMarker.Element(S3Ns + "LastModified")!.Value).ToString("R");
+        var deleteMarker = Assert.Single(versionsDocument.Root!.S3Elements("DeleteMarker"));
+        var expectedLastModified = DateTimeOffset.Parse(deleteMarker.S3Element("LastModified")!.Value).ToString("R");
 
         using var currentGetRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/delete-marker-conditional-bucket/docs/deleted.txt");
         currentGetRequest.Headers.TryAddWithoutValidation("If-None-Match", "\"different\"");
@@ -2082,20 +2083,20 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", versionsResponse.Content.Headers.ContentType?.MediaType);
 
         var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
-        Assert.Equal("ListVersionsResult", versionsDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(versionsDocument, "ListVersionsResult");
         Assert.Equal("history-versions-bucket", GetRequiredElementValue(versionsDocument, "Name"));
 
-        var deleteMarkers = versionsDocument.Root!.Elements(S3Ns + "DeleteMarker").ToArray();
-        var versions = versionsDocument.Root!.Elements(S3Ns + "Version").ToArray();
+        var deleteMarkers = versionsDocument.Root!.S3Elements("DeleteMarker").ToArray();
+        var versions = versionsDocument.Root!.S3Elements("Version").ToArray();
 
         var deleteMarker = Assert.Single(deleteMarkers);
-        Assert.Equal("docs/history.txt", deleteMarker.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(deleteMarkerVersionId, deleteMarker.Element(S3Ns + "VersionId")?.Value);
-        Assert.Equal("true", deleteMarker.Element(S3Ns + "IsLatest")?.Value);
+        Assert.Equal("docs/history.txt", deleteMarker.S3Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.S3Element("VersionId")?.Value);
+        Assert.Equal("true", deleteMarker.S3Element("IsLatest")?.Value);
 
         Assert.Equal(2, versions.Length);
-        Assert.Contains(versions, version => version.Element(S3Ns + "VersionId")?.Value == v1VersionId);
-        Assert.Contains(versions, version => version.Element(S3Ns + "VersionId")?.Value == v2VersionId);
+        Assert.Contains(versions, version => version.S3Element("VersionId")?.Value == v1VersionId);
+        Assert.Contains(versions, version => version.S3Element("VersionId")?.Value == v2VersionId);
 
         var deleteDeleteMarker = await client.DeleteAsync($"/integrated-s3/history-versions-bucket/docs/history.txt?versionId={Uri.EscapeDataString(deleteMarkerVersionId)}");
         Assert.Equal(HttpStatusCode.NoContent, deleteDeleteMarker.StatusCode);
@@ -2156,14 +2157,14 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", firstPageResponse.Content.Headers.ContentType?.MediaType);
 
         var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
-        Assert.Equal("ListVersionsResult", firstPageDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(firstPageDocument, "ListVersionsResult");
         Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
         Assert.Equal(primaryKey, GetRequiredElementValue(firstPageDocument, "NextKeyMarker"));
         Assert.Equal(deleteMarkerVersionId, GetRequiredElementValue(firstPageDocument, "NextVersionIdMarker"));
-        Assert.Empty(firstPageDocument.Root!.Elements(S3Ns + "Version"));
-        var firstPageDeleteMarker = Assert.Single(firstPageDocument.Root!.Elements(S3Ns + "DeleteMarker"));
-        Assert.Equal(primaryKey, firstPageDeleteMarker.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(deleteMarkerVersionId, firstPageDeleteMarker.Element(S3Ns + "VersionId")?.Value);
+        Assert.Empty(firstPageDocument.Root!.S3Elements("Version"));
+        var firstPageDeleteMarker = Assert.Single(firstPageDocument.Root!.S3Elements("DeleteMarker"));
+        Assert.Equal(primaryKey, firstPageDeleteMarker.S3Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, firstPageDeleteMarker.S3Element("VersionId")?.Value);
 
         var secondPageResponse = await client.GetAsync(
             $"/integrated-s3/history-version-markers-bucket?versions&prefix=docs/&max-keys=10&key-marker={Uri.EscapeDataString(primaryKey)}&version-id-marker={Uri.EscapeDataString(deleteMarkerVersionId)}");
@@ -2174,25 +2175,25 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(primaryKey, GetRequiredElementValue(secondPageDocument, "KeyMarker"));
         Assert.Equal(deleteMarkerVersionId, GetRequiredElementValue(secondPageDocument, "VersionIdMarker"));
         Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
-        Assert.Empty(secondPageDocument.Root!.Elements(S3Ns + "DeleteMarker"));
+        Assert.Empty(secondPageDocument.Root!.S3Elements("DeleteMarker"));
 
-        var secondPageVersions = secondPageDocument.Root!.Elements(S3Ns + "Version").ToArray();
+        var secondPageVersions = secondPageDocument.Root!.S3Elements("Version").ToArray();
         Assert.Collection(
             secondPageVersions,
             version => {
-                Assert.Equal(primaryKey, version.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(v2VersionId, version.Element(S3Ns + "VersionId")?.Value);
-                Assert.Equal("false", version.Element(S3Ns + "IsLatest")?.Value);
+                Assert.Equal(primaryKey, version.S3Element("Key")?.Value);
+                Assert.Equal(v2VersionId, version.S3Element("VersionId")?.Value);
+                Assert.Equal("false", version.S3Element("IsLatest")?.Value);
             },
             version => {
-                Assert.Equal(primaryKey, version.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(v1VersionId, version.Element(S3Ns + "VersionId")?.Value);
-                Assert.Equal("false", version.Element(S3Ns + "IsLatest")?.Value);
+                Assert.Equal(primaryKey, version.S3Element("Key")?.Value);
+                Assert.Equal(v1VersionId, version.S3Element("VersionId")?.Value);
+                Assert.Equal("false", version.S3Element("IsLatest")?.Value);
             },
             version => {
-                Assert.Equal(secondaryKey, version.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(secondaryVersionId, version.Element(S3Ns + "VersionId")?.Value);
-                Assert.Equal("true", version.Element(S3Ns + "IsLatest")?.Value);
+                Assert.Equal(secondaryKey, version.S3Element("Key")?.Value);
+                Assert.Equal(secondaryVersionId, version.S3Element("VersionId")?.Value);
+                Assert.Equal("true", version.S3Element("IsLatest")?.Value);
             });
     }
 
@@ -2227,7 +2228,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", firstPageResponse.Content.Headers.ContentType?.MediaType);
 
         var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
-        Assert.Equal("ListMultipartUploadsResult", firstPageDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(firstPageDocument, "ListMultipartUploadsResult");
         Assert.Equal(bucketName, GetRequiredElementValue(firstPageDocument, "Bucket"));
         Assert.Equal("docs/", GetRequiredElementValue(firstPageDocument, "Prefix"));
         Assert.Equal("/", GetRequiredElementValue(firstPageDocument, "Delimiter"));
@@ -2237,26 +2238,26 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         static void AssertUploadIdentity(XElement upload)
         {
-            var initiator = Assert.IsType<XElement>(upload.Element(S3Ns + "Initiator"));
-            var owner = Assert.IsType<XElement>(upload.Element(S3Ns + "Owner"));
-            Assert.False(string.IsNullOrWhiteSpace(initiator.Element(S3Ns + "ID")?.Value));
-            Assert.Equal(initiator.Element(S3Ns + "ID")?.Value, owner.Element(S3Ns + "ID")?.Value);
+            var initiator = Assert.IsType<XElement>(upload.S3Element("Initiator"));
+            var owner = Assert.IsType<XElement>(upload.S3Element("Owner"));
+            Assert.False(string.IsNullOrWhiteSpace(initiator.S3Element("ID")?.Value));
+            Assert.Equal(initiator.S3Element("ID")?.Value, owner.S3Element("ID")?.Value);
         }
 
-        var firstPageUploads = firstPageDocument.Root!.Elements(S3Ns + "Upload").ToArray();
+        var firstPageUploads = firstPageDocument.Root!.S3Elements("Upload").ToArray();
         Assert.Collection(
             firstPageUploads,
             upload => {
-                Assert.Equal("docs/alpha.txt", upload.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(firstUploadId, upload.Element(S3Ns + "UploadId")?.Value);
+                Assert.Equal("docs/alpha.txt", upload.S3Element("Key")?.Value);
+                Assert.Equal(firstUploadId, upload.S3Element("UploadId")?.Value);
                 AssertUploadIdentity(upload);
             },
             upload => {
-                Assert.Equal("docs/alpha.txt", upload.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(secondUploadId, upload.Element(S3Ns + "UploadId")?.Value);
+                Assert.Equal("docs/alpha.txt", upload.S3Element("Key")?.Value);
+                Assert.Equal(secondUploadId, upload.S3Element("UploadId")?.Value);
                 AssertUploadIdentity(upload);
             });
-        Assert.Empty(firstPageDocument.Root!.Elements(S3Ns + "CommonPrefixes"));
+        Assert.Empty(firstPageDocument.Root!.S3Elements("CommonPrefixes"));
 
         var secondPageResponse = await client.GetAsync(
             $"/integrated-s3/{bucketName}?uploads&prefix=docs/&delimiter=/&max-uploads=10&key-marker={Uri.EscapeDataString("docs/alpha.txt")}&upload-id-marker={Uri.EscapeDataString(secondUploadId)}");
@@ -2267,10 +2268,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("docs/alpha.txt", GetRequiredElementValue(secondPageDocument, "KeyMarker"));
         Assert.Equal(secondUploadId, GetRequiredElementValue(secondPageDocument, "UploadIdMarker"));
         Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
-        Assert.Empty(secondPageDocument.Root!.Elements(S3Ns + "Upload"));
+        Assert.Empty(secondPageDocument.Root!.S3Elements("Upload"));
 
-        var commonPrefix = Assert.Single(secondPageDocument.Root!.Elements(S3Ns + "CommonPrefixes"));
-        Assert.Equal("docs/nested/", commonPrefix.Element(S3Ns + "Prefix")?.Value);
+        var commonPrefix = Assert.Single(secondPageDocument.Root!.S3Elements("CommonPrefixes"));
+        Assert.Equal("docs/nested/", commonPrefix.S3Element("Prefix")?.Value);
     }
 
     [Fact]
@@ -2286,12 +2287,12 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
 
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("ListMultipartUploadsResult", document.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(document, "ListMultipartUploadsResult");
         Assert.Equal(bucketName, GetRequiredElementValue(document, "Bucket"));
         Assert.Equal("false", GetRequiredElementValue(document, "IsTruncated"));
         Assert.Equal("1000", GetRequiredElementValue(document, "MaxUploads"));
-        Assert.Empty(document.Root!.Elements(S3Ns + "Upload"));
-        Assert.Empty(document.Root!.Elements(S3Ns + "CommonPrefixes"));
+        Assert.Empty(document.Root!.S3Elements("Upload"));
+        Assert.Empty(document.Root!.S3Elements("CommonPrefixes"));
     }
 
     [Fact]
@@ -2337,16 +2338,16 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(Uri.EscapeDataString(key), GetRequiredElementValue(firstPageDocument, "NextKeyMarker"));
         Assert.Equal(secondUploadId, GetRequiredElementValue(firstPageDocument, "NextUploadIdMarker"));
 
-        var firstPageUploads = firstPageDocument.Root!.Elements(S3Ns + "Upload").ToArray();
+        var firstPageUploads = firstPageDocument.Root!.S3Elements("Upload").ToArray();
         Assert.Collection(
             firstPageUploads,
             upload => {
-                Assert.Equal(Uri.EscapeDataString(key), upload.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(firstUploadId, upload.Element(S3Ns + "UploadId")?.Value);
+                Assert.Equal(Uri.EscapeDataString(key), upload.S3Element("Key")?.Value);
+                Assert.Equal(firstUploadId, upload.S3Element("UploadId")?.Value);
             },
             upload => {
-                Assert.Equal(Uri.EscapeDataString(key), upload.Element(S3Ns + "Key")?.Value);
-                Assert.Equal(secondUploadId, upload.Element(S3Ns + "UploadId")?.Value);
+                Assert.Equal(Uri.EscapeDataString(key), upload.S3Element("Key")?.Value);
+                Assert.Equal(secondUploadId, upload.S3Element("UploadId")?.Value);
             });
 
         var secondPageResponse = await client.GetAsync(
@@ -2356,8 +2357,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
         Assert.Equal(Uri.EscapeDataString(key), GetRequiredElementValue(secondPageDocument, "KeyMarker"));
         Assert.Equal(secondUploadId, GetRequiredElementValue(secondPageDocument, "UploadIdMarker"));
-        var commonPrefix = Assert.Single(secondPageDocument.Root!.Elements(S3Ns + "CommonPrefixes"));
-        Assert.Equal(Uri.EscapeDataString(nestedPrefix), commonPrefix.Element(S3Ns + "Prefix")?.Value);
+        var commonPrefix = Assert.Single(secondPageDocument.Root!.S3Elements("CommonPrefixes"));
+        Assert.Equal(Uri.EscapeDataString(nestedPrefix), commonPrefix.S3Element("Prefix")?.Value);
     }
 
     [Fact]
@@ -2389,7 +2390,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(string.Empty, GetRequiredElementValue(document, "KeyMarker"));
         Assert.Equal(string.Empty, GetRequiredElementValue(document, "UploadIdMarker"));
-        Assert.Equal(2, document.Root!.Elements(S3Ns + "Upload").Count());
+        Assert.Equal(2, document.Root!.S3Elements("Upload").Count());
     }
 
     [Fact]
@@ -2405,7 +2406,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", secondResponse.Content.Headers.ContentType?.MediaType);
 
         var errorDocument = XDocument.Parse(await secondResponse.Content.ReadAsStringAsync());
-        Assert.Equal("Error", errorDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(errorDocument, "Error");
         Assert.Equal("BucketAlreadyExists", GetRequiredElementValue(errorDocument, "Code"));
         Assert.Contains("already exists", GetRequiredElementValue(errorDocument, "Message"), StringComparison.OrdinalIgnoreCase);
         Assert.Equal("/conflict-bucket", GetRequiredElementValue(errorDocument, "Resource"));
@@ -2628,7 +2629,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(expectedChecksumCrc32c, Assert.Single(copyResponse.Headers.GetValues("x-amz-checksum-crc32c")));
         Assert.Equal(expectedChecksumSha256, Assert.Single(copyResponse.Headers.GetValues("x-amz-checksum-sha256")));
         var copyDocument = XDocument.Parse(await copyResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CopyObjectResult", copyDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(copyDocument, "CopyObjectResult");
         Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(copyDocument, "LastModified")));
         Assert.False(string.IsNullOrWhiteSpace(GetRequiredElementValue(copyDocument, "ETag")));
         Assert.Equal(expectedChecksumCrc32, GetRequiredElementValue(copyDocument, "ChecksumCRC32"));
@@ -2965,21 +2966,21 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
         Assert.Equal("1", GetRequiredElementValue(document, "MaxKeys"));
         Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
-        Assert.Empty(document.Root!.Elements(S3Ns + "KeyCount"));
-        Assert.Empty(document.Root.Elements(S3Ns + "ContinuationToken"));
-        Assert.Empty(document.Root.Elements(S3Ns + "NextContinuationToken"));
-        Assert.Empty(document.Root.Elements(S3Ns + "NextMarker"));
+        Assert.Empty(document.Root!.S3Elements("KeyCount"));
+        Assert.Empty(document.Root.S3Elements("ContinuationToken"));
+        Assert.Empty(document.Root.S3Elements("NextContinuationToken"));
+        Assert.Empty(document.Root.S3Elements("NextMarker"));
 
-        var listedObject = Assert.Single(document.Root.Elements(S3Ns + "Contents"));
-        Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.Element(S3Ns + "Key")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(listedObject.Element(S3Ns + "Owner")?.Element(S3Ns + "ID")?.Value));
+        var listedObject = Assert.Single(document.Root.S3Elements("Contents"));
+        Assert.Equal("docs%2Fb%20file%282%29.txt", listedObject.S3Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(listedObject.S3Element("Owner")?.S3Element("ID")?.Value));
 
         var secondPageResponse = await client.GetAsync(
             $"/integrated-s3/{bucketName}?prefix={Uri.EscapeDataString("docs/")}&marker={Uri.EscapeDataString("docs/b file(2).txt")}&max-keys=10&encoding-type=url");
 
         Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
         var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
-        Assert.Equal("docs%2Fc%20file%283%29.txt", Assert.Single(secondPageDocument.Root!.Elements(S3Ns + "Contents")).Element(S3Ns + "Key")?.Value);
+        Assert.Equal("docs%2Fc%20file%283%29.txt", Assert.Single(secondPageDocument.Root!.S3Elements("Contents")).S3Element("Key")?.Value);
     }
 
     [Fact]
@@ -3048,8 +3049,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var versionsResponse = await client.GetAsync($"/integrated-s3/{sourceBucketName}?versions&prefix={Uri.EscapeDataString(sourceKey)}");
         Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
         var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
-        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements(S3Ns + "DeleteMarker"));
-        var expectedDeleteMarkerLastModified = DateTimeOffset.Parse(deleteMarker.Element(S3Ns + "LastModified")!.Value, CultureInfo.InvariantCulture).ToString("R");
+        var deleteMarker = Assert.Single(versionsDocument.Root!.S3Elements("DeleteMarker"));
+        var expectedDeleteMarkerLastModified = DateTimeOffset.Parse(deleteMarker.S3Element("LastModified")!.Value, CultureInfo.InvariantCulture).ToString("R");
 
         using var explicitDeleteMarkerCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{targetBucketName}/docs/delete-marker-copy.txt");
         explicitDeleteMarkerCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{sourceBucketName}/{sourceKey}?versionId={Uri.EscapeDataString(deleteMarkerVersionId)}");
@@ -3090,18 +3091,18 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", response.Content.Headers.ContentType?.MediaType);
 
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("ListBucketResult", document.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(document, "ListBucketResult");
         Assert.Equal("xml-list-bucket", GetRequiredElementValue(document, "Name"));
         Assert.Equal("2", GetRequiredElementValue(document, "KeyCount"));
         Assert.Equal("2", GetRequiredElementValue(document, "MaxKeys"));
         Assert.Equal("true", GetRequiredElementValue(document, "IsTruncated"));
         Assert.Equal("b.txt", GetRequiredElementValue(document, "NextContinuationToken"));
 
-        var contents = document.Root!.Elements(S3Ns + "Contents").Select(static content => content.Element(S3Ns + "Key")?.Value).ToArray();
+        var contents = document.Root!.S3Elements("Contents").Select(static content => content.S3Element("Key")?.Value).ToArray();
         Assert.Collection(contents,
             static key => Assert.Equal("a.txt", key),
             static key => Assert.Equal("b.txt", key));
-        Assert.All(document.Root.Elements(S3Ns + "Contents"), static content => Assert.Null(content.Element(S3Ns + "Owner")));
+        Assert.All(document.Root.S3Elements("Contents"), static content => Assert.Null(content.S3Element("Owner")));
     }
 
     [Fact]
@@ -3132,9 +3133,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
         Assert.Equal("1", GetRequiredElementValue(document, "KeyCount"));
 
-        var listedObject = Assert.Single(document.Root!.Elements(S3Ns + "Contents"));
-        Assert.Equal("docs%2Ffetch%20owner%281%29.txt", listedObject.Element(S3Ns + "Key")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(listedObject.Element(S3Ns + "Owner")?.Element(S3Ns + "ID")?.Value));
+        var listedObject = Assert.Single(document.Root!.S3Elements("Contents"));
+        Assert.Equal("docs%2Ffetch%20owner%281%29.txt", listedObject.S3Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(listedObject.S3Element("Owner")?.S3Element("ID")?.Value));
     }
 
     [Fact]
@@ -3157,13 +3158,13 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("2", GetRequiredElementValue(firstDocument, "KeyCount"));
         Assert.Equal("true", GetRequiredElementValue(firstDocument, "IsTruncated"));
 
-        var firstPrefixes = firstDocument.Root!.Elements(S3Ns + "CommonPrefixes")
-            .Select(static prefix => prefix.Element(S3Ns + "Prefix")?.Value)
+        var firstPrefixes = firstDocument.Root!.S3Elements("CommonPrefixes")
+            .Select(static prefix => prefix.S3Element("Prefix")?.Value)
             .ToArray();
         Assert.Collection(firstPrefixes,
             static prefix => Assert.Equal("docs/", prefix),
             static prefix => Assert.Equal("images/", prefix));
-        Assert.False(firstDocument.Root.Elements(S3Ns + "Contents").Any());
+        Assert.False(firstDocument.Root.S3Elements("Contents").Any());
 
         var continuationToken = GetRequiredElementValue(firstDocument, "NextContinuationToken");
         var secondResponse = await client.GetAsync($"/integrated-s3/delimiter-bucket?list-type=2&delimiter=%2F&max-keys=2&continuation-token={Uri.EscapeDataString(continuationToken)}");
@@ -3172,7 +3173,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var secondDocument = XDocument.Parse(await secondResponse.Content.ReadAsStringAsync());
         Assert.Equal("1", GetRequiredElementValue(secondDocument, "KeyCount"));
         Assert.Equal("false", GetRequiredElementValue(secondDocument, "IsTruncated"));
-        Assert.Equal("readme.txt", Assert.Single(secondDocument.Root!.Elements(S3Ns + "Contents")).Element(S3Ns + "Key")?.Value);
+        Assert.Equal("readme.txt", Assert.Single(secondDocument.Root!.S3Elements("Contents")).S3Element("Key")?.Value);
     }
 
     [Fact]
@@ -3191,8 +3192,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("a.txt", GetRequiredElementValue(document, "StartAfter"));
 
-        var keys = document.Root!.Elements(S3Ns + "Contents")
-            .Select(static content => content.Element(S3Ns + "Key")?.Value)
+        var keys = document.Root!.S3Elements("Contents")
+            .Select(static content => content.S3Element("Key")?.Value)
             .ToArray();
         Assert.Collection(keys,
             static key => Assert.Equal("b.txt", key),
@@ -3227,10 +3228,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var versionsResponse = await client.GetAsync("/integrated-s3/delete-missing-versioned-bucket?versions");
         Assert.Equal(HttpStatusCode.OK, versionsResponse.StatusCode);
         var versionsDocument = XDocument.Parse(await versionsResponse.Content.ReadAsStringAsync());
-        var deleteMarker = Assert.Single(versionsDocument.Root!.Elements(S3Ns + "DeleteMarker"));
-        Assert.Equal("docs/missing.txt", deleteMarker.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(deleteMarkerVersionId, deleteMarker.Element(S3Ns + "VersionId")?.Value);
-        Assert.Equal("true", deleteMarker.Element(S3Ns + "IsLatest")?.Value);
+        var deleteMarker = Assert.Single(versionsDocument.Root!.S3Elements("DeleteMarker"));
+        Assert.Equal("docs/missing.txt", deleteMarker.S3Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, deleteMarker.S3Element("VersionId")?.Value);
+        Assert.Equal("true", deleteMarker.S3Element("IsLatest")?.Value);
     }
 
     [Fact]
@@ -3253,6 +3254,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
 
@@ -3260,10 +3262,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
 
         var deleteDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
-        Assert.Equal("DeleteResult", deleteDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(deleteDocument, "DeleteResult");
 
-        var deletedKeys = deleteDocument.Root!.Elements(S3Ns + "Deleted")
-            .Select(static deleted => deleted.Element(S3Ns + "Key")?.Value)
+        var deletedKeys = deleteDocument.Root!.S3Elements("Deleted")
+            .Select(static deleted => deleted.S3Element("Key")?.Value)
             .ToArray();
         Assert.Collection(deletedKeys,
             static key => Assert.Equal("a.txt", key),
@@ -3274,6 +3276,160 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var survivingHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/batch-delete-bucket/objects/b.txt"));
         Assert.Equal(HttpStatusCode.OK, survivingHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithoutIntegrityHeader_ReturnsInvalidRequest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-missing-md5-bucket", content: null);
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-missing-md5-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidRequest", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Equal("Missing required header for this request: Content-MD5", GetRequiredElementValue(errorDocument, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithInvalidContentMd5_ReturnsInvalidDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-invalid-md5-bucket", content: null);
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-invalid-md5-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", "not-valid-base64");
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("InvalidDigest", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Equal("The Content-MD5 you specified is not valid.", GetRequiredElementValue(errorDocument, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithMismatchedContentMd5_ReturnsBadDigest()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-bad-digest-bucket", content: null);
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-bad-digest-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64("<Delete><Object><Key>different.txt</Key></Object></Delete>"));
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("BadDigest", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Equal("The Content-MD5 you specified did not match what we received.", GetRequiredElementValue(errorDocument, "Message"));
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithSha256ChecksumHeader_AllowsRequestWithoutContentMd5()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-sha256-bucket", content: null);
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-sha256-bucket/objects/a.txt", new StringContent("A", Encoding.UTF8, "text/plain"));
+
+        const string deleteBody = """
+<Delete>
+  <Object><Key>a.txt</Key></Object>
+</Delete>
+""";
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-sha256-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        deleteRequest.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", ComputeSha256Base64(deleteBody));
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var deleteDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        var deletedKey = Assert.Single(deleteDocument.Root!.S3Elements("Deleted")).S3Element("Key")?.Value;
+        Assert.Equal("a.txt", deletedKey);
+
+        var deletedHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/integrated-s3/buckets/batch-delete-sha256-bucket/objects/a.txt"));
+        Assert.Equal(HttpStatusCode.NotFound, deletedHead.StatusCode);
+    }
+
+    [Fact]
+    public async Task S3CompatibleBatchDelete_WithMoreThan1000Objects_ReturnsMalformedXml()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/batch-delete-limit-bucket", content: null);
+
+        var deleteBodyBuilder = new StringBuilder();
+        deleteBodyBuilder.AppendLine("<Delete>");
+        for (var index = 0; index < 1001; index++) {
+            deleteBodyBuilder.Append("  <Object><Key>object-")
+                .Append(index.ToString(CultureInfo.InvariantCulture))
+                .AppendLine(".txt</Key></Object>");
+        }
+
+        deleteBodyBuilder.Append("</Delete>");
+        var deleteBody = deleteBodyBuilder.ToString();
+
+        using var deleteRequest = new HttpRequestMessage(HttpMethod.Post, "/integrated-s3/batch-delete-limit-bucket?delete")
+        {
+            Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
+        };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
+
+        var deleteResponse = await client.SendAsync(deleteRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        Assert.Equal("application/xml", deleteResponse.Content.Headers.ContentType?.MediaType);
+
+        var errorDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
+        Assert.Equal("MalformedXML", GetRequiredElementValue(errorDocument, "Code"));
+        Assert.Contains("1000", GetRequiredElementValue(errorDocument, "Message"), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3304,19 +3460,20 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
 
         var deleteDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
-        var deleted = Assert.Single(deleteDocument.Root!.Elements(S3Ns + "Deleted"));
-        Assert.Equal("docs/history.txt", deleted.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(versionId, deleted.Element(S3Ns + "VersionId")?.Value);
+        var deleted = Assert.Single(deleteDocument.Root!.S3Elements("Deleted"));
+        Assert.Equal("docs/history.txt", deleted.S3Element("Key")?.Value);
+        Assert.Equal(versionId, deleted.S3Element("VersionId")?.Value);
 
-        var error = Assert.Single(deleteDocument.Root.Elements(S3Ns + "Error"));
-        Assert.Equal("docs/history.txt", error.Element(S3Ns + "Key")?.Value);
-        Assert.Equal("missing-version", error.Element(S3Ns + "VersionId")?.Value);
-        Assert.Equal("NoSuchVersion", error.Element(S3Ns + "Code")?.Value);
+        var error = Assert.Single(deleteDocument.Root.S3Elements("Error"));
+        Assert.Equal("docs/history.txt", error.S3Element("Key")?.Value);
+        Assert.Equal("missing-version", error.S3Element("VersionId")?.Value);
+        Assert.Equal("NoSuchVersion", error.S3Element("Code")?.Value);
     }
 
     [Fact]
@@ -3351,17 +3508,18 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteBody, Encoding.UTF8, "application/xml")
         };
+        deleteRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteBody));
 
         var deleteResponse = await client.SendAsync(deleteRequest);
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
 
         var deleteDocument = XDocument.Parse(await deleteResponse.Content.ReadAsStringAsync());
-        Assert.Empty(deleteDocument.Root!.Elements(S3Ns + "Deleted"));
+        Assert.Empty(deleteDocument.Root!.S3Elements("Deleted"));
 
-        var error = Assert.Single(deleteDocument.Root.Elements(S3Ns + "Error"));
-        Assert.Equal(objectKey, error.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(missingVersionId, error.Element(S3Ns + "VersionId")?.Value);
-        Assert.Equal("NoSuchVersion", error.Element(S3Ns + "Code")?.Value);
+        var error = Assert.Single(deleteDocument.Root.S3Elements("Error"));
+        Assert.Equal(objectKey, error.S3Element("Key")?.Value);
+        Assert.Equal(missingVersionId, error.S3Element("VersionId")?.Value);
+        Assert.Equal("NoSuchVersion", error.S3Element("Code")?.Value);
 
         var currentGetResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
         Assert.Equal(HttpStatusCode.NotFound, currentGetResponse.StatusCode);
@@ -3399,17 +3557,18 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(createDeleteMarkerBody, Encoding.UTF8, "application/xml")
         };
+        createDeleteMarkerRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(createDeleteMarkerBody));
 
         var createDeleteMarkerResponse = await client.SendAsync(createDeleteMarkerRequest);
         Assert.Equal(HttpStatusCode.OK, createDeleteMarkerResponse.StatusCode);
 
         var createDeleteMarkerDocument = XDocument.Parse(await createDeleteMarkerResponse.Content.ReadAsStringAsync());
-        var createdDeleteMarker = Assert.Single(createDeleteMarkerDocument.Root!.Elements(S3Ns + "Deleted"));
-        Assert.Empty(createDeleteMarkerDocument.Root.Elements(S3Ns + "Error"));
-        Assert.Equal(objectKey, createdDeleteMarker.Element(S3Ns + "Key")?.Value);
-        Assert.Null(createdDeleteMarker.Element(S3Ns + "VersionId"));
-        Assert.Equal("true", createdDeleteMarker.Element(S3Ns + "DeleteMarker")?.Value);
-        var deleteMarkerVersionId = Assert.IsType<string>(createdDeleteMarker.Element(S3Ns + "DeleteMarkerVersionId")?.Value);
+        var createdDeleteMarker = Assert.Single(createDeleteMarkerDocument.Root!.S3Elements("Deleted"));
+        Assert.Empty(createDeleteMarkerDocument.Root.S3Elements("Error"));
+        Assert.Equal(objectKey, createdDeleteMarker.S3Element("Key")?.Value);
+        Assert.Null(createdDeleteMarker.S3Element("VersionId"));
+        Assert.Equal("true", createdDeleteMarker.S3Element("DeleteMarker")?.Value);
+        var deleteMarkerVersionId = Assert.IsType<string>(createdDeleteMarker.S3Element("DeleteMarkerVersionId")?.Value);
         Assert.NotEqual(objectVersionId, deleteMarkerVersionId);
 
         var currentGetResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
@@ -3427,17 +3586,18 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         {
             Content = new StringContent(deleteDeleteMarkerBody, Encoding.UTF8, "application/xml")
         };
+        deleteDeleteMarkerRequest.Content.Headers.TryAddWithoutValidation("Content-MD5", ComputeContentMd5Base64(deleteDeleteMarkerBody));
 
         var deleteDeleteMarkerResponse = await client.SendAsync(deleteDeleteMarkerRequest);
         Assert.Equal(HttpStatusCode.OK, deleteDeleteMarkerResponse.StatusCode);
 
         var deleteDeleteMarkerDocument = XDocument.Parse(await deleteDeleteMarkerResponse.Content.ReadAsStringAsync());
-        var deletedDeleteMarker = Assert.Single(deleteDeleteMarkerDocument.Root!.Elements(S3Ns + "Deleted"));
-        Assert.Empty(deleteDeleteMarkerDocument.Root.Elements(S3Ns + "Error"));
-        Assert.Equal(objectKey, deletedDeleteMarker.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(deleteMarkerVersionId, deletedDeleteMarker.Element(S3Ns + "VersionId")?.Value);
-        Assert.Equal("true", deletedDeleteMarker.Element(S3Ns + "DeleteMarker")?.Value);
-        Assert.Equal(deleteMarkerVersionId, deletedDeleteMarker.Element(S3Ns + "DeleteMarkerVersionId")?.Value);
+        var deletedDeleteMarker = Assert.Single(deleteDeleteMarkerDocument.Root!.S3Elements("Deleted"));
+        Assert.Empty(deleteDeleteMarkerDocument.Root.S3Elements("Error"));
+        Assert.Equal(objectKey, deletedDeleteMarker.S3Element("Key")?.Value);
+        Assert.Equal(deleteMarkerVersionId, deletedDeleteMarker.S3Element("VersionId")?.Value);
+        Assert.Equal("true", deletedDeleteMarker.S3Element("DeleteMarker")?.Value);
+        Assert.Equal(deleteMarkerVersionId, deletedDeleteMarker.S3Element("DeleteMarkerVersionId")?.Value);
 
         var restoredGetResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}");
         Assert.Equal(HttpStatusCode.OK, restoredGetResponse.StatusCode);
@@ -3476,11 +3636,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", getTaggingResponse.Content.Headers.ContentType?.MediaType);
 
         var taggingDocument = XDocument.Parse(await getTaggingResponse.Content.ReadAsStringAsync());
-        Assert.Equal("Tagging", taggingDocument.Root?.Name.LocalName);
-        var tags = taggingDocument.Root!.Element(S3Ns + "TagSet")!.Elements(S3Ns + "Tag")
+        S3XmlTestHelper.AssertRoot(taggingDocument, "Tagging");
+        var tags = taggingDocument.Root!.S3Element("TagSet")!.S3Elements("Tag")
             .ToDictionary(
-                static tag => tag.Element(S3Ns + "Key")?.Value ?? string.Empty,
-                static tag => tag.Element(S3Ns + "Value")?.Value ?? string.Empty,
+                static tag => tag.S3Element("Key")?.Value ?? string.Empty,
+                static tag => tag.S3Element("Value")?.Value ?? string.Empty,
                 StringComparer.Ordinal);
 
         Assert.Equal("München 𐐀 + copilot", tags["café+owner"]);
@@ -3657,7 +3817,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
         var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
         Assert.Equal("virtual-bucket", GetRequiredElementValue(listDocument, "Name"));
-        Assert.Equal("docs/virtual.txt", Assert.Single(listDocument.Root!.Elements(S3Ns + "Contents")).Element(S3Ns + "Key")?.Value);
+        Assert.Equal("docs/virtual.txt", Assert.Single(listDocument.Root!.S3Elements("Contents")).S3Element("Key")?.Value);
 
         using var getObjectRequest = new HttpRequestMessage(HttpMethod.Get, "/integrated-s3/docs/virtual.txt");
         getObjectRequest.Headers.Host = "virtual-bucket.localhost";
@@ -3702,7 +3862,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, getVersioningResponse.StatusCode);
         Assert.Equal("application/xml", getVersioningResponse.Content.Headers.ContentType?.MediaType);
         var versioningDocument = XDocument.Parse(await getVersioningResponse.Content.ReadAsStringAsync());
-        Assert.Equal("VersioningConfiguration", versioningDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(versioningDocument, "VersioningConfiguration");
         Assert.Equal("Enabled", GetRequiredElementValue(versioningDocument, "Status"));
     }
 
@@ -3738,9 +3898,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         var listDocument = XDocument.Parse(await listResponse.Content.ReadAsStringAsync());
         Assert.Equal("virtual-multipart", GetRequiredElementValue(listDocument, "Bucket"));
-        var upload = Assert.Single(listDocument.Root!.Elements(S3Ns + "Upload"));
-        Assert.Equal("docs/upload.txt", upload.Element(S3Ns + "Key")?.Value);
-        Assert.Equal(uploadId, upload.Element(S3Ns + "UploadId")?.Value);
+        var upload = Assert.Single(listDocument.Root!.S3Elements("Upload"));
+        Assert.Equal("docs/upload.txt", upload.S3Element("Key")?.Value);
+        Assert.Equal(uploadId, upload.S3Element("UploadId")?.Value);
     }
 
     [Fact]
@@ -4020,12 +4180,12 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("application/xml", listBucketsResponse.Content.Headers.ContentType?.MediaType);
 
         var document = XDocument.Parse(await listBucketsResponse.Content.ReadAsStringAsync());
-        Assert.Equal("ListAllMyBucketsResult", document.Root?.Name.LocalName);
-        Assert.Equal("Integrated S3 Sample Host", document.Root?.Element(S3Ns + "Owner")?.Element(S3Ns + "DisplayName")?.Value);
+        S3XmlTestHelper.AssertRoot(document, "ListAllMyBucketsResult");
+        Assert.Equal("Integrated S3 Sample Host", document.Root?.S3Element("Owner")?.S3Element("DisplayName")?.Value);
 
-        var bucket = Assert.Single(document.Root!.Element(S3Ns + "Buckets")!.Elements(S3Ns + "Bucket"));
-        Assert.Equal("root-list-bucket", bucket.Element(S3Ns + "Name")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(bucket.Element(S3Ns + "CreationDate")?.Value));
+        var bucket = Assert.Single(document.Root!.S3Element("Buckets")!.S3Elements("Bucket"));
+        Assert.Equal("root-list-bucket", bucket.S3Element("Name")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(bucket.S3Element("CreationDate")?.Value));
     }
 
     [Fact]
@@ -4182,10 +4342,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal("url", GetRequiredElementValue(document, "EncodingType"));
         Assert.Equal("docs%2F", GetRequiredElementValue(document, "Prefix"));
-        var upload = Assert.Single(document.Root!.Elements(S3Ns + "Upload"));
-        Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.Element(S3Ns + "Key")?.Value);
-        Assert.False(string.IsNullOrWhiteSpace(upload.Element(S3Ns + "Owner")?.Element(S3Ns + "ID")?.Value));
-        Assert.False(string.IsNullOrWhiteSpace(upload.Element(S3Ns + "Initiator")?.Element(S3Ns + "ID")?.Value));
+        var upload = Assert.Single(document.Root!.S3Elements("Upload"));
+        Assert.Equal("docs%2Ftest%20file%283%29.txt", upload.S3Element("Key")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Owner")?.S3Element("ID")?.Value));
+        Assert.False(string.IsNullOrWhiteSpace(upload.S3Element("Initiator")?.S3Element("ID")?.Value));
     }
 
     [Fact]
@@ -4569,12 +4729,12 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var versioningResponse = await client.GetAsync($"/integrated-s3/{bucketName}?versioning&x-id=GetBucketVersioning&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20260311T180000Z");
         Assert.Equal(HttpStatusCode.OK, versioningResponse.StatusCode);
         var versioningDocument = XDocument.Parse(await versioningResponse.Content.ReadAsStringAsync());
-        Assert.Equal("VersioningConfiguration", versioningDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(versioningDocument, "VersioningConfiguration");
 
         var uploadsResponse = await client.GetAsync($"/integrated-s3/{bucketName}?uploads&x-id=ListMultipartUploads&X-Amz-Expires=300");
         Assert.Equal(HttpStatusCode.OK, uploadsResponse.StatusCode);
         var uploadsDocument = XDocument.Parse(await uploadsResponse.Content.ReadAsStringAsync());
-        Assert.Equal("ListMultipartUploadsResult", uploadsDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(uploadsDocument, "ListMultipartUploadsResult");
     }
 
     [Fact]
@@ -4611,7 +4771,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var getTaggingResponse = await client.GetAsync($"/integrated-s3/{bucketName}/docs/versioned.txt?tagging&versionId={Uri.EscapeDataString(versionId)}&x-id=GetObjectTagging&X-Amz-Expires=300");
         Assert.Equal(HttpStatusCode.OK, getTaggingResponse.StatusCode);
         var taggingDocument = XDocument.Parse(await getTaggingResponse.Content.ReadAsStringAsync());
-        Assert.Equal("presign", taggingDocument.Root!.Element(S3Ns + "TagSet")!.Element(S3Ns + "Tag")!.Element(S3Ns + "Value")!.Value);
+        Assert.Equal("presign", taggingDocument.Root!.S3Element("TagSet")!.S3Element("Tag")!.S3Element("Value")!.Value);
     }
 
     [Fact]
@@ -4673,30 +4833,30 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("2", GetRequiredElementValue(firstPageDocument, "NextPartNumberMarker"));
         Assert.Equal("2", GetRequiredElementValue(firstPageDocument, "MaxParts"));
         Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
-        Assert.NotNull(firstPageDocument.Root!.Element(S3Ns + "Owner"));
-        Assert.NotNull(firstPageDocument.Root!.Element(S3Ns + "Initiator"));
+        Assert.NotNull(firstPageDocument.Root!.S3Element("Owner"));
+        Assert.NotNull(firstPageDocument.Root!.S3Element("Initiator"));
 
-        var firstPageParts = firstPageDocument.Root.Elements(S3Ns + "Part").ToArray();
+        var firstPageParts = firstPageDocument.Root.S3Elements("Part").ToArray();
         Assert.Equal(2, firstPageParts.Length);
         Assert.Equal(
             ["PartNumber", "LastModified", "ETag", "Size", "ChecksumSHA256"],
             firstPageParts[0].Elements().Select(static element => element.Name.LocalName).ToArray());
-        Assert.Equal("1", firstPageParts[0].Element(S3Ns + "PartNumber")?.Value);
-        Assert.Equal(part1.ETag, firstPageParts[0].Element(S3Ns + "ETag")?.Value);
-        Assert.Equal(part1.Checksum, firstPageParts[0].Element(S3Ns + "ChecksumSHA256")?.Value);
-        Assert.Equal("2", firstPageParts[1].Element(S3Ns + "PartNumber")?.Value);
-        Assert.Equal(part2.ETag, firstPageParts[1].Element(S3Ns + "ETag")?.Value);
-        Assert.Equal(part2.Checksum, firstPageParts[1].Element(S3Ns + "ChecksumSHA256")?.Value);
+        Assert.Equal("1", firstPageParts[0].S3Element("PartNumber")?.Value);
+        Assert.Equal(part1.ETag, firstPageParts[0].S3Element("ETag")?.Value);
+        Assert.Equal(part1.Checksum, firstPageParts[0].S3Element("ChecksumSHA256")?.Value);
+        Assert.Equal("2", firstPageParts[1].S3Element("PartNumber")?.Value);
+        Assert.Equal(part2.ETag, firstPageParts[1].S3Element("ETag")?.Value);
+        Assert.Equal(part2.Checksum, firstPageParts[1].S3Element("ChecksumSHA256")?.Value);
 
         var secondPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&part-number-marker=2");
         Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
 
         var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
         Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
-        var remainingPart = Assert.Single(secondPageDocument.Root!.Elements(S3Ns + "Part"));
-        Assert.Equal("3", remainingPart.Element(S3Ns + "PartNumber")?.Value);
-        Assert.Equal(part3.ETag, remainingPart.Element(S3Ns + "ETag")?.Value);
-        Assert.Equal(part3.Checksum, remainingPart.Element(S3Ns + "ChecksumSHA256")?.Value);
+        var remainingPart = Assert.Single(secondPageDocument.Root!.S3Elements("Part"));
+        Assert.Equal("3", remainingPart.S3Element("PartNumber")?.Value);
+        Assert.Equal(part3.ETag, remainingPart.S3Element("ETag")?.Value);
+        Assert.Equal(part3.Checksum, remainingPart.S3Element("ChecksumSHA256")?.Value);
     }
 
     [Fact]
@@ -5011,7 +5171,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(expectedChecksumCrc32c, Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-crc32c")));
 
         var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CompleteMultipartUploadResult", completeDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
         Assert.Equal("multipart-bucket", GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal("docs/multipart.txt", GetRequiredElementValue(completeDocument, "Key"));
         Assert.Equal(expectedChecksumSha256, GetRequiredElementValue(completeDocument, "ChecksumSHA256"));
@@ -5876,6 +6036,99 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     }
 
     [Fact]
+    public async Task S3CompatibleMultipartUpload_WithCopySourceRange_ReturnsCopyPartXmlAndCompletesObject()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-copy-range-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var sourceUploadResponse = await client.PutAsync(
+            $"/integrated-s3/buckets/{bucketName}/objects/{sourceKey}",
+            new StringContent("0123456789", Encoding.UTF8, "text/plain"));
+        Assert.Equal(HttpStatusCode.OK, sourceUploadResponse.StatusCode);
+        var sourceObject = await sourceUploadResponse.Content.ReadFromJsonAsync<ObjectInfo>(JsonOptions);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var copyPartRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{targetKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-range", "bytes=2-6");
+        copyPartRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", $"\"{sourceObject!.ETag}\"");
+
+        var copyPartResponse = await client.SendAsync(copyPartRequest);
+        Assert.Equal(HttpStatusCode.OK, copyPartResponse.StatusCode);
+        Assert.Equal("application/xml", copyPartResponse.Content.Headers.ContentType?.MediaType);
+
+        var copyPartDocument = XDocument.Parse(await copyPartResponse.Content.ReadAsStringAsync());
+        Assert.Equal("CopyPartResult", copyPartDocument.Root?.Name.LocalName);
+        var partEtag = GetRequiredElementValue(copyPartDocument, "ETag");
+        var partChecksum = GetRequiredElementValue(copyPartDocument, "ChecksumSHA256");
+        Assert.Equal(partChecksum, Assert.Single(copyPartResponse.Headers.GetValues("x-amz-checksum-sha256")));
+
+        var completeBody = $"""
+<CompleteMultipartUpload>
+    <Part>
+        <PartNumber>1</PartNumber>
+        <ETag>{partEtag}</ETag>
+    </Part>
+</CompleteMultipartUpload>
+""";
+
+        using var completeRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(completeBody, Encoding.UTF8, "application/xml")
+        };
+
+        var completeResponse = await client.SendAsync(completeRequest);
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var downloadedResponse = await client.GetAsync($"/integrated-s3/buckets/{bucketName}/objects/{targetKey}");
+        Assert.Equal(HttpStatusCode.OK, downloadedResponse.StatusCode);
+        Assert.Equal("23456", await downloadedResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_UploadPartCopy_WithFailedPrecondition_ReturnsPreconditionFailed()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-copy-precondition-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PutAsync(
+            $"/integrated-s3/buckets/{bucketName}/objects/{sourceKey}",
+            new StringContent("0123456789", Encoding.UTF8, "text/plain"))).StatusCode);
+
+        var initiateResponse = await client.SendAsync(new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{targetKey}?uploads"));
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var failedCopyRequest = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{targetKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}");
+        failedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source", $"/{bucketName}/{sourceKey}");
+        failedCopyRequest.Headers.TryAddWithoutValidation("x-amz-copy-source-if-match", "\"different\"");
+
+        var failedCopyResponse = await client.SendAsync(failedCopyRequest);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedCopyResponse.StatusCode);
+        Assert.Equal("application/xml", failedCopyResponse.Content.Headers.ContentType?.MediaType);
+        var errorDocument = XDocument.Parse(await failedCopyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("PreconditionFailed", GetRequiredElementValue(errorDocument, "Code"));
+    }
+
+    [Fact]
     public async Task S3CompatibleMultipartUpload_WithChecksumHeaders_EmitsCompositeChecksumHeaders()
     {
         using var client = await _factory.CreateClientAsync();
@@ -5948,7 +6201,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(compositeChecksum, Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-sha256")));
 
         var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CompleteMultipartUploadResult", completeDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
         Assert.Equal(bucketName, GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal(objectKey, GetRequiredElementValue(completeDocument, "Key"));
 
@@ -6040,7 +6293,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("COMPOSITE", Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-type")));
 
         var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CompleteMultipartUploadResult", completeDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
         Assert.Equal(bucketName, GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal(objectKey, GetRequiredElementValue(completeDocument, "Key"));
         Assert.Equal(compositeChecksum, GetRequiredElementValue(completeDocument, "ChecksumSHA1"));
@@ -6136,7 +6389,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal("COMPOSITE", Assert.Single(completeResponse.Headers.GetValues("x-amz-checksum-type")));
 
         var completeDocument = XDocument.Parse(await completeResponse.Content.ReadAsStringAsync());
-        Assert.Equal("CompleteMultipartUploadResult", completeDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(completeDocument, "CompleteMultipartUploadResult");
         Assert.Equal(bucketName, GetRequiredElementValue(completeDocument, "Bucket"));
         Assert.Equal(objectKey, GetRequiredElementValue(completeDocument, "Key"));
         Assert.Equal(compositeChecksum, GetRequiredElementValue(completeDocument, "ChecksumCRC32C"));
@@ -6153,6 +6406,89 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(compositeChecksum, Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-crc32c")));
         Assert.Equal("COMPOSITE", Assert.Single(downloadResponse.Headers.GetValues("x-amz-checksum-type")));
         Assert.Equal(part1Payload + part2Payload, await downloadResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task S3CompatibleMultipartUpload_ListParts_EmitsPagedChecksumAwareXml()
+    {
+        using var client = await _factory.CreateClientAsync();
+
+        const string bucketName = "multipart-listparts-bucket";
+        const string objectKey = "docs/listparts.txt";
+        const string part1Payload = "first";
+        const string part2Payload = "second";
+
+        Assert.Equal(HttpStatusCode.Created, (await client.PutAsync($"/integrated-s3/buckets/{bucketName}", content: null)).StatusCode);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+
+        using var initiateRequest = new HttpRequestMessage(HttpMethod.Post, $"/integrated-s3/{bucketName}/{objectKey}?uploads");
+        initiateRequest.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        initiateRequest.Headers.TryAddWithoutValidation("Content-Type", "text/plain");
+
+        var initiateResponse = await client.SendAsync(initiateRequest);
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.StatusCode);
+
+        var initiateDocument = XDocument.Parse(await initiateResponse.Content.ReadAsStringAsync());
+        var uploadId = GetRequiredElementValue(initiateDocument, "UploadId");
+
+        using var part1Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=1&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part1Payload, Encoding.UTF8, "text/plain")
+        };
+        part1Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part1Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part1Checksum);
+
+        var part1Response = await client.SendAsync(part1Request);
+        Assert.Equal(HttpStatusCode.OK, part1Response.StatusCode);
+        var part1ETag = part1Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected first multipart part ETag header.");
+
+        using var part2Request = new HttpRequestMessage(HttpMethod.Put, $"/integrated-s3/{bucketName}/{objectKey}?partNumber=2&uploadId={Uri.EscapeDataString(uploadId)}")
+        {
+            Content = new StringContent(part2Payload, Encoding.UTF8, "text/plain")
+        };
+        part2Request.Headers.TryAddWithoutValidation("x-amz-sdk-checksum-algorithm", "SHA256");
+        part2Request.Headers.TryAddWithoutValidation("x-amz-checksum-sha256", part2Checksum);
+
+        var part2Response = await client.SendAsync(part2Request);
+        Assert.Equal(HttpStatusCode.OK, part2Response.StatusCode);
+        var part2ETag = part2Response.Headers.ETag?.Tag ?? throw new Xunit.Sdk.XunitException("Expected second multipart part ETag header.");
+
+        var firstPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&max-parts=1");
+        Assert.Equal(HttpStatusCode.OK, firstPageResponse.StatusCode);
+
+        var firstPageDocument = XDocument.Parse(await firstPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("ListPartsResult", firstPageDocument.Root?.Name.LocalName);
+        Assert.Equal(bucketName, GetRequiredElementValue(firstPageDocument, "Bucket"));
+        Assert.Equal(objectKey, GetRequiredElementValue(firstPageDocument, "Key"));
+        Assert.Equal(uploadId, GetRequiredElementValue(firstPageDocument, "UploadId"));
+        Assert.Equal("0", GetRequiredElementValue(firstPageDocument, "PartNumberMarker"));
+        Assert.Equal("1", GetRequiredElementValue(firstPageDocument, "NextPartNumberMarker"));
+        Assert.Equal("1", GetRequiredElementValue(firstPageDocument, "MaxParts"));
+        Assert.Equal("true", GetRequiredElementValue(firstPageDocument, "IsTruncated"));
+        Assert.Equal("STANDARD", GetRequiredElementValue(firstPageDocument, "StorageClass"));
+        Assert.Equal("SHA256", GetRequiredElementValue(firstPageDocument, "ChecksumAlgorithm"));
+        Assert.Equal("COMPOSITE", GetRequiredElementValue(firstPageDocument, "ChecksumType"));
+
+        var firstPart = Assert.Single(firstPageDocument.Root!.Elements(), static element => element.Name.LocalName == "Part");
+        Assert.Equal("1", firstPart.Elements().Single(static element => element.Name.LocalName == "PartNumber").Value);
+        Assert.Equal(part1ETag, firstPart.Elements().Single(static element => element.Name.LocalName == "ETag").Value);
+        Assert.Equal(part1Checksum, firstPart.Elements().Single(static element => element.Name.LocalName == "ChecksumSHA256").Value);
+
+        var secondPageResponse = await client.GetAsync($"/integrated-s3/{bucketName}/{objectKey}?uploadId={Uri.EscapeDataString(uploadId)}&part-number-marker=1");
+        Assert.Equal(HttpStatusCode.OK, secondPageResponse.StatusCode);
+
+        var secondPageDocument = XDocument.Parse(await secondPageResponse.Content.ReadAsStringAsync());
+        Assert.Equal("1", GetRequiredElementValue(secondPageDocument, "PartNumberMarker"));
+        Assert.Equal("1000", GetRequiredElementValue(secondPageDocument, "MaxParts"));
+        Assert.Equal("false", GetRequiredElementValue(secondPageDocument, "IsTruncated"));
+        Assert.Null(secondPageDocument.Root!.Elements().FirstOrDefault(static element => element.Name.LocalName == "NextPartNumberMarker"));
+
+        var secondPart = Assert.Single(secondPageDocument.Root.Elements(), static element => element.Name.LocalName == "Part");
+        Assert.Equal("2", secondPart.Elements().Single(static element => element.Name.LocalName == "PartNumber").Value);
+        Assert.Equal(part2ETag, secondPart.Elements().Single(static element => element.Name.LocalName == "ETag").Value);
+        Assert.Equal(part2Checksum, secondPart.Elements().Single(static element => element.Name.LocalName == "ChecksumSHA256").Value);
     }
 
     [Theory]
@@ -7122,7 +7458,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, getAclResponse.StatusCode);
         var aclDocument = XDocument.Parse(await getAclResponse.Content.ReadAsStringAsync());
         Assert.Equal("AccessControlPolicy", aclDocument.Root?.Name.LocalName);
-        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Descendants(S3Ns + "URI").Select(static element => element.Value));
+        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Root!.Descendants().Where(static element => element.Name.LocalName == "URI").Select(static element => element.Value));
 
         var anonymousListResponse = await anonymousClient.GetAsync($"/integrated-s3/{bucketName}?list-type=2");
         Assert.Equal(HttpStatusCode.OK, anonymousListResponse.StatusCode);
@@ -7165,7 +7501,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         var getAclResponse = await authClient.GetAsync($"/integrated-s3/{bucketName}/docs/public.txt?acl");
         Assert.Equal(HttpStatusCode.OK, getAclResponse.StatusCode);
         var aclDocument = XDocument.Parse(await getAclResponse.Content.ReadAsStringAsync());
-        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Descendants(S3Ns + "URI").Select(static element => element.Value));
+        Assert.Contains("http://acs.amazonaws.com/groups/global/AllUsers", aclDocument.Root!.Descendants().Where(static element => element.Name.LocalName == "URI").Select(static element => element.Value));
 
         var overwriteResponse = await authClient.PutAsync(
             $"/integrated-s3/{bucketName}/docs/public.txt",
@@ -8167,6 +8503,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 Assert.Equal("failed-repair", failedRepair.Id);
                 Assert.Equal(StorageReplicaRepairOrigin.PartialWriteFailure, failedRepair.Origin);
                 Assert.Equal(StorageReplicaRepairStatus.Failed, failedRepair.Status);
+                Assert.Equal(
+                    StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+                    failedRepair.DivergenceKinds);
                 Assert.Equal("replica-memory", failedRepair.ReplicaBackendName);
                 Assert.Equal(1, failedRepair.AttemptCount);
                 Assert.Equal(StorageErrorCode.ProviderUnavailable, failedRepair.LastErrorCode);
@@ -8176,6 +8515,9 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
                 Assert.Equal("pending-repair", pendingRepair.Id);
                 Assert.Equal(StorageReplicaRepairOrigin.AsyncReplication, pendingRepair.Origin);
                 Assert.Equal(StorageReplicaRepairStatus.Pending, pendingRepair.Status);
+                Assert.Equal(
+                    StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+                    pendingRepair.DivergenceKinds);
                 Assert.Equal("trailing-replica", pendingRepair.ReplicaBackendName);
                 Assert.Equal(0, pendingRepair.AttemptCount);
                 Assert.Null(pendingRepair.LastErrorCode);
@@ -8811,7 +9153,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
         public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
         {
@@ -9453,7 +9795,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
 
     private static string GetRequiredElementValue(XDocument document, string elementName)
     {
-        return document.Root?.Element(S3Ns + elementName)?.Value
+        return document.Root?.S3Element(elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 
@@ -9481,10 +9823,10 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var document = XDocument.Parse(await response.Content.ReadAsStringAsync());
-        return document.Root!.Element(S3Ns + "TagSet")!.Elements(S3Ns + "Tag")
+        return document.Root!.S3Element("TagSet")!.S3Elements("Tag")
             .ToDictionary(
-                static tag => tag.Element(S3Ns + "Key")?.Value ?? string.Empty,
-                static tag => tag.Element(S3Ns + "Value")?.Value ?? string.Empty,
+                static tag => tag.S3Element("Key")?.Value ?? string.Empty,
+                static tag => tag.S3Element("Value")?.Value ?? string.Empty,
                 StringComparer.Ordinal);
     }
 
@@ -9556,7 +9898,8 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         DateTimeOffset? updatedAtUtc = null,
         string? versionId = null,
         int attemptCount = 0,
-        StorageError? lastError = null)
+        StorageError? lastError = null,
+        StorageReplicaRepairDivergenceKind? divergenceKinds = null)
     {
         return new StorageReplicaRepairEntry
         {
@@ -9564,6 +9907,7 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
             Origin = origin,
             Status = status,
             Operation = operation,
+            DivergenceKinds = divergenceKinds ?? StorageReplicaRepairEntry.GetDefaultDivergenceKinds(operation),
             PrimaryBackendName = primaryBackendName,
             ReplicaBackendName = replicaBackendName,
             BucketName = bucketName,
@@ -9580,6 +9924,11 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
     private static string ComputeSha1Base64(string content)
     {
         return Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(content)));
+    }
+
+    private static string ComputeContentMd5Base64(string content)
+    {
+        return Convert.ToBase64String(MD5.HashData(Encoding.UTF8.GetBytes(content)));
     }
 
     private static string ComputeMultipartSha1Base64(params string[] partChecksums)

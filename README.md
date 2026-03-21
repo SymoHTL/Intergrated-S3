@@ -169,6 +169,8 @@ See [docs/observability.md](docs/observability.md) for the full list of instrume
 
 | Document | Description |
 |---|---|
+| [Getting Started](docs/getting-started.md) | First-time setup, installation, and basic usage guide |
+| [Protocol Compatibility](docs/protocol-compatibility.md) | S3 protocol coverage, supported operations, and compatibility notes |
 | [Implementation Plan](docs/integrated-s3-implementation-plan.md) | Architecture overview, module breakdown, and roadmap |
 | [WebUi Reference Host](docs/webui-reference-host.md) | Full configuration and wiring reference for the sample host |
 | [Consumer Samples](docs/web-consumer-samples.md) | Minimal API, MVC/Razor, and Blazor WASM sample apps |
@@ -176,6 +178,7 @@ See [docs/observability.md](docs/observability.md) for the full list of instrume
 | [Provider Contract Testing](docs/provider-contract-testing.md) | xUnit harness for validating custom `IStorageBackend` implementations |
 | [Host Maintenance Jobs](docs/host-maintenance-jobs.md) | Opt-in recurring maintenance hosted service |
 | [Performance Benchmarks](docs/performance-benchmarks.md) | BenchmarkDotNet harness and hot-path scenario catalog |
+| [AOT/Trimming Guidance](docs/aot-trimming-guidance.md) | Guidelines for AOT and trimming compatibility |
 
 ---
 
