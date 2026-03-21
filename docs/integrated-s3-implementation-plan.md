@@ -79,7 +79,7 @@ Build: 0 errors, 0 warnings, 0 AOT warnings. Tests: **944 passing**.
   - `PutObjectAsync` streaming upload with content-type, custom metadata headers, and native checksum request/response mapping
   - `DeleteObjectAsync` returning delete-marker status and version ID
   - `CopyObjectAsync` via native SDK copy with source preconditions, overwrite guarding, checksum surfacing, and follow-up metadata enrichment
-  - multipart upload lifecycle (`InitiateMultipartUploadAsync`, `UploadMultipartPartAsync`, `CompleteMultipartUploadAsync`, `AbortMultipartUploadAsync`) plus provider-native multipart upload listing via the AWS SDK
+  - multipart upload lifecycle (`InitiateMultipartUploadAsync`, `UploadMultipartPartAsync`, `CompleteMultipartUploadAsync`, `AbortMultipartUploadAsync`), including native `UploadPartCopy` with copy-source range/preconditions and checksum-aware part responses, plus provider-native multipart upload listing via the AWS SDK
   - `GetObjectTagsAsync`, `PutObjectTagsAsync`, `DeleteObjectTagsAsync` via AWS tagging API
   - `GetBucketVersioningAsync` and `PutBucketVersioningAsync` via native SDK versioning API
   - `GetBucketCorsAsync`, `PutBucketCorsAsync`, and `DeleteBucketCorsAsync` via native SDK bucket CORS APIs
@@ -112,7 +112,7 @@ Build: 0 errors, 0 warnings, 0 AOT warnings. Tests: **944 passing**.
   - multipart orchestration over the primary backend with explicit unsupported behavior under both replicated write modes
   - current-version object-tag read/write orchestration with catalog refresh and write-through replication support
   - bucket CORS read/write/delete orchestration with authorization coverage and write-through replication support
-  - provider-agnostic replica-repair backlog/dispatcher seams that record async replica work, partial-write divergence, and failed-repair visibility without requiring a built-in always-on worker
+  - provider-agnostic replica-repair backlog/dispatcher seams that record async replica work, partial-write divergence, and failed-repair visibility without requiring a built-in always-on worker, plus explicit content/metadata/version divergence categories and a host-invokable `IStorageReplicaRepairService` for replaying stored repair entries
   - storage-aware authorization via an `IStorageService` decorator over orchestration
   - authorization-aware presign orchestration over provider-agnostic backend direct grants, delegated read-location resolution, and proxy fallback
   - `CatalogStorageObjectStateStore` — default `IStorageObjectStateStore` implementation that delegates to the registered `IStorageCatalogStore`
@@ -161,6 +161,7 @@ Build: 0 errors, 0 warnings, 0 AOT warnings. Tests: **944 passing**.
   - capability reporting on the HTTP metadata surface remains backend/Core-derived runtime metadata, not a full end-to-end HTTP-conformance report
   - `HttpContext.User` flow into Core authorization request context
   - provider-aware presign issuance via `POST /integrated-s3/presign/object`, with configurable signing-credential resolution and public-base-url fallback for proxy grants plus backend-direct/object-location seams for direct or delegated access
+  - read-only replica-repair backlog visibility via `GET /integrated-s3/admin/repairs`, including optional replica filtering plus per-entry divergence categories on the admin surface
   - provider-agnostic admin diagnostics via `GET /integrated-s3/admin/diagnostics`, combining provider health, replica lag, and grouped repair diagnostics, while preserving read-only replica-repair backlog visibility via `GET /integrated-s3/admin/repairs`
   - source-generated JSON serialization
 - `IntegratedS3.Client` package with:
@@ -169,6 +170,10 @@ Build: 0 errors, 0 warnings, 0 AOT warnings. Tests: **944 passing**.
   - first-party `AddIntegratedS3Client(...)` DI registration with named `IHttpClientFactory` integration, configuration binding, and overrideable `HttpClientBuilder` customization
   - `StoragePresignedRequest.CreateHttpRequestMessage(...)` to materialize ready-to-send `HttpRequestMessage` instances from returned grants
   - typed streaming/file transfer helpers that compose presign issuance with upload/download execution
+- package/onboarding polish baseline with:
+  - centralized package metadata/readme wiring and XML documentation file generation for packable projects
+  - XML docs on the primary DI registration, endpoint-mapping, client presign, provider-registration, and capability/options surfaces
+  - consumer guides for getting started, protocol compatibility, and current trimming/AOT diagnostics
 - sample host in `src/IntegratedS3/WebUi` exposing:
   - host composition helpers that can forward endpoint-mapping options while preserving the slim minimal-hosting style
   - shared runtime/test composition through `WebUiApplication.ConfigureServices(...)` and `ConfigurePipeline(...)`, with a dedicated reference-host guide in `docs/webui-reference-host.md`
@@ -177,7 +182,7 @@ Build: 0 errors, 0 warnings, 0 AOT warnings. Tests: **944 passing**.
   - bucket endpoints
   - object endpoints with metadata-header round-tripping, pagination, range, conditional, copy, and multipart behavior
   - S3-compatible XML list-buckets, list-objects-v2, batch-delete, error, and copy-object responses for the currently supported surface area
-  - S3-compatible multipart initiate/part-upload/complete/abort flows plus bucket-level `GET ?uploads` listing/discovery for the currently supported surface area
+  - S3-compatible multipart initiate/part-upload/UploadPartCopy/complete/abort flows plus bucket-level `GET ?uploads` listing/discovery for the currently supported surface area
   - S3-compatible object tagging via `GET` / `PUT ?tagging` for current and archived versions on the currently supported surface
   - S3-compatible bucket versioning configuration via `GET` / `PUT ?versioning`
   - S3-compatible bucket CORS configuration via `GET` / `PUT` / `DELETE ?cors`
@@ -1069,6 +1074,8 @@ Performance must be designed in from the start.
 
 These are optional host integrations around Core orchestration seams, not a commitment that reconciliation/repair must ship as a built-in always-on background-service architecture. Track F now exposes provider-agnostic divergence/backlog/dispatch seams so consumers can host replay/repair via `IHostedService`, external schedulers, or other operational tooling without being forced into a mandatory built-in hosted service. `IntegratedS3.AspNetCore` now includes `AddIntegratedS3MaintenanceJob(...)`, `IIntegratedS3MaintenanceJob`, and `IntegratedS3MaintenanceJobNames` so hosts can schedule mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup with the same opt-in model; reference guidance lives in `docs\host-maintenance-jobs.md`.
 
+Hosts can also seed `StorageReplicaRepairEntry` values with `StorageReplicaRepairOrigin.Reconciliation` when they detect drift out-of-band (for example through checksum verification or periodic audits) and replay those entries through `IStorageReplicaRepairService`; the entry's `DivergenceKinds` flag stays provider-agnostic while still making content, metadata, and version repair intent explicit.
+
 - mirror replay
 - orphan detection
 - checksum verification
@@ -1145,6 +1152,8 @@ Ship sample apps for:
 - analyzers/diagnostics if helpful
 - versioned protocol compatibility
 - easy onboarding docs
+
+Status (March 2026): the current package-polish baseline now includes centralized package metadata/readme wiring, XML documentation file generation for packable projects, consumer onboarding docs, protocol compatibility guidance, and explicit trimming/AOT diagnostic guidance. Future work can deepen member-level XML coverage or add a dedicated analyzer package if a concrete scenario emerges.
 
 ## Recommended Milestone Sequence
 
@@ -1237,6 +1246,7 @@ Status: **in progress / partially complete**
 - first health-aware provider selection is now implemented through an overrideable backend-health evaluator used by Core read orchestration
 - Core now also tracks dynamic backend-health snapshots, marks failover-triggering read failures as temporarily unhealthy, can optionally probe backends to restore healthy read preference without replacing existing evaluator overrides, and preflights required replicas before strict write-through primary mutation when they are unhealthy or not current
 - replica-write divergence is now surfaced through the repair backlog for both async replica dispatch and post-primary partial synchronous failures; multipart operations now participate in replication
+- repair entries now carry provider-agnostic divergence categories (`Content`, `Metadata`, `Version`), and Core now exposes `IStorageReplicaRepairService` so hosts can replay persisted backlog entries or host-seeded reconciliation findings without relying on the default in-process dispatcher
 - background reconciliation/repair execution is still scaffolded and optional-host-integrated rather than a required Core background-service model
 
 ### M6 — Versioning, tags, and checksums
@@ -1281,10 +1291,10 @@ Status: **substantially complete**
 Status: **in progress / partially complete**
 
 - conformance coverage now includes version-aware presigned reads, mixed bucket-subresource rejection, encoded/owner-aware object and multipart listing responses, and additional AWS SDK compatibility cases
-- build/test/self-contained publish validation remains scriptable through the standard `dotnet` commands plus `eng\Invoke-AotPublishValidation.ps1`, but the repository currently has no checked-in `.github\workflows\` automation; restoring CI validation is tracked in [#15](https://github.com/SymoHTL/Intergrated-S3/issues/15)
-- `docs/webui-reference-host.md` now captures the current reference-host surface and validation commands, while broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19)
+- build/test/self-contained publish validation plus the current AOT warning posture are now automated through `.github\workflows\trackh-publish-aot-ci.yml` and `eng\Invoke-AotPublishValidation.ps1`
+- `docs/webui-reference-host.md` now captures the current reference-host surface, validation commands, and remaining reference-host warning posture, while broader secure/composed host guidance is tracked in [#19](https://github.com/SymoHTL/Intergrated-S3/issues/19)
 - `src\IntegratedS3\WebUi.MvcRazor`, `src\IntegratedS3\WebUi.BlazorWasm`, and `src\IntegratedS3\WebUi.BlazorWasm.Client` now provide the planned additional sample consumers, and `docs/web-consumer-samples.md` documents how to run them
-- benchmark baselines remain pending ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14), [#13](https://github.com/SymoHTL/Intergrated-S3/issues/13))
+- benchmark baselines remain pending ([#14](https://github.com/SymoHTL/Intergrated-S3/issues/14))
 
 ## Remaining Implementation Work by Parallel Track
 
@@ -1388,26 +1398,20 @@ This section is the execution board for the remaining implementation backlog. As
 - Ready: now
 - Depends on: coordinate with Tracks B and C as parity and client-surface hardening follow-ons land
 - Status update:
-  - bucket-level multipart listing/discovery (`GET ?uploads`) is now implemented end-to-end for the current disk/Core/HTTP surface
-  - the new slice adds provider/service contracts for multipart listing, platform-managed multipart-state enumeration via `IStorageMultipartStateStore`, disk-provider sidecar fallback enumeration, S3-compatible `ListMultipartUploadsResult` XML output, delimiter/common-prefix handling, marker pagination (`key-marker` / `upload-id-marker`), and multipart feature-toggle enforcement on the bucket route
-  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, and AWS SDK `ListMultipartUploadsAsync` compatibility for the current supported surface
+  - bucket-level multipart listing/discovery (`GET ?uploads`) and object-level multipart part listing (`GET ?uploadId=...`) are now implemented end-to-end for the current disk/Core/HTTP surface
+  - the multipart listing slice now covers provider/service contracts for both upload and part enumeration, platform-managed multipart-state enumeration via `IStorageMultipartStateStore`, disk-provider sidecar fallback enumeration, native S3 `ListPartsAsync` client mapping, S3-compatible `ListMultipartUploadsResult` plus `ListPartsResult` XML output, delimiter/common-prefix handling, marker pagination (`key-marker` / `upload-id-marker` / `part-number-marker`), `max-parts` handling, checksum-aware part entries, and multipart feature-toggle enforcement on the bucket/object routes
+  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, disk-provider part enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, checksum-aware `ListParts` XML paging, AWS SDK `ListMultipartUploadsAsync` plus `ListPartsAsync` compatibility for the current supported surface, and explicit multipart `encoding-type=url` / ignored lone `upload-id-marker` / `max-uploads` guardrail behavior
   - bucket-compatible listing now also covers legacy `ListObjects` (V1) routing when `list-type` is absent, `encoding-type=url` across object and multipart list responses, `fetch-owner` handling for `ListObjectsV2`, and owner/initiator XML parity across object and multipart listing payloads
   - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
   - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
   - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route, alongside AWS SDK compatibility for legacy and fetch-owner list flows
-  - focused coverage now locks in empty listings, completed/aborted upload exclusion, platform-managed multipart-state enumeration, virtual-hosted-style HTTP behavior, feature-toggle blocking, AWS SDK `ListMultipartUploadsAsync` compatibility for the current supported surface, and explicit multipart `encoding-type=url` / ignored lone `upload-id-marker` / `max-uploads` guardrail behavior
-  - bucket/object-compatible subresource validation now uses an explicit supported-matrix for bucket `?versioning`, `?cors`, `?uploads`, and `?versions` plus object `?tagging`, `?versionId`, and multipart workflows, rejects remaining unsupported single subresources with consistent `NotImplemented` responses, and returns explicit unsupported-combination results for invalid mixed query sets
-  - focused HTTP coverage now locks in that SigV4 presign query parameters such as `X-Amz-*` and `x-id` continue to be ignored during bucket/object subresource validation for the currently supported paths
-  - protocol/conformance coverage now locks in canonical empty-value subresource signing plus presigned bucket-versioning and historical-version reads on the S3-compatible route
-  - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
-  - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
-  - standard object-header parity now covers `x-amz-meta-*`, `Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Expires`, multipart-initiation header persistence, and `x-amz-metadata-directive` copy replacement semantics across the current HTTP, disk, S3-provider, and persisted-state surfaces; the sample-host-only `x-integrateds3-meta-*` prefix remains accepted/emitted for compatibility
   - object-tagging header parity is now implemented end-to-end for `PUT Object`, `CopyObject`, and `InitiateMultipartUpload`: the S3-compatible HTTP surface now parses `x-amz-tagging` and `x-amz-tagging-directive`, copy requests honor `COPY` vs `REPLACE` semantics, and the resulting tags flow through Core replication, disk/native-S3 providers, and platform-managed multipart state so completed multipart objects retain their initiated tags
   - focused coverage now locks in direct disk-provider persistence, S3-provider forwarding, EF-backed multipart-state round-tripping, and end-to-end HTTP behavior for put/copy/multipart tagging-header flows
   - standard object-header parity now covers `x-amz-meta-*`, `Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Expires`, multipart-initiation header persistence, and `x-amz-metadata-directive` copy replacement semantics across the current HTTP, disk, S3-provider, and persisted-state surfaces; the sample-host-only `x-integrateds3-meta-*` prefix remains accepted/emitted for compatibility
   - presigned-query authentication now keeps host-only presigned URLs valid when a client also sends an unsigned `x-amz-content-sha256` header, which matches common SDK/browser request behavior
   - AWS SDK compatibility coverage now locks in path-style `aws-chunked` PUT uploads, virtual-hosted-style `aws-chunked` PUT uploads, and virtual-hosted-style presigned PUT uploads that sign `content-type`
   - copy-object source conditionals now preserve the S3 precedence rules across both combined validator pairs, with focused HTTP and AWS SDK coverage for `if-match` / `if-unmodified-since` success precedence and `if-none-match` / `if-modified-since` failure precedence
+  - multi-object delete now enforces S3-style request-integrity checks (`Content-MD5` or existing checksum headers when supplied) plus the 1000-object batch limit, with focused HTTP coverage for missing, invalid, mismatched, and over-limit delete requests
   - direct write validation now rejects ambiguous multi-checksum `x-amz-checksum-*` request header combinations instead of accepting them silently on the current S3-compatible write surface
   - SigV4 request canonicalization now preserves both raw-query literal `+` / duplicate query parameter edges and already-escaped path segments (`%XX`) during canonical-request construction, with focused protocol, HTTP conformance, and AWS SDK compatibility coverage for the current supported surface
   - temporary-session SigV4 credentials are now modeled end-to-end on the current HTTP surface: configured access-key credentials accept optional `SessionToken` values, header authentication requires a signed `x-amz-security-token` header when temporary credentials are configured, presigned-query validation enforces `X-Amz-Security-Token` for temporary credentials, and first-party proxy presigns now emit the security token
@@ -1443,11 +1447,14 @@ This section is the execution board for the remaining implementation backlog. As
   - **multipart replication is now supported**: multipart upload operations (initiate, upload-part, complete, abort) now participate in write-through replication alongside bucket and object operations, removing the previous explicit rejection under replicated write modes
   - health-aware reads now combine `IStorageBackendHealthEvaluator`, dynamic snapshots, and optional `IStorageBackendHealthProbe` probing so recently unhealthy providers can be deprioritized and later reconsidered for read preference, while replicas with outstanding repairs are avoided by default unless explicitly configured otherwise
   - strict `WriteThroughAll` now preflights required replicas for health/currentness before mutating the primary, and post-primary partial failures are recorded as repair backlog entries instead of being rolled back or silently normalized
-  - the admin HTTP surface now exposes read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs`, including optional `replicaBackend` filtering and route-group auth/endpoint-toggle coverage
-  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, backlog growth for only the replicas that remain stale, and broader multi-replica repair semantics for bucket versioning, bucket CORS deletion, object-tag deletion, and write-through bucket-CORS partial failures
+  - repair entries now carry explicit provider-agnostic divergence categories (`Content`, `Metadata`, `Version`), and Core exposes `IStorageReplicaRepairService` so hosts can replay persisted entries or host-seeded `Reconciliation` findings without being tied to the optional in-process dispatcher
+  - the admin HTTP surface now exposes read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs`, including optional `replicaBackend` filtering, per-entry divergence categories, and route-group auth/endpoint-toggle coverage
+  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, backlog growth for only the replicas that remain stale, and host-invoked reconciliation repair across content, metadata, and version drift
+  - repair entries now carry explicit provider-agnostic divergence categories (`Content`, `Metadata`, `Version`), and Core exposes `IStorageReplicaRepairService` so hosts can replay persisted entries or host-seeded `Reconciliation` findings without being tied to the optional in-process dispatcher
+  - the admin HTTP surface now exposes read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs`, including optional `replicaBackend` filtering, per-entry divergence categories, and route-group auth/endpoint-toggle coverage
   - ASP.NET Core hosts can now bridge the existing backend-health monitor into readiness/liveness probes via `AddHealthChecks().AddIntegratedS3BackendHealthCheck()` plus `MapIntegratedS3HealthEndpoints()`, keeping Core provider-agnostic while giving hosts a supported `/health/live` and `/health/ready` path
   - the admin HTTP surface now exposes provider-agnostic diagnostics at `GET /integrated-s3/admin/diagnostics`, combining provider health, replica lag, and grouped repair diagnostics, while preserving read-only repair-backlog visibility at `GET /integrated-s3/admin/repairs` with optional `replicaBackend` filtering and route-group auth/endpoint-toggle coverage
-  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, and backlog growth for only the replicas that remain stale
+  - focused orchestration coverage now locks in async replica recording/dispatch, unhealthy-replica preflight, outstanding-repair read behavior, partial-write backlog semantics, failed-repair visibility, multi-replica dispatch-recording failure isolation, mixed replay success/failure, backlog growth for only the replicas that remain stale, host-invoked reconciliation repair across content, metadata, and version drift, and broader multi-replica repair semantics for bucket versioning, bucket CORS deletion, object-tag deletion, and write-through bucket-CORS partial failures
   - async object-repair replay now reconciles primary-side `ObjectNotFound` / `BucketNotFound` by deleting stale replica state instead of leaving a failed backlog entry, and focused orchestration coverage now also locks in delete replay idempotence after out-of-band replica deletion plus current-topology-only replica targeting when removed-replica backlog entries remain
 - Current semantics and boundaries:
   - replicas with outstanding repairs are treated as not current for strict write-through preflight and are excluded from replica-preferred reads by default, but that remains a tracked divergence signal rather than a blanket durability proof that every replica is fully caught up
@@ -1460,6 +1467,7 @@ This section is the execution board for the remaining implementation backlog. As
 - optional host scheduling for replay/cleanup work is now exposed through `IntegratedS3.AspNetCore` via `AddIntegratedS3MaintenanceJob(...)`, `IIntegratedS3MaintenanceJob`, and `IntegratedS3MaintenanceJobNames`, with fresh DI scopes per run and configuration-bindable `Enabled` / `RunOnStartup` / `Interval` settings for mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup
 - reference guidance now documents the recommended host-owned seams for each maintenance category, including the current limitation that the repair backlog captures divergence visibility but not yet enough durable operation intent to deliver a fully generic replay engine after process restarts
 - Remaining scope:
+  - add optional host integrations such as mirror replay, orphan detection, checksum verification, multipart cleanup, index compaction, and expired-artifact cleanup without coupling providers or Core to a fixed hosting model
   - add richer reconciliation and divergence-repair semantics for content, metadata, and version drift beyond the current backlog/dispatcher scaffold
   - persist richer repair inputs and maintenance-specific contracts so hosts can build more generic durable replay/cleanup implementations without provider-specific or store-specific glue
   - expand admin visibility beyond repair backlog into provider health, replica lag, and richer repair diagnostics without coupling providers to a fixed hosting model
@@ -1559,6 +1567,7 @@ This section is the execution board for the remaining implementation backlog. As
   - `IntegratedS3.Client` now re-presigns follow-on `GET` requests whenever resume recovery abandons a misaligned `206` or mismatched `416` and restarts from zero, so preferred access mode plus version pinning remain stable across proxy, direct, and delegated fallback.
   - `IntegratedS3.Core` orchestration now coalesces superseded same-target repair entries only after the newer repair is durably recorded or dispatched, limits cross-version coalescing to non-versioned buckets, and focused orchestration tests now cover repeated same-key async/write-through backlog saturation plus active-topology coalescing behavior.
   - `S3CompatibleEndpointConformanceTests` now add gated real-endpoint coverage for historical `CopyObject` and `UploadPartCopy` after a current delete marker with requested `SHA256` plus `AES256` SSE, plus direct presigned `PUT` after a delete marker so historical reads and version listing remain correct.
+  - MVC/Razor plus hosted Blazor WebAssembly sample consumers now ship under `src\IntegratedS3`, with focused integration coverage in `IntegratedS3.Tests` and run guidance in `docs/web-consumer-samples.md`.
 - Verification status (July 2025):
   - `dotnet build src\IntegratedS3\IntegratedS3.slnx` — 0 errors, 0 warnings
   - `dotnet test src\IntegratedS3\IntegratedS3.slnx` — **944 tests passing** (up from 855 baseline)
@@ -1577,7 +1586,6 @@ This section is the execution board for the remaining implementation backlog. As
   - benchmark the hot paths called out in this plan and track throughput, latency, allocation, and provider-breakdown baselines
   - expand the benchmark suite beyond the current disk, mirrored-disk, loopback HTTP, AWS SDK path-style client-comparison, and first-party presign baseline set into reproducible native-S3 and broader client-comparison scenarios
   - keep the new trimming/AOT publish automation in CI aligned with the supported host surface and preserve the current zero-warning endpoint-map posture alongside benchmark baselines
-  - add the planned MVC/Razor and Blazor WebAssembly sample consumers
   - continue package polish with versioned protocol compatibility guidance and any analyzers/diagnostics worth shipping
 - Next recommended steps:
   - keep the zero-warning rebuild-backed publish validation running in CI so future `IntegratedS3.AspNetCore` / `WebUi` changes do not reintroduce IL2026/IL3050 regressions
@@ -1586,6 +1594,7 @@ This section is the execution board for the remaining implementation backlog. As
   - expand the benchmark suite beyond the current 19-scenario disk/loopback/AWS-SDK baseline into reproducible native-S3 and broader client-comparison coverage, then keep the checked-in reports current
   - continue broader post-resume client ergonomics, composite-checksum, and direct-vs-delegated follow-ons now that the resume range/rollback guards are in place
   - finish package polish items such as versioned protocol compatibility guidance and any analyzers/diagnostics worth shipping (XML docs, onboarding docs, startup validation, and NuGet metadata are now complete)
+
 ## Relevant Repository Files
 
 - `src/IntegratedS3/WebUi/Program.cs`

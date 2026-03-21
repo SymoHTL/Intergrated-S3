@@ -58,6 +58,26 @@ $warningRules = @(
         Name = 'IntegratedS3EndpointOptions AOT warning'
         Pattern = 'IntegratedS3ServiceCollectionExtensions\.cs.*IL3050.*Bind<IntegratedS3EndpointOptions>'
         MaxCount = 0
+    },
+    [pscustomobject]@{
+        Name = 'Program ConfigureServices trim warning'
+        Pattern = 'Program\.cs.*IL2026.*ConfigureServices\(WebApplicationBuilder\)'
+        MaxCount = 2
+    },
+    [pscustomobject]@{
+        Name = 'Program ConfigureServices AOT warning'
+        Pattern = 'Program\.cs.*IL3050.*ConfigureServices\(WebApplicationBuilder\)'
+        MaxCount = 2
+    },
+    [pscustomobject]@{
+        Name = 'Program ConfigurePipeline trim warning'
+        Pattern = 'Program\.cs.*IL2026.*ConfigurePipeline\(WebApplication,\s*(?:Action<IntegratedS3EndpointOptions>|Action`1<IntegratedS3EndpointOptions>)\)'
+        MaxCount = 2
+    },
+    [pscustomobject]@{
+        Name = 'Program ConfigurePipeline AOT warning'
+        Pattern = 'Program\.cs.*IL3050.*ConfigurePipeline\(WebApplication,\s*(?:Action<IntegratedS3EndpointOptions>|Action`1<IntegratedS3EndpointOptions>)\)'
+        MaxCount = 2
     }
 )
 

@@ -230,8 +230,8 @@ public interface IStorageBackend
     /// <param name="request">The listing parameters including the upload ID.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>An async stream of <see cref="MultipartUploadPart"/>.</returns>
-    IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("Multipart part listing is not implemented by this storage backend.");
+    IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Multipart upload part listing is not implemented by this storage backend.");
 
     /// <summary>
     /// Retrieves an object's data stream and metadata from the specified bucket.

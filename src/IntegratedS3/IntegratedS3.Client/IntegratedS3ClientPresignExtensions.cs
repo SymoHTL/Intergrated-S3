@@ -3,7 +3,7 @@ using IntegratedS3.Core.Models;
 namespace IntegratedS3.Client;
 
 /// <summary>
-/// Convenience helpers for first-party object presign flows.
+/// Convenience helpers that construct <see cref="StoragePresignRequest"/> values for common object operations.
 /// </summary>
 /// <remarks>
 /// Overloads without a <c>preferredAccessMode</c> parameter intentionally keep access-mode selection

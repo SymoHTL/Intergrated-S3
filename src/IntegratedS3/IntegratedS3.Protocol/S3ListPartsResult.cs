@@ -54,7 +54,7 @@ public sealed class S3ListPartsResult
 public sealed class S3ListPartEntry
 {
     /// <summary>The part number.</summary>
-    public int PartNumber { get; init; }
+    public required int PartNumber { get; init; }
 
     /// <summary>The entity tag (ETag) of the uploaded part.</summary>
     public required string ETag { get; init; }

@@ -3088,6 +3088,86 @@ public sealed class DiskStorageServiceTests
     }
 
     [Fact]
+    public async Task DiskStorage_MultipartUpload_CanCopyPartRangeWithPreconditions()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-copy" });
+
+        var sourcePut = await storageService.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/source.txt",
+            Content = new MemoryStream(Encoding.UTF8.GetBytes("0123456789")),
+            ContentType = "text/plain"
+        });
+        Assert.True(sourcePut.IsSuccess);
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            ContentType = "text/plain",
+            ChecksumAlgorithm = "SHA256"
+        });
+        Assert.True(initiateResult.IsSuccess);
+
+        var copiedPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumber = 1,
+            CopySourceBucketName = "multipart-copy",
+            CopySourceKey = "docs/source.txt",
+            CopySourceIfMatchETag = sourcePut.Value!.ETag,
+            CopySourceRange = new ObjectRange
+            {
+                Start = 2,
+                End = 6
+            }
+        });
+
+        Assert.True(copiedPart.IsSuccess);
+        Assert.False(string.IsNullOrWhiteSpace(copiedPart.Value!.Checksums!["sha256"]));
+
+        var failedPart = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            UploadId = initiateResult.Value.UploadId,
+            PartNumber = 2,
+            CopySourceBucketName = "multipart-copy",
+            CopySourceKey = "docs/source.txt",
+            CopySourceIfMatchETag = "\"different\""
+        });
+
+        Assert.False(failedPart.IsSuccess);
+        Assert.Equal(IntegratedS3.Abstractions.Errors.StorageErrorCode.PreconditionFailed, failedPart.Error!.Code);
+
+        var completeResult = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt",
+            UploadId = initiateResult.Value.UploadId,
+            Parts = [copiedPart.Value]
+        });
+
+        Assert.True(completeResult.IsSuccess);
+
+        var getResult = await storageService.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = "multipart-copy",
+            Key = "docs/copied.txt"
+        });
+
+        Assert.True(getResult.IsSuccess);
+        await using var response = getResult.Value!;
+        using var reader = new StreamReader(response.Content, Encoding.UTF8);
+        Assert.Equal("23456", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
     public async Task DiskStorage_MultipartUpload_CanBeAborted()
     {
         await using var fixture = new DiskStorageFixture();
@@ -3245,7 +3325,7 @@ public sealed class DiskStorageServiceTests
         _ = await UploadPartAsync(1, "one");
         var secondPart = await UploadPartAsync(2, "two");
 
-        var parts = await storageService.ListMultipartPartsAsync(new ListMultipartPartsRequest
+        var parts = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
         {
             BucketName = "multipart-parts",
             Key = "docs/assembled.txt",
@@ -3408,6 +3488,80 @@ public sealed class DiskStorageServiceTests
                 Assert.Equal("docs/nested/beta.txt", upload.Key);
                 Assert.Equal("upload-003", upload.UploadId);
             });
+    }
+
+    [Fact]
+    public async Task DiskStorage_MultipartUpload_ListMultipartUploadParts_AppliesMarkersAndPageSize()
+    {
+        await using var fixture = new DiskStorageFixture();
+        var storageService = fixture.Services.GetRequiredService<IStorageBackend>();
+        await storageService.CreateBucketAsync(new CreateBucketRequest { BucketName = "multipart-parts" });
+
+        var initiateResult = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = "multipart-parts",
+            Key = "docs/parts.txt",
+            ChecksumAlgorithm = "sha256"
+        });
+
+        Assert.True(initiateResult.IsSuccess);
+
+        var partPayloads = new Dictionary<int, string>
+        {
+            [1] = "alpha",
+            [2] = "bravo",
+            [3] = "charlie"
+        };
+
+        foreach (var (partNumber, payload) in partPayloads) {
+            await using var partStream = new MemoryStream(Encoding.UTF8.GetBytes(payload));
+            var uploadPartResult = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
+            {
+                BucketName = "multipart-parts",
+                Key = "docs/parts.txt",
+                UploadId = initiateResult.Value!.UploadId,
+                PartNumber = partNumber,
+                Content = partStream,
+                ChecksumAlgorithm = "sha256",
+                Checksums = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["sha256"] = ComputeSha256Base64(payload)
+                }
+            });
+
+            Assert.True(uploadPartResult.IsSuccess);
+        }
+
+        var firstPage = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+        {
+            BucketName = "multipart-parts",
+            Key = "docs/parts.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PageSize = 2
+        }).ToArrayAsync();
+
+        Assert.Collection(
+            firstPage,
+            part => {
+                Assert.Equal(1, part.PartNumber);
+                Assert.Equal(ComputeSha256Base64(partPayloads[1]), part.Checksums!["sha256"]);
+            },
+            part => {
+                Assert.Equal(2, part.PartNumber);
+                Assert.Equal(ComputeSha256Base64(partPayloads[2]), part.Checksums!["sha256"]);
+            });
+
+        var secondPage = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+        {
+            BucketName = "multipart-parts",
+            Key = "docs/parts.txt",
+            UploadId = initiateResult.Value!.UploadId,
+            PartNumberMarker = 2
+        }).ToArrayAsync();
+
+        var remainingPart = Assert.Single(secondPage);
+        Assert.Equal(3, remainingPart.PartNumber);
+        Assert.Equal(ComputeSha256Base64(partPayloads[3]), remainingPart.Checksums!["sha256"]);
     }
 
     [Fact]

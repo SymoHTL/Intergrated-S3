@@ -4,6 +4,7 @@ using Amazon.Runtime;
 using Amazon.Runtime.Internal;
 using Amazon.S3;
 using Amazon.S3.Model;
+using System.Globalization;
 using IntegratedS3.Abstractions.Models;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
@@ -1358,6 +1359,84 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
         };
     }
 
+    public async Task<MultipartUploadPart> CopyMultipartPartAsync(
+        string bucketName,
+        string key,
+        string uploadId,
+        int partNumber,
+        string sourceBucketName,
+        string sourceKey,
+        string? sourceVersionId,
+        ObjectRange? sourceRange,
+        string? sourceIfMatchETag,
+        string? sourceIfNoneMatchETag,
+        DateTimeOffset? sourceIfModifiedSinceUtc,
+        DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new CopyPartRequest
+        {
+            DestinationBucket = bucketName,
+            DestinationKey = key,
+            UploadId = uploadId,
+            PartNumber = partNumber,
+            SourceBucket = sourceBucketName,
+            SourceKey = sourceKey,
+            SourceVersionId = sourceVersionId
+        };
+
+        if (!string.IsNullOrWhiteSpace(sourceIfMatchETag))
+        {
+            request.ETagToMatch =
+            [
+                sourceIfMatchETag
+            ];
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceIfNoneMatchETag))
+        {
+            request.ETagsToNotMatch = sourceIfNoneMatchETag
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(static candidate => !string.IsNullOrWhiteSpace(candidate))
+                .ToList();
+        }
+
+        if (sourceIfModifiedSinceUtc.HasValue)
+            request.ModifiedSinceDate = sourceIfModifiedSinceUtc.Value.UtcDateTime;
+
+        if (sourceIfUnmodifiedSinceUtc.HasValue)
+            request.UnmodifiedSinceDate = sourceIfUnmodifiedSinceUtc.Value.UtcDateTime;
+
+        if (sourceRange is { Start: long firstByte, End: long lastByte })
+        {
+            request.FirstByte = firstByte;
+            request.LastByte = lastByte;
+        }
+
+        var response = await _s3.CopyPartAsync(request, cancellationToken).ConfigureAwait(false);
+
+        var contentLength = sourceRange is { Start: long start, End: long end }
+            ? end - start + 1
+            : 0;
+
+        return new MultipartUploadPart
+        {
+            PartNumber = response.PartNumber.GetValueOrDefault(partNumber),
+            ETag = response.ETag ?? string.Empty,
+            ContentLength = contentLength,
+            LastModifiedUtc = response.LastModified.HasValue
+                ? new DateTimeOffset(DateTime.SpecifyKind(response.LastModified.Value, DateTimeKind.Utc))
+                : DateTimeOffset.UtcNow,
+            Checksums = BuildChecksums(
+                response.ChecksumCRC32,
+                response.ChecksumCRC32C,
+                response.ChecksumCRC64NVME,
+                response.ChecksumSHA1,
+                response.ChecksumSHA256),
+            CopySourceVersionId = response.CopySourceVersionId
+        };
+    }
+
     public async Task<S3ObjectEntry> CompleteMultipartUploadAsync(
         string bucketName,
         string key,
@@ -1520,6 +1599,7 @@ internal sealed class AwsS3StorageClient : IS3StorageClient
                     part.ChecksumSHA1,
                     part.ChecksumSHA256)
             })
+            .OrderBy(static part => part.PartNumber)
             .ToList();
 
         return new S3MultipartPartListPage(

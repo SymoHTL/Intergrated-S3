@@ -150,7 +150,7 @@ public interface IStorageService
     /// <param name="request">The listing parameters including the upload ID.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>An async stream of <see cref="MultipartUploadPart"/> for each uploaded part.</returns>
-    IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retrieves an object's data stream and metadata from the specified bucket.

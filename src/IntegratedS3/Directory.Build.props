@@ -16,6 +16,7 @@
     <RepositoryUrl>https://github.com/SymoHTL/Intergrated-S3</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>s3;storage;object-storage;aws;cloud;aspnetcore</PackageTags>
+    <PackageReadmeFile Condition="'$(IsPackable)' != 'false'">README.md</PackageReadmeFile>
 
     <!-- Build quality -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -32,5 +33,9 @@
   <!-- SourceLink for source debugging -->
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)..\..\README.md" Pack="true" PackagePath="\" Link="README.md" Visible="false" />
   </ItemGroup>
 </Project>

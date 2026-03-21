@@ -3,6 +3,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using IntegratedS3.AspNetCore;
@@ -35,6 +36,7 @@ namespace IntegratedS3.Tests;
 
 public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiApplicationFactory>
 {
+    private const string VirtualHostedStyleHostSuffix = "localhost";
     private readonly WebUiApplicationFactory _factory;
 
     public IntegratedS3AwsSdkCompatibilityTests(WebUiApplicationFactory factory)
@@ -1467,6 +1469,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleSdkGeneratedPresignedUrls_CanUploadAndDownloadObjects()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-presign-access";
         const string secretAccessKey = "aws-sdk-virtual-presign-secret";
 
@@ -1475,10 +1481,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-presign-bucket";
         const string objectKey = "docs/virtual-presigned.txt";
@@ -1535,6 +1541,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleSdkGeneratedPresignedUrls_WithSignedContentType_CanUploadAndDownloadObjects()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-presign-content-type-access";
         const string secretAccessKey = "aws-sdk-virtual-presign-content-type-secret";
         const string contentType = "text/plain";
@@ -1544,10 +1554,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-presign-content-type-bucket";
         const string objectKey = "docs/virtual-presigned-content-type.txt";
@@ -1726,6 +1736,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleCrudAndListObjectsV2_WorkAgainstIntegratedS3()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-access";
         const string secretAccessKey = "aws-sdk-virtual-secret";
 
@@ -1734,10 +1748,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-bucket";
         const string objectKey = "docs/virtual-sdk.txt";
@@ -1790,6 +1804,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleAwsChunkedPutObject_WorksAgainstIntegratedS3()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-chunked-access";
         const string secretAccessKey = "aws-sdk-virtual-chunked-secret";
 
@@ -1798,10 +1816,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string bucketName = "aws-sdk-virtual-chunked-bucket";
         const string objectKey = "docs/virtual-chunked.txt";
@@ -1835,6 +1853,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
     [Fact]
     public async Task AmazonS3Client_VirtualHostedStyleCopyObjectAndConditionalRequests_WorkAgainstIntegratedS3()
     {
+        if (!SupportsVirtualHostedStyleLoopbackHost(VirtualHostedStyleHostSuffix)) {
+            return;
+        }
+
         const string accessKeyId = "aws-sdk-virtual-copy-access";
         const string secretAccessKey = "aws-sdk-virtual-copy-secret";
 
@@ -1843,10 +1865,10 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             secretAccessKey,
             options => {
                 options.EnableVirtualHostedStyleAddressing = true;
-                options.VirtualHostedStyleHostSuffixes = ["localhost"];
+                options.VirtualHostedStyleHostSuffixes = [VirtualHostedStyleHostSuffix];
             });
 
-        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: "localhost");
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey, forcePathStyle: false, hostOverride: VirtualHostedStyleHostSuffix);
 
         const string sourceBucketName = "aws-sdk-virtual-copy-source";
         const string targetBucketName = "aws-sdk-virtual-copy-target";
@@ -2153,6 +2175,107 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(expectedChecksumCrc32c, getObjectResponse.ChecksumCRC32C);
         using var reader = new StreamReader(getObjectResponse.ResponseStream);
         Assert.Equal(completedPayload, await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_CopyPart_WithRangeAndPreconditions_WorksAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-copy-part-access";
+        const string secretAccessKey = "aws-sdk-copy-part-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-copy-part-bucket";
+        const string sourceKey = "docs/source.txt";
+        const string targetKey = "docs/copied.txt";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var putResponse = await s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey,
+            ContentBody = "0123456789",
+            ContentType = "text/plain",
+            UseChunkEncoding = false
+        });
+        Assert.Equal(HttpStatusCode.OK, putResponse.HttpStatusCode);
+
+        var sourceMetadata = await s3Client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = sourceKey
+        });
+        Assert.Equal(HttpStatusCode.OK, sourceMetadata.HttpStatusCode);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = targetKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+
+        var copyPartResponse = await s3Client.CopyPartAsync(new CopyPartRequest
+        {
+            DestinationBucket = bucketName,
+            DestinationKey = targetKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            SourceBucket = bucketName,
+            SourceKey = sourceKey,
+            FirstByte = 2,
+            LastByte = 6,
+            ETagToMatch =
+            [
+                sourceMetadata.ETag
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, copyPartResponse.HttpStatusCode);
+        Assert.Equal(1, copyPartResponse.PartNumber);
+        Assert.False(string.IsNullOrWhiteSpace(copyPartResponse.ETag));
+        Assert.False(string.IsNullOrWhiteSpace(copyPartResponse.ChecksumSHA256));
+
+        var failedCopyException = await Assert.ThrowsAsync<AmazonS3Exception>(() => s3Client.CopyPartAsync(new CopyPartRequest
+        {
+            DestinationBucket = bucketName,
+            DestinationKey = targetKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 2,
+            SourceBucket = bucketName,
+            SourceKey = sourceKey,
+            ETagToMatch =
+            [
+                "\"different\""
+            ]
+        }));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, failedCopyException.StatusCode);
+
+        var completeResponse = await s3Client.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = targetKey,
+            UploadId = initiateResponse.UploadId,
+            PartETags =
+            [
+                new PartETag(copyPartResponse.PartNumber.GetValueOrDefault(1), copyPartResponse.ETag)
+            ]
+        });
+        Assert.Equal(HttpStatusCode.OK, completeResponse.HttpStatusCode);
+
+        var getObjectResponse = await s3Client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = targetKey
+        });
+        Assert.Equal(HttpStatusCode.OK, getObjectResponse.HttpStatusCode);
+        using var reader = new StreamReader(getObjectResponse.ResponseStream);
+        Assert.Equal("23456", await reader.ReadToEndAsync());
     }
 
     [Fact]
@@ -2654,6 +2777,104 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         Assert.Equal(HttpStatusCode.OK, copiedObjectResponse.HttpStatusCode);
         using var copiedReader = new StreamReader(copiedObjectResponse.ResponseStream);
         Assert.Equal(part1Payload + part2Payload, await copiedReader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AmazonS3Client_ListParts_WithChecksumAlgorithm_ExposesMultipartPartDetailsAgainstIntegratedS3()
+    {
+        const string accessKeyId = "aws-sdk-listparts-access";
+        const string secretAccessKey = "aws-sdk-listparts-secret";
+
+        await using var isolatedClient = await CreateAuthenticatedLoopbackClientAsync(accessKeyId, secretAccessKey);
+        using var s3Client = CreateS3Client(isolatedClient.BaseAddress!, accessKeyId, secretAccessKey);
+
+        const string bucketName = "aws-sdk-listparts-bucket";
+        const string objectKey = "docs/listparts.txt";
+        const string part1Payload = "alpha";
+        const string part2Payload = "bravo";
+
+        Assert.Equal(HttpStatusCode.OK, (await s3Client.PutBucketAsync(new PutBucketRequest
+        {
+            BucketName = bucketName
+        })).HttpStatusCode);
+
+        var part1Checksum = ComputeSha256Base64(part1Payload);
+        var part2Checksum = ComputeSha256Base64(part2Payload);
+
+        var initiateResponse = await s3Client.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ContentType = "text/plain",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256
+        });
+        Assert.Equal(HttpStatusCode.OK, initiateResponse.HttpStatusCode);
+
+        await using var part1Stream = new MemoryStream(Encoding.UTF8.GetBytes(part1Payload));
+        var part1Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 1,
+            InputStream = part1Stream,
+            PartSize = part1Stream.Length,
+            IsLastPart = false,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
+            ChecksumSHA256 = part1Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part1Response.HttpStatusCode);
+
+        await using var part2Stream = new MemoryStream(Encoding.UTF8.GetBytes(part2Payload));
+        var part2Response = await s3Client.UploadPartAsync(new UploadPartRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumber = 2,
+            InputStream = part2Stream,
+            PartSize = part2Stream.Length,
+            IsLastPart = true,
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
+            ChecksumSHA256 = part2Checksum
+        });
+        Assert.Equal(HttpStatusCode.OK, part2Response.HttpStatusCode);
+
+        var firstPage = await s3Client.ListPartsAsync(new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            MaxParts = 1
+        });
+        Assert.Equal(HttpStatusCode.OK, firstPage.HttpStatusCode);
+        Assert.Equal(ChecksumAlgorithm.SHA256, firstPage.ChecksumAlgorithm);
+        Assert.Equal(ChecksumType.COMPOSITE, firstPage.ChecksumType);
+        Assert.True(firstPage.IsTruncated);
+        Assert.Equal(0, firstPage.PartNumberMarker);
+        Assert.Equal(1, firstPage.NextPartNumberMarker);
+        Assert.Equal(1, firstPage.MaxParts);
+
+        var firstPart = Assert.Single(firstPage.Parts);
+        Assert.Equal(1, firstPart.PartNumber);
+        Assert.Equal(part1Response.ETag, firstPart.ETag);
+        Assert.Equal(part1Checksum, firstPart.ChecksumSHA256);
+
+        var secondPage = await s3Client.ListPartsAsync(new ListPartsRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            UploadId = initiateResponse.UploadId,
+            PartNumberMarker = "1"
+        });
+        Assert.Equal(HttpStatusCode.OK, secondPage.HttpStatusCode);
+        Assert.False(secondPage.IsTruncated);
+        Assert.Equal(1, secondPage.PartNumberMarker);
+
+        var secondPart = Assert.Single(secondPage.Parts);
+        Assert.Equal(2, secondPart.PartNumber);
+        Assert.Equal(part2Response.ETag, secondPart.ETag);
+        Assert.Equal(part2Checksum, secondPart.ChecksumSHA256);
     }
 
     [Fact]
@@ -4581,6 +4802,20 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
         };
     }
 
+    private static bool SupportsVirtualHostedStyleLoopbackHost(string hostSuffix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostSuffix);
+
+        try {
+            var probeHost = $"integrateds3-loopback-probe.{hostSuffix}";
+            var addresses = Dns.GetHostAddresses(probeHost);
+            return addresses.Any(IPAddress.IsLoopback);
+        }
+        catch (SocketException) {
+            return false;
+        }
+    }
+
     private static string ComputeSha1Base64(string content)
     {
         return Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(content)));
@@ -5013,6 +5248,22 @@ public sealed class IntegratedS3AwsSdkCompatibilityTests : IClassFixture<WebUiAp
             => throw new NotSupportedException("Multipart compatibility coverage is not exercised by this harness.");
 
         public Task<StorageMultipartUploadPart> UploadPartCopyAsync(StorageUploadPartCopyRequest request, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException("Multipart compatibility coverage is not exercised by this harness.");
+
+        public Task<IntegratedS3.Abstractions.Models.MultipartUploadPart> CopyMultipartPartAsync(
+            string bucketName,
+            string key,
+            string uploadId,
+            int partNumber,
+            string sourceBucketName,
+            string sourceKey,
+            string? sourceVersionId,
+            IntegratedS3.Abstractions.Models.ObjectRange? sourceRange,
+            string? sourceIfMatchETag,
+            string? sourceIfNoneMatchETag,
+            DateTimeOffset? sourceIfModifiedSinceUtc,
+            DateTimeOffset? sourceIfUnmodifiedSinceUtc,
+            CancellationToken cancellationToken = default)
             => throw new NotSupportedException("Multipart compatibility coverage is not exercised by this harness.");
 
         public Task<S3ObjectEntry> CompleteMultipartUploadAsync(

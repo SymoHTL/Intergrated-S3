@@ -22,6 +22,10 @@ public sealed record StorageReplicaRepairEntry
     public required StorageOperationType Operation { get; init; }
 
     /// <summary>The name of the primary backend that holds the authoritative data.</summary>
+
+    /// <summary>The kind(s) of divergence detected between primary and replica.</summary>
+    public StorageReplicaRepairDivergenceKind DivergenceKinds { get; init; }
+
     public required string PrimaryBackendName { get; init; }
 
     /// <summary>The name of the replica backend that needs repair.</summary>
@@ -50,4 +54,24 @@ public sealed record StorageReplicaRepairEntry
 
     /// <summary>A human-readable message from the most recent failed attempt, or <see langword="null"/>.</summary>
     public string? LastErrorMessage { get; init; }
+
+    public static StorageReplicaRepairDivergenceKind GetDefaultDivergenceKinds(StorageOperationType operation)
+    {
+        return operation switch
+        {
+            StorageOperationType.CreateBucket or StorageOperationType.DeleteBucket
+                => StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.PutBucketVersioning
+                => StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.PutBucketCors or StorageOperationType.DeleteBucketCors
+                => StorageReplicaRepairDivergenceKind.Metadata,
+            StorageOperationType.CopyObject or StorageOperationType.PutObject
+                => StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.PutObjectTags or StorageOperationType.DeleteObjectTags
+                => StorageReplicaRepairDivergenceKind.Metadata | StorageReplicaRepairDivergenceKind.Version,
+            StorageOperationType.DeleteObject
+                => StorageReplicaRepairDivergenceKind.Content | StorageReplicaRepairDivergenceKind.Version,
+            _ => StorageReplicaRepairDivergenceKind.Metadata
+        };
+    }
 }

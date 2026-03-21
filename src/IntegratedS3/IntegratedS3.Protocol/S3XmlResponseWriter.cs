@@ -8,6 +8,8 @@ namespace IntegratedS3.Protocol;
 /// <summary>Writes S3 XML response bodies from typed DTO instances.</summary>
 public static class S3XmlResponseWriter
 {
+    private const string CanonicalS3Namespace = "http://s3.amazonaws.com/doc/2006-03-01/";
+
     /// <summary>Writes a BucketLocation as an XML response body.</summary>
     /// <param name="response">The <see cref="S3BucketLocationResponse"/> to serialize.</param>
     /// <returns>The XML string.</returns>
@@ -20,7 +22,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("LocationConstraint");
+        WriteStartRootElement(xmlWriter, "LocationConstraint");
 
         if (!string.IsNullOrWhiteSpace(response.LocationConstraint)) {
             xmlWriter.WriteString(response.LocationConstraint);
@@ -45,7 +47,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("VersioningConfiguration");
+        WriteStartRootElement(xmlWriter, "VersioningConfiguration");
 
         if (!string.IsNullOrWhiteSpace(response.Status)) {
             xmlWriter.WriteElementString("Status", response.Status);
@@ -112,7 +114,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("CORSConfiguration");
+        WriteStartRootElement(xmlWriter, "CORSConfiguration");
 
         foreach (var rule in response.Rules) {
             xmlWriter.WriteStartElement("CORSRule");
@@ -163,7 +165,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("Error");
+        WriteStartRootElement(xmlWriter, "Error");
         xmlWriter.WriteElementString("Code", response.Code);
         xmlWriter.WriteElementString("Message", response.Message);
 
@@ -196,13 +198,25 @@ public static class S3XmlResponseWriter
     public static string WriteCopyObjectResult(S3CopyObjectResult response)
     {
         ArgumentNullException.ThrowIfNull(response);
+        return WriteCopyResultCore("CopyObjectResult", response);
+    }
+
+    public static string WriteCopyPartResult(S3CopyObjectResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        return WriteCopyResultCore("CopyPartResult", response);
+    }
+
+    private static string WriteCopyResultCore(string rootElementName, S3CopyObjectResult response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
 
         var builder = new StringBuilder();
         using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("CopyObjectResult");
+        WriteStartRootElement(xmlWriter, rootElementName);
         xmlWriter.WriteElementString("LastModified", FormatTimestamp(response.LastModifiedUtc));
         xmlWriter.WriteElementString("ETag", QuoteETag(response.ETag));
 
@@ -230,46 +244,7 @@ public static class S3XmlResponseWriter
         xmlWriter.WriteEndDocument();
         xmlWriter.Flush();
 
-        return InjectS3Namespace(builder, "CopyObjectResult");
-    }
-
-    /// <summary>Writes a CopyPartResult as an XML response body.</summary>
-    /// <param name="response">The <see cref="S3CopyObjectResult"/> to serialize.</param>
-    /// <returns>The XML string.</returns>
-    public static string WriteCopyPartResult(S3CopyObjectResult response)
-    {
-        ArgumentNullException.ThrowIfNull(response);
-
-        var builder = new StringBuilder();
-        using var stringWriter = new StringWriter(builder, CultureInfo.InvariantCulture);
-        using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
-
-        xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("CopyPartResult");
-        xmlWriter.WriteElementString("LastModified", FormatTimestamp(response.LastModifiedUtc));
-        xmlWriter.WriteElementString("ETag", QuoteETag(response.ETag));
-
-        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32)) {
-            xmlWriter.WriteElementString("ChecksumCRC32", response.ChecksumCrc32);
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.ChecksumCrc32c)) {
-            xmlWriter.WriteElementString("ChecksumCRC32C", response.ChecksumCrc32c);
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.ChecksumSha1)) {
-            xmlWriter.WriteElementString("ChecksumSHA1", response.ChecksumSha1);
-        }
-
-        if (!string.IsNullOrWhiteSpace(response.ChecksumSha256)) {
-            xmlWriter.WriteElementString("ChecksumSHA256", response.ChecksumSha256);
-        }
-
-        xmlWriter.WriteEndElement();
-        xmlWriter.WriteEndDocument();
-        xmlWriter.Flush();
-
-        return InjectS3Namespace(builder, "CopyPartResult");
+        return InjectS3Namespace(builder, rootElementName);
     }
 
     /// <summary>Writes an InitiateMultipartUploadResult as an XML response body.</summary>
@@ -284,7 +259,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("InitiateMultipartUploadResult");
+        WriteStartRootElement(xmlWriter, "InitiateMultipartUploadResult");
         xmlWriter.WriteElementString("Bucket", response.Bucket);
         xmlWriter.WriteElementString("Key", response.Key);
         xmlWriter.WriteElementString("UploadId", response.UploadId);
@@ -310,7 +285,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("CompleteMultipartUploadResult");
+        WriteStartRootElement(xmlWriter, "CompleteMultipartUploadResult");
 
         if (!string.IsNullOrWhiteSpace(response.Location)) {
             xmlWriter.WriteElementString("Location", response.Location);
@@ -359,7 +334,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("ListBucketResult");
+        WriteStartRootElement(xmlWriter, "ListBucketResult");
         xmlWriter.WriteElementString("Name", response.Name);
         xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
@@ -441,7 +416,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("ListVersionsResult");
+        WriteStartRootElement(xmlWriter, "ListVersionsResult");
         xmlWriter.WriteElementString("Name", response.Name);
         xmlWriter.WriteElementString("Prefix", EncodeS3ListValue(response.Prefix ?? string.Empty, response.EncodingType));
 
@@ -513,7 +488,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("ListMultipartUploadsResult");
+        WriteStartRootElement(xmlWriter, "ListMultipartUploadsResult");
         xmlWriter.WriteElementString("Bucket", response.Bucket);
         xmlWriter.WriteElementString("KeyMarker", EncodeS3ListValue(response.KeyMarker ?? string.Empty, response.EncodingType));
         xmlWriter.WriteElementString("UploadIdMarker", response.UploadIdMarker ?? string.Empty);
@@ -586,7 +561,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("ListPartsResult");
+        WriteStartRootElement(xmlWriter, "ListPartsResult");
         xmlWriter.WriteElementString("Bucket", response.Bucket);
         xmlWriter.WriteElementString("Key", EncodeS3ListValue(response.Key, response.EncodingType));
         xmlWriter.WriteElementString("UploadId", response.UploadId);
@@ -599,7 +574,18 @@ public static class S3XmlResponseWriter
             WriteOwner(xmlWriter, "Owner", response.Owner);
         }
 
-        xmlWriter.WriteElementString("StorageClass", response.StorageClass);
+        xmlWriter.WriteElementString("PartNumberMarker", response.PartNumberMarker.ToString(CultureInfo.InvariantCulture));
+
+        if (response.NextPartNumberMarker.HasValue) {
+            xmlWriter.WriteElementString("NextPartNumberMarker", response.NextPartNumberMarker.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        xmlWriter.WriteElementString("MaxParts", response.MaxParts.ToString(CultureInfo.InvariantCulture));
+        xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
+
+        if (!string.IsNullOrWhiteSpace(response.StorageClass)) {
+            xmlWriter.WriteElementString("StorageClass", response.StorageClass);
+        }
 
         if (!string.IsNullOrWhiteSpace(response.ChecksumAlgorithm)) {
             xmlWriter.WriteElementString("ChecksumAlgorithm", response.ChecksumAlgorithm);
@@ -613,18 +599,8 @@ public static class S3XmlResponseWriter
             xmlWriter.WriteElementString("EncodingType", response.EncodingType);
         }
 
-        xmlWriter.WriteElementString("PartNumberMarker", response.PartNumberMarker.ToString(CultureInfo.InvariantCulture));
-
-        if (response.NextPartNumberMarker.HasValue) {
-            xmlWriter.WriteElementString("NextPartNumberMarker", response.NextPartNumberMarker.Value.ToString(CultureInfo.InvariantCulture));
-        }
-
-        xmlWriter.WriteElementString("MaxParts", response.MaxParts.ToString(CultureInfo.InvariantCulture));
-        xmlWriter.WriteElementString("IsTruncated", response.IsTruncated ? "true" : "false");
-
         foreach (var part in response.Parts) {
             xmlWriter.WriteStartElement("Part");
-
             xmlWriter.WriteElementString("PartNumber", part.PartNumber.ToString(CultureInfo.InvariantCulture));
             xmlWriter.WriteElementString("LastModified", FormatTimestamp(part.LastModifiedUtc));
             xmlWriter.WriteElementString("ETag", QuoteETag(part.ETag));
@@ -649,6 +625,7 @@ public static class S3XmlResponseWriter
             if (!string.IsNullOrWhiteSpace(part.ChecksumSha256)) {
                 xmlWriter.WriteElementString("ChecksumSHA256", part.ChecksumSha256);
             }
+
             xmlWriter.WriteEndElement();
         }
 
@@ -671,7 +648,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("ListAllMyBucketsResult");
+        WriteStartRootElement(xmlWriter, "ListAllMyBucketsResult");
 
         WriteOwner(xmlWriter, "Owner", response.Owner);
 
@@ -703,7 +680,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("DeleteResult");
+        WriteStartRootElement(xmlWriter, "DeleteResult");
 
         foreach (var deleted in response.Deleted) {
             xmlWriter.WriteStartElement("Deleted");
@@ -756,7 +733,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("Tagging");
+        WriteStartRootElement(xmlWriter, "Tagging");
         xmlWriter.WriteStartElement("TagSet");
 
         foreach (var tag in response.TagSet.OrderBy(static tag => tag.Key, StringComparer.Ordinal)) {
@@ -933,7 +910,7 @@ public static class S3XmlResponseWriter
         using var xmlWriter = XmlWriter.Create(stringWriter, CreateSettings());
 
         xmlWriter.WriteStartDocument();
-        xmlWriter.WriteStartElement("AccessControlPolicy");
+        WriteStartRootElement(xmlWriter, "AccessControlPolicy");
         xmlWriter.WriteStartElement("Owner");
         xmlWriter.WriteElementString("ID", response.Owner.Id);
         if (!string.IsNullOrWhiteSpace(response.Owner.DisplayName)) {
@@ -2045,6 +2022,11 @@ public static class S3XmlResponseWriter
             NewLineHandling = NewLineHandling.None,
             Async = false
         };
+    }
+
+    private static void WriteStartRootElement(XmlWriter xmlWriter, string localName)
+    {
+        xmlWriter.WriteStartElement(string.Empty, localName, CanonicalS3Namespace);
     }
 
     private static string FormatTimestamp(DateTimeOffset value)

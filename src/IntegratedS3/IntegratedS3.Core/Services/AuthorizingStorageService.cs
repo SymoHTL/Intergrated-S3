@@ -166,14 +166,14 @@ internal sealed class AuthorizingStorageService(
         }, innerCancellationToken => inner.ListMultipartUploadsAsync(request, innerCancellationToken), cancellationToken);
     }
 
-    public IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, CancellationToken cancellationToken = default)
+    public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
     {
         return ExecuteAuthorizedEnumerableAsync(new StorageAuthorizationRequest
         {
-            Operation = StorageOperationType.ListMultipartParts,
+            Operation = StorageOperationType.ListObjects,
             BucketName = request.BucketName,
             Key = request.Key
-        }, innerCancellationToken => inner.ListMultipartPartsAsync(request, innerCancellationToken), cancellationToken);
+        }, innerCancellationToken => inner.ListMultipartUploadPartsAsync(request, innerCancellationToken), cancellationToken);
     }
 
     public ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
@@ -295,7 +295,10 @@ internal sealed class AuthorizingStorageService(
         {
             Operation = StorageOperationType.UploadMultipartPart,
             BucketName = request.BucketName,
-            Key = request.Key
+            Key = request.Key,
+            SourceBucketName = request.CopySourceBucketName,
+            SourceKey = request.CopySourceKey,
+            VersionId = request.CopySourceVersionId
         }, innerCancellationToken => inner.UploadMultipartPartAsync(request, innerCancellationToken), cancellationToken);
     }
 

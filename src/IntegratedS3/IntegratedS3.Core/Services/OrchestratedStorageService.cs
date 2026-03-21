@@ -21,6 +21,7 @@ internal sealed class OrchestratedStorageService(
     StorageBackendHealthMonitor backendHealthMonitor,
     IStorageReplicaRepairBacklog replicaRepairBacklog,
     IStorageReplicaRepairDispatcher replicaRepairDispatcher,
+    IStorageReplicaRepairService replicaRepairService,
     TimeProvider timeProvider,
     ILogger<OrchestratedStorageService> logger) : IStorageService
 {
@@ -56,7 +57,6 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaBucketCreateAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketCreateAsync(backend, replicaBackend, request.BucketName, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketInfo>.Failure(replicationError);
@@ -104,7 +104,6 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaBucketVersioningAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketVersioningAsync(backend, replicaBackend, request.BucketName, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketVersioningInfo>.Failure(replicationError);
@@ -145,7 +144,6 @@ internal sealed class OrchestratedStorageService(
                     BucketName = request.BucketName,
                     Rules = CloneCorsRules(request.Rules)
                 }, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketCorsAsync(backend, replicaBackend, request.BucketName, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketCorsConfiguration>.Failure(replicationError);
@@ -173,7 +171,6 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketCorsAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketCorsAsync(backend, replicaBackend, request.BucketName, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
@@ -214,8 +211,7 @@ internal sealed class OrchestratedStorageService(
                     BucketName = request.BucketName,
                     Rule = CloneBucketDefaultEncryptionRule(request.Rule)
                 }, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketDefaultEncryptionAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketDefaultEncryptionConfiguration>.Failure(replicationError);
             }
@@ -242,8 +238,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketDefaultEncryptionAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketDefaultEncryptionAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -285,7 +280,6 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaBucketDeleteAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketDeleteAsync(replicaBackend, request.BucketName, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
@@ -321,10 +315,10 @@ internal sealed class OrchestratedStorageService(
         }
     }
 
-    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var backend = await SelectReadBackendAsync(cancellationToken);
-        await foreach (var part in backend.ListMultipartPartsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
+        await foreach (var part in backend.ListMultipartUploadPartsAsync(request, cancellationToken).WithCancellation(cancellationToken)) {
             yield return part;
         }
     }
@@ -401,7 +395,6 @@ internal sealed class OrchestratedStorageService(
                         request.DestinationBucketName,
                         request.DestinationKey,
                         result.Value.VersionId,
-                        (replicaBackend, ct) => RepairReplicaObjectFromPrimaryAsync(backend, replicaBackend, request.DestinationBucketName, request.DestinationKey, result.Value.VersionId, ct),
                         CancellationToken.None),
                     _ => null
                 };
@@ -442,7 +435,6 @@ internal sealed class OrchestratedStorageService(
                     request.Key,
                     result.Value.VersionId,
                     writeThroughOperation: (replicaBackend, ct) => WriteReplicaBufferedObjectAsync(replicaBackend, request, tempFilePath, ct),
-                    asyncOperation: (replicaBackend, ct) => RepairReplicaObjectFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, result.Value.VersionId, ct),
                     CancellationToken.None);
                 if (replicationError is not null) {
                     return StorageResult<ObjectInfo>.Failure(replicationError);
@@ -467,8 +459,7 @@ internal sealed class OrchestratedStorageService(
                 request.Key,
                 result.Value.VersionId,
                 writeThroughOperation: (replicaBackend, ct) => RepairReplicaObjectFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, result.Value.VersionId, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, result.Value.VersionId, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectInfo>.Failure(replicationError);
             }
@@ -496,7 +487,7 @@ internal sealed class OrchestratedStorageService(
                 backend,
                 request.BucketName,
                 request.Key,
-                resolvedVersionId,
+                request.VersionId,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectTagsAsync(replicaBackend, new PutObjectTagsRequest
                 {
                     BucketName = request.BucketName,
@@ -504,7 +495,6 @@ internal sealed class OrchestratedStorageService(
                     VersionId = request.VersionId,
                     Tags = CloneTags(request.Tags) ?? new Dictionary<string, string>(StringComparer.Ordinal)
                 }, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectTagsFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectTagSet>.Failure(replicationError);
@@ -533,14 +523,13 @@ internal sealed class OrchestratedStorageService(
                 backend,
                 request.BucketName,
                 request.Key,
-                resolvedVersionId,
+                request.VersionId,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteObjectTagsAsync(replicaBackend, new DeleteObjectTagsRequest
                 {
                     BucketName = request.BucketName,
                     Key = request.Key,
                     VersionId = request.VersionId
                 }, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectTagsFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectTagSet>.Failure(replicationError);
@@ -661,7 +650,6 @@ internal sealed class OrchestratedStorageService(
                 request.Key,
                 repairVersionId,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteObjectAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaDeleteObjectAsync(replicaBackend, request, ct),
                 CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<DeleteObjectResult>.Failure(replicationError);
@@ -701,8 +689,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketTaggingAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketTaggingAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketTaggingConfiguration>.Failure(replicationError);
             }
@@ -729,8 +716,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketTaggingAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketTaggingAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -768,8 +754,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketLoggingAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketLoggingAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketLoggingConfiguration>.Failure(replicationError);
             }
@@ -807,8 +792,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketWebsiteAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketWebsiteAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketWebsiteConfiguration>.Failure(replicationError);
             }
@@ -835,8 +819,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketWebsiteAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketWebsiteAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -874,8 +857,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketRequestPaymentAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketRequestPaymentAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketRequestPaymentConfiguration>.Failure(replicationError);
             }
@@ -913,8 +895,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketAccelerateAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketAccelerateAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketAccelerateConfiguration>.Failure(replicationError);
             }
@@ -952,8 +933,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketLifecycleAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketLifecycleAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketLifecycleConfiguration>.Failure(replicationError);
             }
@@ -980,8 +960,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketLifecycleAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketLifecycleAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -1019,8 +998,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketReplicationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketReplicationAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketReplicationConfiguration>.Failure(replicationError);
             }
@@ -1047,8 +1025,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketReplicationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketReplicationAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -1086,8 +1063,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketNotificationConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketNotificationConfigurationAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketNotificationConfiguration>.Failure(replicationError);
             }
@@ -1125,8 +1101,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectLockConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectLockConfigurationAsync(backend, replicaBackend, request.BucketName, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectLockConfiguration>.Failure(replicationError);
             }
@@ -1164,8 +1139,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketAnalyticsConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketAnalyticsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketAnalyticsConfiguration>.Failure(replicationError);
             }
@@ -1192,8 +1166,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketAnalyticsConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketAnalyticsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -1240,8 +1213,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketMetricsConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketMetricsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketMetricsConfiguration>.Failure(replicationError);
             }
@@ -1268,8 +1240,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketMetricsConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketMetricsConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -1316,8 +1287,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketInventoryConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketInventoryConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketInventoryConfiguration>.Failure(replicationError);
             }
@@ -1344,8 +1314,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketInventoryConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketInventoryConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -1392,8 +1361,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutBucketIntelligentTieringConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketIntelligentTieringConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<BucketIntelligentTieringConfiguration>.Failure(replicationError);
             }
@@ -1420,8 +1388,7 @@ internal sealed class OrchestratedStorageService(
                 objectKey: null,
                 versionId: null,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaDeleteBucketIntelligentTieringConfigurationAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaBucketIntelligentTieringConfigurationAsync(backend, replicaBackend, request.BucketName, request.Id, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult.Failure(replicationError);
             }
@@ -1461,8 +1428,7 @@ internal sealed class OrchestratedStorageService(
                 request.Key,
                 resolvedVersionId,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectRetentionAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectRetentionFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectRetentionInfo>.Failure(replicationError);
             }
@@ -1491,8 +1457,7 @@ internal sealed class OrchestratedStorageService(
                 request.Key,
                 resolvedVersionId,
                 writeThroughOperation: (replicaBackend, ct) => WriteReplicaPutObjectLegalHoldAsync(replicaBackend, request, ct),
-                asyncOperation: (replicaBackend, ct) => RepairReplicaObjectLegalHoldFromPrimaryAsync(backend, replicaBackend, request.BucketName, request.Key, request.VersionId, ct),
-                CancellationToken.None);
+                cancellationToken: CancellationToken.None);
             if (replicationError is not null) {
                 return StorageResult<ObjectLegalHoldInfo>.Failure(replicationError);
             }
@@ -1688,7 +1653,6 @@ internal sealed class OrchestratedStorageService(
         string? objectKey,
         string? versionId,
         Func<IStorageBackend, CancellationToken, ValueTask<StorageError?>> writeThroughOperation,
-        Func<IStorageBackend, CancellationToken, ValueTask<StorageError?>> asyncOperation,
         CancellationToken cancellationToken)
     {
         var replicaBackends = GetReplicaBackends(primaryBackend);
@@ -1714,7 +1678,6 @@ internal sealed class OrchestratedStorageService(
                 bucketName,
                 objectKey,
                 versionId,
-                asyncOperation,
                 cancellationToken),
             _ => null
         };
@@ -1774,7 +1737,6 @@ internal sealed class OrchestratedStorageService(
         string bucketName,
         string? objectKey,
         string? versionId,
-        Func<IStorageBackend, CancellationToken, ValueTask<StorageError?>> replicaOperation,
         CancellationToken cancellationToken)
     {
         StorageError? trackingError = null;
@@ -1838,7 +1800,7 @@ internal sealed class OrchestratedStorageService(
 
                 await replicaRepairDispatcher.DispatchAsync(
                     repairEntry,
-                    ct => replicaOperation(replicaBackend, ct),
+                    ct => replicaRepairService.RepairAsync(repairEntry, ct),
                     cancellationToken);
                 await CompleteSupersededReplicaRepairsAsync(repairEntry, supersededRepairs, CancellationToken.None);
             }
@@ -3247,6 +3209,7 @@ internal sealed class OrchestratedStorageService(
             Origin = origin,
             Status = status,
             Operation = operation,
+            DivergenceKinds = StorageReplicaRepairEntry.GetDefaultDivergenceKinds(operation),
             PrimaryBackendName = primaryBackendName,
             ReplicaBackendName = replicaBackendName,
             BucketName = bucketName,

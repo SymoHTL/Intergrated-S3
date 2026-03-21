@@ -67,7 +67,7 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
         Assert.Equal(HttpStatusCode.OK, getVersioningResponse.StatusCode);
         Assert.Equal("application/xml", getVersioningResponse.Content.Headers.ContentType?.MediaType);
         var versioningDocument = XDocument.Parse(await getVersioningResponse.Content.ReadAsStringAsync());
-        Assert.Equal("VersioningConfiguration", versioningDocument.Root?.Name.LocalName);
+        S3XmlTestHelper.AssertRoot(versioningDocument, "VersioningConfiguration");
         Assert.Equal("Enabled", GetRequiredElementValue(versioningDocument, "Status"));
     }
 
@@ -2808,7 +2808,7 @@ public sealed class IntegratedS3SigV4ConformanceTests : IClassFixture<WebUiAppli
 
     private static string GetRequiredElementValue(XDocument document, string elementName)
     {
-        return document.Root?.Element(S3Ns + elementName)?.Value
+        return document.Root?.S3Element(elementName)?.Value
             ?? throw new Xunit.Sdk.XunitException($"Missing XML element '{elementName}'.");
     }
 

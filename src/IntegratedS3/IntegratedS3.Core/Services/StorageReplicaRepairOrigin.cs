@@ -9,5 +9,8 @@ public enum StorageReplicaRepairOrigin
     AsyncReplication,
 
     /// <summary>The repair was created because a write succeeded on the primary but failed on the replica.</summary>
-    PartialWriteFailure
+    PartialWriteFailure,
+
+    /// <summary>The repair was created during a reconciliation pass comparing primary and replica state.</summary>
+    Reconciliation
 }

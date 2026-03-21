@@ -191,8 +191,8 @@ public sealed class ProfilingStorageBackend(IStorageBackend inner) : IStorageBac
     public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default)
         => MeasureAsyncEnumerable(inner.Name, inner.ListMultipartUploadsAsync(request, cancellationToken), cancellationToken);
 
-    public IAsyncEnumerable<MultipartUploadPart> ListMultipartPartsAsync(ListMultipartPartsRequest request, CancellationToken cancellationToken = default)
-        => MeasureAsyncEnumerable(inner.Name, inner.ListMultipartPartsAsync(request, cancellationToken), cancellationToken);
+    public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
+        => MeasureAsyncEnumerable(inner.Name, inner.ListMultipartUploadPartsAsync(request, cancellationToken), cancellationToken);
 
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.GetObjectAsync(request, ct), inner, request, cancellationToken);

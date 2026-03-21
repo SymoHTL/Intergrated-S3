@@ -29,4 +29,6 @@ public sealed class MultipartUploadPart
     /// Checksum algorithm-to-value map for the part's content integrity verification.
     /// </summary>
     public IReadOnlyDictionary<string, string>? Checksums { get; init; }
+
+    public string? CopySourceVersionId { get; init; }
 }
