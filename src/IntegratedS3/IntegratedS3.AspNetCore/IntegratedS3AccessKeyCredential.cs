@@ -1,19 +1,47 @@
 namespace IntegratedS3.AspNetCore;
 
 /// <summary>
-/// Configures a static access key that the ASP.NET host can use for Signature Version 4 authentication.
+/// Represents an access key credential pair for AWS Signature V4 authentication.
 /// </summary>
+/// <remarks>
+/// Used by the built-in authenticator to verify incoming requests and by the presign
+/// strategy to generate presigned URLs. Configure instances of this class in
+/// <see cref="IntegratedS3Options.AccessKeyCredentials"/>.
+/// </remarks>
 public sealed class IntegratedS3AccessKeyCredential
 {
-    /// <summary>The configured access key identifier.</summary>
+    /// <summary>
+    /// Unique identifier for this access key. Used in the <c>Authorization</c> header credential scope.
+    /// </summary>
     public string AccessKeyId { get; set; } = string.Empty;
 
-    /// <summary>The secret access key paired with <see cref="AccessKeyId"/>.</summary>
+    /// <summary>
+    /// Secret key used to compute HMAC signatures.
+    /// </summary>
+    /// <remarks>
+    /// Keep this value confidential. It should never be logged or exposed in diagnostics output.
+    /// </remarks>
     public string SecretAccessKey { get; set; } = string.Empty;
 
-    /// <summary>An optional display name for diagnostics or administrative views.</summary>
+    /// <summary>
+    /// Optional session token for temporary credentials.
+    /// </summary>
+    /// <remarks>
+    /// When present, verified against the <c>X-Amz-Security-Token</c> header in incoming requests.
+    /// </remarks>
+    public string? SessionToken { get; set; }
+
+    /// <summary>
+    /// Optional human-readable name for this credential, used in logs and diagnostics.
+    /// </summary>
     public string? DisplayName { get; set; }
 
-    /// <summary>The authorization scopes associated with this credential.</summary>
+    /// <summary>
+    /// Optional list of scope restrictions for this credential.
+    /// </summary>
+    /// <remarks>
+    /// Can be used by custom authorization logic to limit which operations this credential
+    /// can perform.
+    /// </remarks>
     public List<string> Scopes { get; set; } = [];
 }

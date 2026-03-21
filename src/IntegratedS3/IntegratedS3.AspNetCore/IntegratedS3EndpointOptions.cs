@@ -3,96 +3,167 @@ using Microsoft.AspNetCore.Routing;
 namespace IntegratedS3.AspNetCore;
 
 /// <summary>
-/// Configures which endpoint groups are mapped and how the root route groups should be customized.
+/// Code-driven endpoint configuration options for IntegratedS3. Use this when you need callback-based
+/// route group customization (e.g., adding filters, metadata, or conventions).
 /// </summary>
+/// <remarks>
+/// For AOT/trimming-safe configuration from <see cref="Microsoft.Extensions.Configuration.IConfiguration"/>,
+/// prefer <see cref="DependencyInjection.IntegratedS3EndpointConfigurationOptions"/>.
+/// </remarks>
 public sealed class IntegratedS3EndpointOptions
 {
     private readonly Dictionary<IntegratedS3EndpointFeature, Action<RouteGroupBuilder>?> featureRouteGroupConfigurations = [];
 
-    /// <summary>Whether service-document routes should be mapped.</summary>
+    /// <summary>
+    /// Enables S3 service-level endpoints (ListBuckets, service discovery). Defaults to <see langword="true"/>.
+    /// </summary>
     public bool EnableServiceEndpoints { get; set; } = true;
 
-    /// <summary>Whether bucket routes should be mapped.</summary>
+    /// <summary>
+    /// Enables bucket-level endpoints (CreateBucket, DeleteBucket, ListObjects, etc.). Defaults to <see langword="true"/>.
+    /// </summary>
     public bool EnableBucketEndpoints { get; set; } = true;
 
-    /// <summary>Whether object routes should be mapped.</summary>
+    /// <summary>
+    /// Enables object-level endpoints (GetObject, PutObject, DeleteObject, HeadObject, CopyObject, etc.). Defaults to <see langword="true"/>.
+    /// </summary>
     public bool EnableObjectEndpoints { get; set; } = true;
 
-    /// <summary>Whether multipart routes should be mapped.</summary>
+    /// <summary>
+    /// Enables multipart upload endpoints (CreateMultipartUpload, UploadPart, CompleteMultipartUpload, etc.). Defaults to <see langword="true"/>.
+    /// </summary>
     public bool EnableMultipartEndpoints { get; set; } = true;
 
-    /// <summary>Whether admin and capability routes should be mapped.</summary>
+    /// <summary>
+    /// Enables administrative endpoints (diagnostics, repair operations). Defaults to <see langword="true"/>.
+    /// </summary>
     public bool EnableAdminEndpoints { get; set; } = true;
 
-    /// <summary>Authorization conventions applied to the main IntegratedS3 route group.</summary>
+    /// <summary>
+    /// Authorization options applied to the top-level route group. Affects all endpoints.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? RouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the shared root GET route group.</summary>
+    /// <summary>
+    /// Authorization options for root-level GET endpoints (ListBuckets, service info).
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? RootRouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the shared S3-compatible compatibility route group.</summary>
+    /// <summary>
+    /// Authorization options for S3-compatibility endpoints that exist outside the standard route structure.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? CompatibilityRouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the service route group.</summary>
+    /// <summary>
+    /// Authorization options for service-level endpoints.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? ServiceRouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the bucket route group.</summary>
+    /// <summary>
+    /// Authorization options for bucket-level endpoints.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? BucketRouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the object route group.</summary>
+    /// <summary>
+    /// Authorization options for object-level endpoints.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? ObjectRouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the multipart route group.</summary>
+    /// <summary>
+    /// Authorization options for multipart upload endpoints.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? MultipartRouteAuthorization { get; set; }
 
-    /// <summary>Authorization conventions applied to the admin route group.</summary>
+    /// <summary>
+    /// Authorization options for administrative endpoints.
+    /// </summary>
     public IntegratedS3EndpointAuthorizationOptions? AdminRouteAuthorization { get; set; }
 
-    /// <summary>Applies conventions to the main IntegratedS3 route group.</summary>
+    /// <summary>
+    /// Callback to configure the top-level route group builder. Applied to all endpoints.
+    /// </summary>
     public Action<RouteGroupBuilder>? ConfigureRouteGroup { get; set; }
 
-    /// <summary>Applies conventions to the shared root GET route group.</summary>
+    /// <summary>
+    /// Callback to configure the root-level (GET /) route group.
+    /// </summary>
     public Action<RouteGroupBuilder>? ConfigureRootRouteGroup { get; set; }
 
-    /// <summary>Applies conventions to the shared S3-compatible compatibility route group.</summary>
+    /// <summary>
+    /// Callback to configure the S3-compatibility route group.
+    /// </summary>
     public Action<RouteGroupBuilder>? ConfigureCompatibilityRouteGroup { get; set; }
 
-    /// <summary>Applies conventions to the service route group.</summary>
+    /// <summary>
+    /// Callback to configure the service endpoint route group.
+    /// </summary>
+    /// <remarks>
+    /// Delegates to <see cref="GetFeatureRouteGroupConfiguration"/> and
+    /// <see cref="SetFeatureRouteGroupConfiguration"/>.
+    /// </remarks>
     public Action<RouteGroupBuilder>? ConfigureServiceRouteGroup
     {
         get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Service);
         set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Service, value);
     }
 
-    /// <summary>Applies conventions to the bucket route group.</summary>
+    /// <summary>
+    /// Callback to configure the bucket endpoint route group.
+    /// </summary>
+    /// <remarks>
+    /// Delegates to <see cref="GetFeatureRouteGroupConfiguration"/> and
+    /// <see cref="SetFeatureRouteGroupConfiguration"/>.
+    /// </remarks>
     public Action<RouteGroupBuilder>? ConfigureBucketRouteGroup
     {
         get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket);
         set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Bucket, value);
     }
 
-    /// <summary>Applies conventions to the object route group.</summary>
+    /// <summary>
+    /// Callback to configure the object endpoint route group.
+    /// </summary>
+    /// <remarks>
+    /// Delegates to <see cref="GetFeatureRouteGroupConfiguration"/> and
+    /// <see cref="SetFeatureRouteGroupConfiguration"/>.
+    /// </remarks>
     public Action<RouteGroupBuilder>? ConfigureObjectRouteGroup
     {
         get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Object);
         set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Object, value);
     }
 
-    /// <summary>Applies conventions to the multipart route group.</summary>
+    /// <summary>
+    /// Callback to configure the multipart endpoint route group.
+    /// </summary>
+    /// <remarks>
+    /// Delegates to <see cref="GetFeatureRouteGroupConfiguration"/> and
+    /// <see cref="SetFeatureRouteGroupConfiguration"/>.
+    /// </remarks>
     public Action<RouteGroupBuilder>? ConfigureMultipartRouteGroup
     {
         get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart);
         set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Multipart, value);
     }
 
-    /// <summary>Applies conventions to the admin route group.</summary>
+    /// <summary>
+    /// Callback to configure the admin endpoint route group.
+    /// </summary>
+    /// <remarks>
+    /// Delegates to <see cref="GetFeatureRouteGroupConfiguration"/> and
+    /// <see cref="SetFeatureRouteGroupConfiguration"/>.
+    /// </remarks>
     public Action<RouteGroupBuilder>? ConfigureAdminRouteGroup
     {
         get => GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Admin);
         set => SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature.Admin, value);
     }
 
-    /// <summary>Gets the route-group convention delegate for a specific endpoint feature.</summary>
+    /// <summary>
+    /// Gets the route group configuration callback for the specified endpoint feature.
+    /// </summary>
+    /// <param name="feature">The endpoint feature to retrieve the configuration for.</param>
+    /// <returns>The configuration callback, or <see langword="null"/> if none has been set.</returns>
     public Action<RouteGroupBuilder>? GetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature feature)
     {
         ValidateFeature(feature);
@@ -102,7 +173,11 @@ public sealed class IntegratedS3EndpointOptions
             : null;
     }
 
-    /// <summary>Sets or clears the route-group convention delegate for a specific endpoint feature.</summary>
+    /// <summary>
+    /// Sets or removes the route group configuration callback for the specified endpoint feature.
+    /// </summary>
+    /// <param name="feature">The endpoint feature to configure.</param>
+    /// <param name="configuration">The configuration callback, or <see langword="null"/> to remove the existing configuration.</param>
     public void SetFeatureRouteGroupConfiguration(IntegratedS3EndpointFeature feature, Action<RouteGroupBuilder>? configuration)
     {
         ValidateFeature(feature);

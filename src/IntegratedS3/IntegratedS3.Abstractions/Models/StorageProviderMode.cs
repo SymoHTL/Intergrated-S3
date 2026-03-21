@@ -1,19 +1,27 @@
 namespace IntegratedS3.Abstractions.Models;
 
 /// <summary>
-/// Describes how a provider participates in the overall IntegratedS3 deployment.
+/// Describes how a storage provider operates within IntegratedS3.
 /// </summary>
 public enum StorageProviderMode
 {
-    /// <summary>IntegratedS3 manages the provider directly.</summary>
+    /// <summary>
+    /// Fully managed by IntegratedS3; all storage operations are handled internally.
+    /// </summary>
     Managed,
 
-    /// <summary>IntegratedS3 delegates most of the behavior to an external provider-managed flow.</summary>
+    /// <summary>
+    /// The backend handles operations but IntegratedS3 routes requests to it.
+    /// </summary>
     Delegated,
 
-    /// <summary>IntegratedS3 primarily passes requests through to another system.</summary>
+    /// <summary>
+    /// Requests are forwarded directly to the backend without IntegratedS3 processing.
+    /// </summary>
     Passthrough,
 
-    /// <summary>IntegratedS3 combines managed behavior with direct or delegated provider behavior.</summary>
+    /// <summary>
+    /// A combination of managed and delegated behavior depending on the operation.
+    /// </summary>
     Hybrid
 }

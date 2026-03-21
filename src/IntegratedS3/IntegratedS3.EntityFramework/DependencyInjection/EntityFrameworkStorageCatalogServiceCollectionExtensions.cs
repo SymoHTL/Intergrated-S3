@@ -9,13 +9,18 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace IntegratedS3.Core.DependencyInjection;
 
 /// <summary>
-/// DI helpers for replacing the default catalog services with EF Core-backed implementations.
+/// Extension methods for registering EF Core-backed <see cref="IStorageCatalogStore"/> implementations
+/// in a <see cref="IServiceCollection"/>.
 /// </summary>
 public static class EntityFrameworkStorageCatalogServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers EF Core-backed catalog, object-state, and multipart-state services using default options.
+    /// Registers an EF Core-backed <see cref="IStorageCatalogStore"/> using the specified <typeparamref name="TDbContext"/>
+    /// with default <see cref="EntityFrameworkCatalogOptions"/>.
     /// </summary>
+    /// <typeparam name="TDbContext">The <see cref="DbContext"/> type that contains the IntegratedS3 catalog entity mappings.</typeparam>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddEntityFrameworkStorageCatalog<TDbContext>(this IServiceCollection services)
         where TDbContext : DbContext
     {
@@ -24,8 +29,13 @@ public static class EntityFrameworkStorageCatalogServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers EF Core-backed catalog, object-state, and multipart-state services and allows callers to configure the integration.
+    /// Registers an EF Core-backed <see cref="IStorageCatalogStore"/> using the specified <typeparamref name="TDbContext"/>
+    /// and applies the given <paramref name="configure"/> callback to <see cref="EntityFrameworkCatalogOptions"/>.
     /// </summary>
+    /// <typeparam name="TDbContext">The <see cref="DbContext"/> type that contains the IntegratedS3 catalog entity mappings.</typeparam>
+    /// <param name="services">The service collection to add registrations to.</param>
+    /// <param name="configure">A delegate to configure <see cref="EntityFrameworkCatalogOptions"/>.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddEntityFrameworkStorageCatalog<TDbContext>(this IServiceCollection services, Action<EntityFrameworkCatalogOptions> configure)
         where TDbContext : DbContext
     {

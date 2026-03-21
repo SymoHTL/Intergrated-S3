@@ -1,12 +1,34 @@
+using System.Globalization;
+using System.Text;
+
 namespace IntegratedS3.Abstractions.Models;
 
+/// <summary>
+/// Validates tag keys and values against S3 tagging constraints.
+/// </summary>
 public static class ObjectTagValidation
 {
+    /// <summary>
+    /// Maximum number of tags allowed per object (10).
+    /// </summary>
     public const int MaxTagCount = 10;
+
+    /// <summary>
+    /// Maximum length of a tag key in Unicode characters (128).
+    /// </summary>
     public const int MaxKeyLength = 128;
+
+    /// <summary>
+    /// Maximum length of a tag value in Unicode characters (256).
+    /// </summary>
     public const int MaxValueLength = 256;
     private const string ReservedPrefix = "aws:";
 
+    /// <summary>
+    /// Validates a dictionary of tags against S3 tagging constraints.
+    /// </summary>
+    /// <param name="tags">The tags to validate, or <see langword="null"/>.</param>
+    /// <returns><see langword="null"/> if valid; otherwise an error message describing the first violation.</returns>
     public static string? Validate(IReadOnlyDictionary<string, string>? tags)
     {
         if (tags is null || tags.Count == 0) {
@@ -27,6 +49,11 @@ public static class ObjectTagValidation
         return null;
     }
 
+    /// <summary>
+    /// Validates a list of tag key-value pairs against S3 tagging constraints, including duplicate key detection.
+    /// </summary>
+    /// <param name="tags">The tags to validate.</param>
+    /// <returns><see langword="null"/> if valid; otherwise an error message describing the first violation.</returns>
     public static string? Validate(IReadOnlyList<KeyValuePair<string, string>> tags)
     {
         ArgumentNullException.ThrowIfNull(tags);
@@ -56,11 +83,11 @@ public static class ObjectTagValidation
 
     private static string? ValidateTag(string key, string value)
     {
-        if (key.Length > MaxKeyLength) {
+        if (CountUnicodeCharacters(key) > MaxKeyLength) {
             return $"Tag key '{key}' exceeds the maximum length of {MaxKeyLength} characters.";
         }
 
-        if (value.Length > MaxValueLength) {
+        if (CountUnicodeCharacters(value) > MaxValueLength) {
             return $"Tag value for key '{key}' exceeds the maximum length of {MaxValueLength} characters.";
         }
 
@@ -68,6 +95,52 @@ public static class ObjectTagValidation
             return $"Tag key '{key}' uses the reserved '{ReservedPrefix}' prefix.";
         }
 
+        if (!ContainsOnlySupportedCharacters(key)) {
+            return $"Tag key '{key}' contains unsupported characters.";
+        }
+
+        if (!ContainsOnlySupportedCharacters(value)) {
+            return $"Tag value for key '{key}' contains unsupported characters.";
+        }
+
         return null;
+    }
+
+    private static int CountUnicodeCharacters(string value)
+    {
+        var count = 0;
+        foreach (var _ in value.EnumerateRunes()) {
+            count++;
+        }
+
+        return count;
+    }
+
+    private static bool ContainsOnlySupportedCharacters(string value)
+    {
+        foreach (var rune in value.EnumerateRunes()) {
+            if (!IsSupportedTagCharacter(rune)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsSupportedTagCharacter(Rune rune)
+    {
+        var category = Rune.GetUnicodeCategory(rune);
+        if (category is UnicodeCategory.UppercaseLetter
+            or UnicodeCategory.LowercaseLetter
+            or UnicodeCategory.TitlecaseLetter
+            or UnicodeCategory.ModifierLetter
+            or UnicodeCategory.OtherLetter
+            or UnicodeCategory.DecimalDigitNumber
+            or UnicodeCategory.LetterNumber
+            or UnicodeCategory.OtherNumber) {
+            return true;
+        }
+
+        return rune.Value is ' ' or '+' or '-' or '=' or '.' or '_' or ':' or '/' or '@';
     }
 }

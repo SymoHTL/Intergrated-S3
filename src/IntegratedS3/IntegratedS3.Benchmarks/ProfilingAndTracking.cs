@@ -61,15 +61,42 @@ internal static class BenchmarkHttpProviderLatencyHeader
             return;
         }
 
-        foreach (var headerValue in headerValues) {
-            foreach (var segment in headerValue.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
-                var parts = segment.Split('=', 2);
-                if (parts.Length != 2 || !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var elapsedTicks)) {
-                    continue;
-                }
+        RecordFromHeaderValues(headerValues);
+    }
 
-                StorageBackendProfilingContext.Record(Uri.UnescapeDataString(parts[0]), elapsedTicks);
+    public static void RecordFromHeaders(IEnumerable<KeyValuePair<string, string>> headers)
+    {
+        ArgumentNullException.ThrowIfNull(headers);
+
+        foreach (var (headerName, headerValue) in headers) {
+            if (!string.Equals(headerName, HeaderName, StringComparison.OrdinalIgnoreCase)) {
+                continue;
             }
+
+            RecordFromHeaderValue(headerValue);
+        }
+    }
+
+    private static void RecordFromHeaderValues(IEnumerable<string> headerValues)
+    {
+        foreach (var headerValue in headerValues) {
+            RecordFromHeaderValue(headerValue);
+        }
+    }
+
+    private static void RecordFromHeaderValue(string? headerValue)
+    {
+        if (string.IsNullOrWhiteSpace(headerValue)) {
+            return;
+        }
+
+        foreach (var segment in headerValue.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            var parts = segment.Split('=', 2);
+            if (parts.Length != 2 || !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var elapsedTicks)) {
+                continue;
+            }
+
+            StorageBackendProfilingContext.Record(Uri.UnescapeDataString(parts[0]), elapsedTicks);
         }
     }
 }
@@ -140,6 +167,15 @@ public sealed class ProfilingStorageBackend(IStorageBackend inner) : IStorageBac
     public async ValueTask<StorageResult> DeleteBucketCorsAsync(DeleteBucketCorsRequest request, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.DeleteBucketCorsAsync(request, ct), inner, request, cancellationToken);
 
+    public async ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> GetBucketDefaultEncryptionAsync(string bucketName, CancellationToken cancellationToken = default)
+        => await MeasureAsync(inner.Name, static (backend, bucketName, ct) => backend.GetBucketDefaultEncryptionAsync(bucketName, ct), inner, bucketName, cancellationToken);
+
+    public async ValueTask<StorageResult<BucketDefaultEncryptionConfiguration>> PutBucketDefaultEncryptionAsync(PutBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.PutBucketDefaultEncryptionAsync(request, ct), inner, request, cancellationToken);
+
+    public async ValueTask<StorageResult> DeleteBucketDefaultEncryptionAsync(DeleteBucketDefaultEncryptionRequest request, CancellationToken cancellationToken = default)
+        => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.DeleteBucketDefaultEncryptionAsync(request, ct), inner, request, cancellationToken);
+
     public async ValueTask<StorageResult<BucketInfo>> HeadBucketAsync(string bucketName, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, bucketName, ct) => backend.HeadBucketAsync(bucketName, ct), inner, bucketName, cancellationToken);
 
@@ -155,8 +191,17 @@ public sealed class ProfilingStorageBackend(IStorageBackend inner) : IStorageBac
     public IAsyncEnumerable<MultipartUploadInfo> ListMultipartUploadsAsync(ListMultipartUploadsRequest request, CancellationToken cancellationToken = default)
         => MeasureAsyncEnumerable(inner.Name, inner.ListMultipartUploadsAsync(request, cancellationToken), cancellationToken);
 
+    public IAsyncEnumerable<MultipartUploadPart> ListMultipartUploadPartsAsync(ListMultipartUploadPartsRequest request, CancellationToken cancellationToken = default)
+        => MeasureAsyncEnumerable(inner.Name, inner.ListMultipartUploadPartsAsync(request, cancellationToken), cancellationToken);
+
     public async ValueTask<StorageResult<GetObjectResponse>> GetObjectAsync(GetObjectRequest request, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.GetObjectAsync(request, ct), inner, request, cancellationToken);
+
+    public async ValueTask<StorageResult<ObjectRetentionInfo>> GetObjectRetentionAsync(GetObjectRetentionRequest request, CancellationToken cancellationToken = default)
+        => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.GetObjectRetentionAsync(request, ct), inner, request, cancellationToken);
+
+    public async ValueTask<StorageResult<ObjectLegalHoldInfo>> GetObjectLegalHoldAsync(GetObjectLegalHoldRequest request, CancellationToken cancellationToken = default)
+        => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.GetObjectLegalHoldAsync(request, ct), inner, request, cancellationToken);
 
     public async ValueTask<StorageResult<ObjectTagSet>> GetObjectTagsAsync(GetObjectTagsRequest request, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.GetObjectTagsAsync(request, ct), inner, request, cancellationToken);
@@ -178,6 +223,9 @@ public sealed class ProfilingStorageBackend(IStorageBackend inner) : IStorageBac
 
     public async ValueTask<StorageResult<MultipartUploadPart>> UploadMultipartPartAsync(UploadMultipartPartRequest request, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.UploadMultipartPartAsync(request, ct), inner, request, cancellationToken);
+
+    public async ValueTask<StorageResult<MultipartUploadPart>> UploadPartCopyAsync(UploadPartCopyRequest request, CancellationToken cancellationToken = default)
+        => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.UploadPartCopyAsync(request, ct), inner, request, cancellationToken);
 
     public async ValueTask<StorageResult<ObjectInfo>> CompleteMultipartUploadAsync(CompleteMultipartUploadRequest request, CancellationToken cancellationToken = default)
         => await MeasureAsync(inner.Name, static (backend, request, ct) => backend.CompleteMultipartUploadAsync(request, ct), inner, request, cancellationToken);

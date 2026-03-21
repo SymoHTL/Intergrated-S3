@@ -3,10 +3,15 @@
     <OutputType>Exe</OutputType>
     <Description>Hot-path benchmark harness and baseline reporting for IntegratedS3.</Description>
     <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" />
   </ItemGroup>
 
   <ItemGroup>

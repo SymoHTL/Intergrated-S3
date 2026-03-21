@@ -1,40 +1,63 @@
 namespace IntegratedS3.Abstractions.Errors;
 
 /// <summary>
-/// Canonical storage error payload used across provider, orchestration, and HTTP layers.
+/// Carries structured details about a failed storage operation.
 /// </summary>
 public sealed class StorageError
 {
-    /// <summary>The canonical error code.</summary>
+    /// <summary>
+    /// Gets the machine-readable error code classifying the failure.
+    /// </summary>
     public required StorageErrorCode Code { get; init; }
 
-    /// <summary>A human-readable error message.</summary>
+    /// <summary>
+    /// Gets a human-readable description of the error.
+    /// </summary>
     public required string Message { get; init; }
 
-    /// <summary>The bucket associated with the error, when relevant.</summary>
+    /// <summary>
+    /// Gets the name of the bucket involved in the failed operation, if applicable.
+    /// </summary>
     public string? BucketName { get; init; }
 
-    /// <summary>The object key associated with the error, when relevant.</summary>
+    /// <summary>
+    /// Gets the key of the object involved in the failed operation, if applicable.
+    /// </summary>
     public string? ObjectKey { get; init; }
 
-    /// <summary>The object version identifier associated with the error, when relevant.</summary>
+    /// <summary>
+    /// Gets the version identifier of the object involved, if applicable.
+    /// </summary>
     public string? VersionId { get; init; }
 
-    /// <summary>Whether the error refers to a delete marker rather than a live object version.</summary>
+    /// <summary>
+    /// Gets a value indicating whether the error relates to a delete marker rather than an actual object version.
+    /// </summary>
     public bool IsDeleteMarker { get; init; }
 
-    /// <summary>The last-modified timestamp associated with the failing object or version, when available.</summary>
+    /// <summary>
+    /// Gets the last-modified timestamp (UTC) of the object at the time of the error, if available.
+    /// </summary>
     public DateTimeOffset? LastModifiedUtc { get; init; }
 
-    /// <summary>The provider name that produced the error, when available.</summary>
+    /// <summary>
+    /// Gets the name of the storage provider that produced this error, if known.
+    /// </summary>
     public string? ProviderName { get; init; }
 
-    /// <summary>An HTTP status code that the caller may surface when translating this error for HTTP clients.</summary>
+    /// <summary>
+    /// Gets a suggested HTTP status code that best represents this error to an S3-compatible client.
+    /// </summary>
     public int? SuggestedHttpStatusCode { get; init; }
 
     /// <summary>
-    /// Creates an unsupported-capability error with the conventional HTTP 501 suggestion.
+    /// Creates a <see cref="StorageError"/> with <see cref="StorageErrorCode.UnsupportedCapability"/>
+    /// and an HTTP 501 suggested status code.
     /// </summary>
+    /// <param name="message">A human-readable description of the unsupported capability.</param>
+    /// <param name="bucketName">The bucket name, if applicable.</param>
+    /// <param name="objectKey">The object key, if applicable.</param>
+    /// <returns>A <see cref="StorageError"/> indicating an unsupported operation.</returns>
     public static StorageError Unsupported(string message, string? bucketName = null, string? objectKey = null)
     {
         return new StorageError

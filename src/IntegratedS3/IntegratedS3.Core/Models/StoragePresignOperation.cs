@@ -1,13 +1,13 @@
 namespace IntegratedS3.Core.Models;
 
 /// <summary>
-/// Identifies which object operation should be presigned.
+/// Identifies the type of presign operation to generate a URL for.
 /// </summary>
 public enum StoragePresignOperation
 {
-    /// <summary>Presign an object download.</summary>
+    /// <summary>Generate a presigned URL for downloading (GET) an object.</summary>
     GetObject,
 
-    /// <summary>Presign an object upload.</summary>
+    /// <summary>Generate a presigned URL for uploading (PUT) an object.</summary>
     PutObject
 }

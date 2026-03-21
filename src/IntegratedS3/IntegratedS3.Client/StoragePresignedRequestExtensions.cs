@@ -4,13 +4,17 @@ using IntegratedS3.Core.Models;
 namespace IntegratedS3.Client;
 
 /// <summary>
-/// Helpers for turning <see cref="StoragePresignedRequest"/> values into executable HTTP requests.
+/// Extension methods for converting a <see cref="StoragePresignedRequest"/> into an <see cref="HttpRequestMessage"/>.
 /// </summary>
 public static class StoragePresignedRequestExtensions
 {
     /// <summary>
-    /// Creates an <see cref="HttpRequestMessage"/> and applies all signed headers required by the presigned request.
+    /// Creates an <see cref="HttpRequestMessage"/> from the presigned request, applying the presigned URL,
+    /// HTTP method, required headers, and optional <paramref name="content"/>.
     /// </summary>
+    /// <param name="request">The <see cref="StoragePresignedRequest"/> to convert.</param>
+    /// <param name="content">Optional <see cref="HttpContent"/> to attach as the request body (required for PUT uploads).</param>
+    /// <returns>A fully configured <see cref="HttpRequestMessage"/> ready to be sent via an <see cref="HttpClient"/>.</returns>
     public static HttpRequestMessage CreateHttpRequestMessage(
         this StoragePresignedRequest request,
         HttpContent? content = null)

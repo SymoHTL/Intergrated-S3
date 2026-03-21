@@ -1,19 +1,27 @@
 namespace IntegratedS3.Abstractions.Models;
 
 /// <summary>
-/// Describes how callers access object content once a location has been resolved.
+/// Describes how object content is delivered to clients.
 /// </summary>
 public enum StorageObjectAccessMode
 {
-    /// <summary>The IntegratedS3 host proxies the object stream.</summary>
+    /// <summary>
+    /// Content is proxied through IntegratedS3 to the client.
+    /// </summary>
     ProxyStream,
 
-    /// <summary>The caller is redirected to a plain provider URL.</summary>
+    /// <summary>
+    /// The client is redirected to a direct URL for the object content.
+    /// </summary>
     Redirect,
 
-    /// <summary>The caller receives a delegated provider-managed access grant.</summary>
+    /// <summary>
+    /// The backend provides the content delivery mechanism.
+    /// </summary>
     Delegated,
 
-    /// <summary>The caller uses a provider URL directly without additional host mediation.</summary>
+    /// <summary>
+    /// Content streams directly from the backend without transformation.
+    /// </summary>
     Passthrough
 }

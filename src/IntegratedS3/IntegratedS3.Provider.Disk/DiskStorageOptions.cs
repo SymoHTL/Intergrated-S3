@@ -1,19 +1,28 @@
 namespace IntegratedS3.Provider.Disk;
 
 /// <summary>
-/// Configures the disk-backed storage provider.
+/// Configuration options for the disk storage provider.
 /// </summary>
 public sealed class DiskStorageOptions
 {
-    /// <summary>The provider name reported in service metadata.</summary>
+    /// <summary>
+    /// Logical name that identifies this provider instance. Defaults to <c>"disk-primary"</c>.
+    /// </summary>
     public string ProviderName { get; set; } = "disk-primary";
 
-    /// <summary>Whether this provider should be treated as the primary backend.</summary>
+    /// <summary>
+    /// Indicates whether this provider is the primary storage backend. Defaults to <see langword="true"/>.
+    /// </summary>
     public bool IsPrimary { get; set; } = true;
 
-    /// <summary>The root path used to store bucket and object data.</summary>
+    /// <summary>
+    /// Root directory on the local filesystem where objects are stored. Defaults to <c>"App_Data/IntegratedS3"</c>.
+    /// </summary>
     public string RootPath { get; set; } = "App_Data/IntegratedS3";
 
-    /// <summary>Whether the root path should be created automatically on startup.</summary>
+    /// <summary>
+    /// When <see langword="true"/>, the provider creates <see cref="RootPath"/> on startup if it does not exist.
+    /// Defaults to <see langword="true"/>.
+    /// </summary>
     public bool CreateRootDirectory { get; set; } = true;
 }

@@ -3,31 +3,47 @@ using IntegratedS3.Abstractions.Capabilities;
 namespace IntegratedS3.Abstractions.Models;
 
 /// <summary>
-/// Describes a provider as exposed to configuration, service documents, and capability reporting.
+/// Full descriptor for a registered storage provider, including its capabilities and configuration.
 /// </summary>
 public sealed class StorageProviderDescriptor
 {
-    /// <summary>The provider name reported to consumers.</summary>
+    /// <summary>
+    /// The unique name of this provider registration.
+    /// </summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>The provider kind, such as <c>disk</c> or <c>s3</c>.</summary>
+    /// <summary>
+    /// The kind of provider (e.g., "Disk", "S3").
+    /// </summary>
     public string Kind { get; set; } = string.Empty;
 
-    /// <summary>Whether this provider is the deployment's primary write target.</summary>
+    /// <summary>
+    /// Whether this is the primary (default) storage provider.
+    /// </summary>
     public bool IsPrimary { get; set; }
 
-    /// <summary>An optional human-readable description for dashboards and service documents.</summary>
+    /// <summary>
+    /// An optional human-readable description of the provider.
+    /// </summary>
     public string? Description { get; set; }
 
-    /// <summary>The high-level orchestration mode used for this provider.</summary>
+    /// <summary>
+    /// How the provider operates within IntegratedS3.
+    /// </summary>
     public StorageProviderMode Mode { get; set; } = StorageProviderMode.Managed;
 
-    /// <summary>The runtime capability descriptor exposed for this provider.</summary>
+    /// <summary>
+    /// The capabilities supported by this provider.
+    /// </summary>
     public StorageCapabilities Capabilities { get; set; } = new();
 
-    /// <summary>The object-location access modes advertised by this provider.</summary>
+    /// <summary>
+    /// Object location capabilities of this provider.
+    /// </summary>
     public StorageObjectLocationDescriptor ObjectLocation { get; set; } = new();
 
-    /// <summary>The state-ownership descriptor for advanced features exposed by this provider.</summary>
+    /// <summary>
+    /// The current support state of this provider.
+    /// </summary>
     public StorageSupportStateDescriptor SupportState { get; set; } = new();
 }

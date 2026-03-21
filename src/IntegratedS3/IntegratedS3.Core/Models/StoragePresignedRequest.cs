@@ -1,37 +1,38 @@
 namespace IntegratedS3.Core.Models;
 
 /// <summary>
-/// Describes a concrete presigned HTTP request that can be executed by a client.
+/// Represents the result of a presign operation, containing the presigned URL,
+/// required headers, and associated metadata.
 /// </summary>
 public sealed class StoragePresignedRequest
 {
-    /// <summary>The object operation that was presigned.</summary>
+    /// <summary>The presign operation that produced this grant (e.g. GET or PUT).</summary>
     public required StoragePresignOperation Operation { get; init; }
 
-    /// <summary>The access mode chosen for the returned grant.</summary>
+    /// <summary>The access mode used for the presigned grant (direct, delegated, or proxy).</summary>
     public required StorageAccessMode AccessMode { get; init; }
 
-    /// <summary>The HTTP method to use for the request.</summary>
+    /// <summary>The HTTP method the caller must use when executing the presigned request (e.g. <c>GET</c> or <c>PUT</c>).</summary>
     public required string Method { get; init; }
 
-    /// <summary>The presigned or redirected request URL.</summary>
+    /// <summary>The presigned URL the caller should issue the request against.</summary>
     public required Uri Url { get; init; }
 
-    /// <summary>The UTC timestamp when the grant expires.</summary>
+    /// <summary>The UTC point in time after which the presigned URL is no longer valid.</summary>
     public required DateTimeOffset ExpiresAtUtc { get; init; }
 
-    /// <summary>The bucket name bound into the request.</summary>
+    /// <summary>The name of the target bucket.</summary>
     public required string BucketName { get; init; }
 
-    /// <summary>The object key bound into the request.</summary>
+    /// <summary>The object key within the bucket.</summary>
     public required string Key { get; init; }
 
-    /// <summary>An optional version identifier bound into the request.</summary>
+    /// <summary>The object version identifier, or <see langword="null"/> for the latest version.</summary>
     public string? VersionId { get; init; }
 
-    /// <summary>An optional content type that the caller must preserve when uploading.</summary>
+    /// <summary>The MIME content type of the object, when applicable.</summary>
     public string? ContentType { get; init; }
 
-    /// <summary>The headers that must be applied when executing the request.</summary>
+    /// <summary>Additional HTTP headers the caller must include when executing the presigned request.</summary>
     public IReadOnlyList<StoragePresignedHeader> Headers { get; init; } = [];
 }

@@ -34,6 +34,14 @@ internal sealed class StorageReplicaRepairService(
             StorageOperationType.CreateBucket => await RepairReplicaBucketCreateAsync(primaryBackend, replicaBackend, entry.BucketName, cancellationToken),
             StorageOperationType.PutBucketVersioning => await RepairReplicaBucketVersioningAsync(primaryBackend, replicaBackend, entry.BucketName, cancellationToken),
             StorageOperationType.PutBucketCors or StorageOperationType.DeleteBucketCors => await RepairReplicaBucketCorsAsync(primaryBackend, replicaBackend, entry.BucketName, cancellationToken),
+            StorageOperationType.PutBucketDefaultEncryption or StorageOperationType.DeleteBucketDefaultEncryption => await RepairReplicaBucketDefaultEncryptionAsync(primaryBackend, replicaBackend, entry.BucketName, cancellationToken),
+            StorageOperationType.PutBucketTagging or StorageOperationType.DeleteBucketTagging
+                or StorageOperationType.PutBucketLogging
+                or StorageOperationType.PutBucketWebsite or StorageOperationType.DeleteBucketWebsite
+                or StorageOperationType.PutBucketRequestPayment
+                or StorageOperationType.PutBucketAccelerate
+                or StorageOperationType.PutBucketLifecycle or StorageOperationType.DeleteBucketLifecycle
+                => await RepairReplicaBucketConfigFallbackAsync(primaryBackend, replicaBackend, entry.BucketName, entry, cancellationToken),
             StorageOperationType.DeleteBucket => await RepairReplicaBucketDeleteAsync(replicaBackend, entry.BucketName, cancellationToken),
             StorageOperationType.CopyObject or StorageOperationType.PutObject => string.IsNullOrWhiteSpace(entry.ObjectKey)
                 ? CreateInvalidRepairTargetError(entry, "Object repairs require an object key.")
@@ -49,6 +57,9 @@ internal sealed class StorageReplicaRepairService(
                     Key = entry.ObjectKey,
                     VersionId = entry.VersionId
                 }, cancellationToken),
+            StorageOperationType.PutObjectRetention or StorageOperationType.PutObjectLegalHold => string.IsNullOrWhiteSpace(entry.ObjectKey)
+                ? CreateInvalidRepairTargetError(entry, "Object retention/legal-hold repairs require an object key.")
+                : await RepairReplicaObjectFromPrimaryAsync(primaryBackend, replicaBackend, entry.BucketName, entry.ObjectKey, entry.VersionId, cancellationToken),
             _ => CreateUnsupportedRepairError(entry)
         };
     }
@@ -179,6 +190,10 @@ internal sealed class StorageReplicaRepairService(
         var primaryVersioningResult = await primaryBackend.GetBucketVersioningAsync(bucketName, cancellationToken);
         ObserveResult(primaryBackend, primaryVersioningResult);
         if (!primaryVersioningResult.IsSuccess || primaryVersioningResult.Value is null) {
+            if (primaryVersioningResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+                return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+            }
+
             return primaryVersioningResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket versioning state could not be resolved for replica repair.");
         }
 
@@ -227,6 +242,10 @@ internal sealed class StorageReplicaRepairService(
             }, cancellationToken);
         }
 
+        if (primaryCorsResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
         if (primaryCorsResult.Error?.Code == StorageErrorCode.CorsConfigurationNotFound) {
             return await WriteReplicaDeleteBucketCorsAsync(replicaBackend, new DeleteBucketCorsRequest
             {
@@ -247,6 +266,10 @@ internal sealed class StorageReplicaRepairService(
     {
         var sourceResponseResult = await GetObjectForReplicationAsync(primaryBackend, bucketName, key, versionId, cancellationToken);
         if (!sourceResponseResult.IsSuccess || sourceResponseResult.Value is null) {
+            if (sourceResponseResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await ReconcileReplicaObjectDeletionAsync(replicaBackend, bucketName, key, versionId, cancellationToken);
+            }
+
             return sourceResponseResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, versionId);
         }
 
@@ -287,6 +310,10 @@ internal sealed class StorageReplicaRepairService(
         }, cancellationToken);
         ObserveResult(primaryBackend, primaryTagResult);
         if (!primaryTagResult.IsSuccess || primaryTagResult.Value is null) {
+            if (primaryTagResult.Error?.Code is StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound) {
+                return await ReconcileReplicaObjectDeletionAsync(replicaBackend, bucketName, key, requestedVersionId, cancellationToken);
+            }
+
             return primaryTagResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, key, requestedVersionId, "Primary object tags could not be resolved for replica repair.");
         }
 
@@ -322,12 +349,25 @@ internal sealed class StorageReplicaRepairService(
     {
         var replicaResult = await replicaBackend.DeleteObjectAsync(request, cancellationToken);
         ObserveResult(replicaBackend, replicaResult);
+
+        if (!replicaResult.IsSuccess
+            && replicaResult.Error?.Code == StorageErrorCode.UnsupportedCapability
+            && !string.IsNullOrWhiteSpace(request.VersionId)) {
+            replicaResult = await replicaBackend.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = request.BucketName,
+                Key = request.Key
+            }, cancellationToken);
+            ObserveResult(replicaBackend, replicaResult);
+        }
+
         if (!replicaResult.IsSuccess) {
             if (replicaResult.Error?.Code is not (StorageErrorCode.ObjectNotFound or StorageErrorCode.BucketNotFound)) {
                 return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, request.BucketName, request.Key, request.VersionId, "Replica object delete did not succeed.");
             }
 
-            await catalogStore.RemoveObjectAsync(replicaBackend.Name, request.BucketName, request.Key, request.VersionId, cancellationToken);
+            // Object/bucket is gone — remove all catalog entries for this key regardless of version.
+            await catalogStore.RemoveObjectAsync(replicaBackend.Name, request.BucketName, request.Key, versionId: null, cancellationToken);
             return null;
         }
 
@@ -346,6 +386,90 @@ internal sealed class StorageReplicaRepairService(
         }
 
         return null;
+    }
+
+    private async ValueTask<StorageError?> ReconcileReplicaObjectDeletionAsync(
+        IStorageBackend replicaBackend,
+        string bucketName,
+        string key,
+        string? versionId,
+        CancellationToken cancellationToken)
+    {
+        var deleteError = await RepairReplicaDeleteObjectAsync(replicaBackend, new DeleteObjectRequest
+        {
+            BucketName = bucketName,
+            Key = key,
+            VersionId = versionId
+        }, cancellationToken);
+        if (deleteError is not null) {
+            return deleteError;
+        }
+
+        // Remove all catalog entries for this object regardless of version,
+        // since the primary no longer has it.
+        await catalogStore.RemoveObjectAsync(replicaBackend.Name, bucketName, key, versionId: null, cancellationToken);
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketDefaultEncryptionAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        CancellationToken cancellationToken)
+    {
+        var primaryEncryptionResult = await primaryBackend.GetBucketDefaultEncryptionAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryEncryptionResult);
+        if (!primaryEncryptionResult.IsSuccess || primaryEncryptionResult.Value is null) {
+            if (primaryEncryptionResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+                return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+            }
+
+            return primaryEncryptionResult.Error ?? CreatePrimaryReplicationSourceError(primaryBackend, bucketName, objectKey: null, versionId: null, message: "Primary bucket default encryption could not be resolved for replica repair.");
+        }
+
+        if (primaryEncryptionResult.Value.Rule is not null) {
+            var replicaResult = await replicaBackend.PutBucketDefaultEncryptionAsync(new PutBucketDefaultEncryptionRequest
+            {
+                BucketName = bucketName,
+                Rule = new BucketDefaultEncryptionRule
+                {
+                    Algorithm = primaryEncryptionResult.Value.Rule.Algorithm,
+                    KeyId = primaryEncryptionResult.Value.Rule.KeyId
+                }
+            }, cancellationToken);
+            ObserveResult(replicaBackend, replicaResult);
+            if (!replicaResult.IsSuccess || replicaResult.Value is null) {
+                return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, objectKey: null, versionId: null, message: "Replica bucket default encryption update did not return configuration metadata.");
+            }
+        }
+        else {
+            var replicaResult = await replicaBackend.DeleteBucketDefaultEncryptionAsync(new DeleteBucketDefaultEncryptionRequest
+            {
+                BucketName = bucketName
+            }, cancellationToken);
+            ObserveResult(replicaBackend, replicaResult);
+            if (!replicaResult.IsSuccess && replicaResult.Error?.Code != StorageErrorCode.BucketNotFound) {
+                return replicaResult.Error ?? CreateReplicaOperationError(replicaBackend, bucketName, objectKey: null, versionId: null, message: "Replica bucket default encryption delete did not succeed.");
+            }
+        }
+
+        return null;
+    }
+
+    private async ValueTask<StorageError?> RepairReplicaBucketConfigFallbackAsync(
+        IStorageBackend primaryBackend,
+        IStorageBackend replicaBackend,
+        string bucketName,
+        StorageReplicaRepairEntry entry,
+        CancellationToken cancellationToken)
+    {
+        var primaryHeadResult = await primaryBackend.HeadBucketAsync(bucketName, cancellationToken);
+        ObserveResult(primaryBackend, primaryHeadResult);
+        if (primaryHeadResult.Error?.Code == StorageErrorCode.BucketNotFound) {
+            return await RepairReplicaBucketDeleteAsync(replicaBackend, bucketName, cancellationToken);
+        }
+
+        return CreateUnsupportedRepairError(entry);
     }
 
     private async ValueTask<StorageResult<GetObjectResponse>> GetObjectForReplicationAsync(

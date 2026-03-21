@@ -1,16 +1,20 @@
 using System.Net;
-using System.Security.Cryptography;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
 using IntegratedS3.Abstractions.Capabilities;
 using IntegratedS3.Abstractions.Errors;
 using IntegratedS3.Abstractions.Models;
 using IntegratedS3.Abstractions.Requests;
 using IntegratedS3.Abstractions.Responses;
 using IntegratedS3.Abstractions.Services;
+using IntegratedS3.AspNetCore.DependencyInjection;
 using IntegratedS3.AspNetCore.Services;
 using IntegratedS3.Protocol;
 using Microsoft.AspNetCore.Builder;
@@ -19,6 +23,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Net.Http.Headers;
 using IntegratedS3.Core.Models;
@@ -27,7 +32,7 @@ using IntegratedS3.Core.Services;
 namespace IntegratedS3.AspNetCore.Endpoints;
 
 /// <summary>
-/// Maps the JSON and S3-compatible HTTP routes exposed by the IntegratedS3 ASP.NET package.
+/// Extension methods for mapping IntegratedS3 S3-compatible REST API endpoints onto the ASP.NET Core routing pipeline.
 /// </summary>
 public static class IntegratedS3EndpointRouteBuilderExtensions
 {
@@ -57,17 +62,39 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string ServerSideEncryptionHeaderName = "x-amz-server-side-encryption";
     private const string ServerSideEncryptionAwsKmsKeyIdHeaderName = "x-amz-server-side-encryption-aws-kms-key-id";
     private const string ServerSideEncryptionContextHeaderName = "x-amz-server-side-encryption-context";
+    private const string ServerSideEncryptionCustomerAlgorithmHeaderName = "x-amz-server-side-encryption-customer-algorithm";
+    private const string ServerSideEncryptionCustomerKeyHeaderName = "x-amz-server-side-encryption-customer-key";
+    private const string ServerSideEncryptionCustomerKeyMd5HeaderName = "x-amz-server-side-encryption-customer-key-MD5";
+    private const string CopySourceServerSideEncryptionCustomerAlgorithmHeaderName = "x-amz-copy-source-server-side-encryption-customer-algorithm";
+    private const string CopySourceServerSideEncryptionCustomerKeyHeaderName = "x-amz-copy-source-server-side-encryption-customer-key";
+    private const string CopySourceServerSideEncryptionCustomerKeyMd5HeaderName = "x-amz-copy-source-server-side-encryption-customer-key-MD5";
     private const string SdkChecksumAlgorithmHeaderName = "x-amz-sdk-checksum-algorithm";
     private const string ChecksumAlgorithmHeaderName = "x-amz-checksum-algorithm";
     private const string ChecksumCrc32HeaderName = "x-amz-checksum-crc32";
     private const string ChecksumCrc32cHeaderName = "x-amz-checksum-crc32c";
     private const string ChecksumSha1HeaderName = "x-amz-checksum-sha1";
     private const string ChecksumSha256HeaderName = "x-amz-checksum-sha256";
+    private const string ChecksumCrc64NvmeHeaderName = "x-amz-checksum-crc64nvme";
+    private const string AwsContentSha256HeaderName = "x-amz-content-sha256";
+    private const string AwsTrailerHeaderName = "x-amz-trailer";
+    private const string AwsTrailerSignatureHeaderName = "x-amz-trailer-signature";
+    private const string StreamingAws4HmacSha256PayloadTrailer = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER";
+    private const string StreamingAwsEcdsaSha256PayloadTrailer = "STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER";
+    private const string StreamingUnsignedPayloadTrailer = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
     private const string ChecksumTypeHeaderName = "x-amz-checksum-type";
     private const string ContentMd5HeaderName = "Content-MD5";
     private const string DeleteMarkerHeaderName = "x-amz-delete-marker";
     private const string TaggingCountHeaderName = "x-amz-tagging-count";
     private const string VersionIdHeaderName = "x-amz-version-id";
+    private const string ObjectLockModeHeaderName = "x-amz-object-lock-mode";
+    private const string ObjectLockRetainUntilDateHeaderName = "x-amz-object-lock-retain-until-date";
+    private const string ObjectLockLegalHoldHeaderName = "x-amz-object-lock-legal-hold";
+    private const string StorageClassHeaderName = "x-amz-storage-class";
+    private const string ServerSideEncryptionBucketKeyEnabledHeaderName = "x-amz-server-side-encryption-bucket-key-enabled";
+    private const string BucketRegionHeaderName = "x-amz-bucket-region";
+    private const string ErrorCodeHeaderName = "x-amz-error-code";
+    private const string ErrorMessageHeaderName = "x-amz-error-message";
+    private const string NoSuchVersionMessage = "The specified version does not exist.";
     private const string XmlContentType = "application/xml";
     private const string ListTypeQueryParameterName = "list-type";
     private const string PrefixQueryParameterName = "prefix";
@@ -85,7 +112,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string CorsQueryParameterName = "cors";
     private const string PolicyQueryParameterName = "policy";
     private const string TaggingQueryParameterName = "tagging";
+    private const string RetentionQueryParameterName = "retention";
+    private const string LegalHoldQueryParameterName = "legal-hold";
+    private const string AttributesQueryParameterName = "attributes";
+    private const string ObjectAttributesHeaderName = "x-amz-object-attributes";
     private const string VersioningQueryParameterName = "versioning";
+    private const string EncryptionQueryParameterName = "encryption";
     private const string VersionsQueryParameterName = "versions";
     private const string KeyMarkerQueryParameterName = "key-marker";
     private const string VersionIdMarkerQueryParameterName = "version-id-marker";
@@ -96,6 +128,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string PartNumberMarkerQueryParameterName = "part-number-marker";
     private const string VersionIdQueryParameterName = "versionId";
     private const string DeleteQueryParameterName = "delete";
+    private const string LoggingQueryParameterName = "logging";
+    private const string WebsiteQueryParameterName = "website";
+    private const string RequestPaymentQueryParameterName = "requestPayment";
+    private const string AccelerateQueryParameterName = "accelerate";
+    private const string LifecycleQueryParameterName = "lifecycle";
+    private const string ReplicationQueryParameterName = "replication";
+    private const string NotificationQueryParameterName = "notification";
+    private const string ObjectLockQueryParameterName = "object-lock";
+    private const string AnalyticsQueryParameterName = "analytics";
+    private const string MetricsQueryParameterName = "metrics";
+    private const string InventoryQueryParameterName = "inventory";
+    private const string IntelligentTieringQueryParameterName = "intelligent-tiering";
+    private const string IdQueryParameterName = "id";
+    private const string RestoreQueryParameterName = "restore";
+    private const string SelectQueryParameterName = "select";
+    private const string SelectTypeQueryParameterName = "select-type";
     private const string OriginHeaderName = "Origin";
     private const string AccessControlRequestMethodHeaderName = "Access-Control-Request-Method";
     private const string AccessControlRequestHeadersHeaderName = "Access-Control-Request-Headers";
@@ -106,12 +154,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private const string AccessControlExposeHeadersHeaderName = "Access-Control-Expose-Headers";
     private const string AccessControlMaxAgeHeaderName = "Access-Control-Max-Age";
     private const string AllUsersGroupUri = "http://acs.amazonaws.com/groups/global/AllUsers";
+    private const string AuthenticatedUsersGroupUri = "http://acs.amazonaws.com/groups/global/AuthenticatedUsers";
+    private const string ChecksumModeHeaderName = "x-amz-checksum-mode";
     private const string CanonicalUserGranteeType = "CanonicalUser";
     private const string GroupGranteeType = "Group";
     private const string OwnerId = "integrated-s3";
     private static readonly HashSet<string> BucketAclQueryParameters = CreateQueryParameterSet(AclQueryParameterName);
     private const string UrlEncodingTypeValue = "url";
     private const string DefaultS3ListingIdentityId = "integrated-s3";
+    private static readonly UTF8Encoding StrictTaggingHeaderEncoding = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly HashSet<string> EmptyQueryParameters = CreateQueryParameterSet();
     private static readonly HashSet<string> BucketListObjectsV1QueryParameters = CreateQueryParameterSet(PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, MaxKeysQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketListObjectsV2QueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName);
@@ -124,18 +175,36 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static readonly HashSet<string> BucketCorsQueryParameters = CreateQueryParameterSet(CorsQueryParameterName);
     private static readonly HashSet<string> BucketPolicyQueryParameters = CreateQueryParameterSet(PolicyQueryParameterName);
     private static readonly HashSet<string> BucketVersioningQueryParameters = CreateQueryParameterSet(VersioningQueryParameterName);
-    private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName);
+    private static readonly HashSet<string> BucketEncryptionQueryParameters = CreateQueryParameterSet(EncryptionQueryParameterName);
+    private static readonly HashSet<string> BucketTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName);
+    private static readonly HashSet<string> BucketLoggingQueryParameters = CreateQueryParameterSet(LoggingQueryParameterName);
+    private static readonly HashSet<string> BucketWebsiteQueryParameters = CreateQueryParameterSet(WebsiteQueryParameterName);
+    private static readonly HashSet<string> BucketRequestPaymentQueryParameters = CreateQueryParameterSet(RequestPaymentQueryParameterName);
+    private static readonly HashSet<string> BucketAccelerateQueryParameters = CreateQueryParameterSet(AccelerateQueryParameterName);
+    private static readonly HashSet<string> BucketLifecycleQueryParameters = CreateQueryParameterSet(LifecycleQueryParameterName);
+    private static readonly HashSet<string> BucketReplicationQueryParameters = CreateQueryParameterSet(ReplicationQueryParameterName);
+    private static readonly HashSet<string> BucketNotificationQueryParameters = CreateQueryParameterSet(NotificationQueryParameterName);
+    private static readonly HashSet<string> BucketObjectLockQueryParameters = CreateQueryParameterSet(ObjectLockQueryParameterName);
+    private static readonly HashSet<string> BucketAnalyticsQueryParameters = CreateQueryParameterSet(AnalyticsQueryParameterName, IdQueryParameterName);
+    private static readonly HashSet<string> BucketMetricsQueryParameters = CreateQueryParameterSet(MetricsQueryParameterName, IdQueryParameterName);
+    private static readonly HashSet<string> BucketInventoryQueryParameters = CreateQueryParameterSet(InventoryQueryParameterName, IdQueryParameterName);
+    private static readonly HashSet<string> BucketVersionListingQueryParameters = CreateQueryParameterSet(VersionsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxKeysQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketMultipartUploadsQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MaxUploadsQueryParameterName, KeyMarkerQueryParameterName, UploadIdMarkerQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> BucketDeleteQueryParameters = CreateQueryParameterSet(DeleteQueryParameterName);
-    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
+    private static readonly HashSet<string> KnownBucketQueryParameters = CreateQueryParameterSet(ListTypeQueryParameterName, PrefixQueryParameterName, DelimiterQueryParameterName, MarkerQueryParameterName, StartAfterQueryParameterName, MaxKeysQueryParameterName, MaxUploadsQueryParameterName, ContinuationTokenQueryParameterName, EncodingTypeQueryParameterName, FetchOwnerQueryParameterName, LocationQueryParameterName, AclQueryParameterName, CorsQueryParameterName, PolicyQueryParameterName, VersioningQueryParameterName, EncryptionQueryParameterName, TaggingQueryParameterName, LoggingQueryParameterName, WebsiteQueryParameterName, RequestPaymentQueryParameterName, AccelerateQueryParameterName, LifecycleQueryParameterName, ReplicationQueryParameterName, NotificationQueryParameterName, ObjectLockQueryParameterName, AnalyticsQueryParameterName, MetricsQueryParameterName, InventoryQueryParameterName, IdQueryParameterName, VersionsQueryParameterName, KeyMarkerQueryParameterName, VersionIdMarkerQueryParameterName, UploadIdMarkerQueryParameterName, UploadsQueryParameterName, DeleteQueryParameterName);
     private static readonly HashSet<string> ObjectVersionQueryParameters = CreateQueryParameterSet(VersionIdQueryParameterName);
     private static readonly HashSet<string> ObjectAclQueryParameters = CreateQueryParameterSet(AclQueryParameterName);
     private static readonly HashSet<string> ObjectTaggingQueryParameters = CreateQueryParameterSet(TaggingQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectRetentionQueryParameters = CreateQueryParameterSet(RetentionQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectLegalHoldQueryParameters = CreateQueryParameterSet(LegalHoldQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectAttributesQueryParameters = CreateQueryParameterSet(AttributesQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectRestoreQueryParameters = CreateQueryParameterSet(RestoreQueryParameterName, VersionIdQueryParameterName);
+    private static readonly HashSet<string> ObjectSelectQueryParameters = CreateQueryParameterSet(SelectQueryParameterName, SelectTypeQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartInitiateQueryParameters = CreateQueryParameterSet(UploadsQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartPartQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberQueryParameterName);
     private static readonly HashSet<string> ObjectMultipartUploadQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName);
-    private static readonly HashSet<string> ObjectMultipartListPartsQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName);
-    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, VersionIdQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName);
+    private static readonly HashSet<string> ObjectMultipartListPartsQueryParameters = CreateQueryParameterSet(UploadIdQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
+    private static readonly HashSet<string> KnownObjectQueryParameters = CreateQueryParameterSet(AclQueryParameterName, TaggingQueryParameterName, RetentionQueryParameterName, LegalHoldQueryParameterName, AttributesQueryParameterName, VersionIdQueryParameterName, RestoreQueryParameterName, SelectQueryParameterName, SelectTypeQueryParameterName, UploadsQueryParameterName, UploadIdQueryParameterName, PartNumberQueryParameterName, PartNumberMarkerQueryParameterName, MaxPartsQueryParameterName, EncodingTypeQueryParameterName);
     private static readonly HashSet<string> SupportedManagedServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         ServerSideEncryptionHeaderName,
@@ -143,9 +212,36 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ServerSideEncryptionContextHeaderName
     };
 
+    private static readonly HashSet<string> SupportedCustomerServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ServerSideEncryptionCustomerAlgorithmHeaderName,
+        ServerSideEncryptionCustomerKeyHeaderName,
+        ServerSideEncryptionCustomerKeyMd5HeaderName
+    };
+
+    private static readonly HashSet<string> SupportedCopySourceCustomerServerSideEncryptionRequestHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        CopySourceServerSideEncryptionCustomerAlgorithmHeaderName,
+        CopySourceServerSideEncryptionCustomerKeyHeaderName,
+        CopySourceServerSideEncryptionCustomerKeyMd5HeaderName
+    };
+
     /// <summary>
-    /// Maps IntegratedS3 endpoints using the configured <see cref="IntegratedS3EndpointOptions"/> from DI.
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline using DI-configured
+    /// <see cref="IntegratedS3EndpointOptions"/>. Endpoints are grouped under the configured
+    /// <see cref="IntegratedS3Options.RoutePrefix"/>.
     /// </summary>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
+    /// <example>
+    /// <code>
+    /// app.MapIntegratedS3Endpoints();
+    /// </code>
+    /// </example>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints)
@@ -156,8 +252,52 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     }
 
     /// <summary>
-    /// Maps IntegratedS3 endpoints after applying additional endpoint-option overrides in code.
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline using the provided
+    /// <see cref="IntegratedS3EndpointConfigurationOptions"/>. Endpoints are grouped under the
+    /// configured <see cref="IntegratedS3Options.RoutePrefix"/>.
     /// </summary>
+    /// <remarks>
+    /// This overload is preferred for AOT/trimming scenarios because it avoids code callbacks that require
+    /// dynamic code generation. Endpoint configuration is driven entirely by <see cref="IntegratedS3EndpointConfigurationOptions"/>
+    /// which can be bound from <c>IConfiguration</c>.
+    /// </remarks>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <param name="endpointConfiguration">
+    /// A <see cref="IntegratedS3EndpointConfigurationOptions"/> instance describing the endpoint
+    /// configuration. Can be bound from <c>IConfiguration</c> for AOT-safe scenarios.
+    /// </param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
+    public static RouteGroupBuilder MapIntegratedS3Endpoints(
+        this IEndpointRouteBuilder endpoints,
+        IntegratedS3EndpointConfigurationOptions endpointConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+        ArgumentNullException.ThrowIfNull(endpointConfiguration);
+
+        var resolvedEndpointOptions = new IntegratedS3EndpointOptions();
+        endpointConfiguration.ApplyTo(resolvedEndpointOptions);
+        return MapIntegratedS3EndpointsCore(endpoints, resolvedEndpointOptions);
+    }
+
+    /// <summary>
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline, starting from DI-configured options and
+    /// applying the <paramref name="configure"/> callback for programmatic overrides. Endpoints are
+    /// grouped under the configured <see cref="IntegratedS3Options.RoutePrefix"/>.
+    /// </summary>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <param name="configure">
+    /// A callback to customize <see cref="IntegratedS3EndpointOptions"/> after DI-configured values
+    /// have been applied.
+    /// </param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints, Action<IntegratedS3EndpointOptions> configure)
@@ -171,8 +311,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     }
 
     /// <summary>
-    /// Maps IntegratedS3 endpoints using an explicit <see cref="IntegratedS3EndpointOptions"/> instance.
+    /// Maps S3-compatible IntegratedS3 endpoints (ListBuckets, GetObject, PutObject, DeleteObject,
+    /// multipart uploads, etc.) onto the routing pipeline using the provided pre-built
+    /// <see cref="IntegratedS3EndpointOptions"/>. Endpoints are grouped under the configured
+    /// <see cref="IntegratedS3Options.RoutePrefix"/>.
     /// </summary>
+    /// <param name="endpoints">The <see cref="IEndpointRouteBuilder"/> to add routes to.</param>
+    /// <param name="endpointOptions">
+    /// A fully configured <see cref="IntegratedS3EndpointOptions"/> instance. A defensive copy is
+    /// made internally.
+    /// </param>
+    /// <returns>
+    /// A <see cref="RouteGroupBuilder"/> for the mapped endpoint group, allowing further customization
+    /// such as adding filters or metadata.
+    /// </returns>
     [RequiresUnreferencedCode("Minimal API endpoint registration may reflect over route handler delegates and parameters.")]
     [RequiresDynamicCode("Minimal API endpoint registration may require runtime-generated code for route handler delegates.")]
     public static RouteGroupBuilder MapIntegratedS3Endpoints(this IEndpointRouteBuilder endpoints, IntegratedS3EndpointOptions endpointOptions)
@@ -180,8 +332,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentNullException.ThrowIfNull(endpointOptions);
 
+        return MapIntegratedS3EndpointsCore(endpoints, endpointOptions.Clone());
+    }
+
+    private static RouteGroupBuilder MapIntegratedS3EndpointsCore(
+        IEndpointRouteBuilder endpoints,
+        IntegratedS3EndpointOptions resolvedEndpointOptions)
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+        ArgumentNullException.ThrowIfNull(resolvedEndpointOptions);
+
+        ValidateRequiredServices(endpoints.ServiceProvider);
+
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<IntegratedS3Options>>().Value;
-        var resolvedEndpointOptions = endpointOptions.Clone();
         var group = endpoints.MapGroup(options.RoutePrefix);
         group.AddEndpointFilter<IntegratedS3RequestAuthenticationEndpointFilter>();
         var routeConfiguration = CreateRouteGroupConfiguration(
@@ -255,23 +418,59 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         if (resolvedEndpointOptions.EnableBucketEndpoints) {
-            bucketGroup.MapGet("/buckets", ListBucketsAsync)
+            bucketGroup.MapGet("/buckets", async (HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: ListBuckets");
+                    var result = await ListBucketsAsync(httpContext, requestContextAccessor, storageService, cancellationToken);
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("GET", "ListBuckets", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("ListIntegratedS3Buckets");
 
-            bucketGroup.MapPut("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await CreateBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapPut("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: CreateBucket {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await CreateBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("PUT", "CreateBucket", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("CreateIntegratedS3Bucket");
 
-            bucketGroup.MapMethods("/buckets/{bucketName}", ["HEAD"], async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await HeadBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapMethods("/buckets/{bucketName}", ["HEAD"], async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: HeadBucket {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await HeadBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("HEAD", "HeadBucket", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("HeadIntegratedS3Bucket");
 
-            bucketGroup.MapDelete("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await DeleteBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapDelete("/buckets/{bucketName}", async (string bucketName, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: DeleteBucket {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await DeleteBucketAsync(bucketName, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("DELETE", "DeleteBucket", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("DeleteIntegratedS3Bucket");
 
-            bucketGroup.MapGet("/buckets/{bucketName}/objects", async (string bucketName, string? prefix, string? continuationToken, int? pageSize, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await ListObjectsAsync(bucketName, prefix, continuationToken, pageSize, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            bucketGroup.MapGet("/buckets/{bucketName}/objects", async (string bucketName, string? prefix, string? continuationToken, int? pageSize, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: ListObjects {BucketName}", bucketName);
+                    var result = WrapBucketCorsResult(bucketName, await ListObjectsAsync(bucketName, prefix, continuationToken, pageSize, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("GET", "ListObjects", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("ListIntegratedS3Objects");
 
             bucketGroup.MapMethods("/buckets/{bucketName}", ["OPTIONS"], HandleBucketCorsPreflightAsync)
@@ -285,20 +484,48 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             objectGroup.MapPost("/presign/object", CreateObjectPresignAsync)
                 .WithName("CreateIntegratedS3ObjectPresign");
 
-            objectGroup.MapPut("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await PutObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapPut("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: PutObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await PutObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("PUT", "PutObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("PutIntegratedS3Object");
 
-            objectGroup.MapGet("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await GetObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapGet("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, HttpRequest request, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: GetObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await GetObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("GET", "GetObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("GetIntegratedS3Object");
 
-            objectGroup.MapMethods("/buckets/{bucketName}/objects/{**key}", ["HEAD"], async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await HeadObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapMethods("/buckets/{bucketName}/objects/{**key}", ["HEAD"], async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: HeadObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await HeadObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("HEAD", "HeadObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("HeadIntegratedS3Object");
 
-            objectGroup.MapDelete("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) =>
-                    WrapBucketCorsResult(bucketName, await DeleteObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken)))
+            objectGroup.MapDelete("/buckets/{bucketName}/objects/{**key}", async (string bucketName, string key, HttpContext httpContext, IIntegratedS3RequestContextAccessor requestContextAccessor, IStorageService storageService, CancellationToken cancellationToken) => {
+                    var sw = Stopwatch.StartNew();
+                    var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+                    logger?.LogDebug("Native request: DeleteObject {BucketName}/{ObjectKey}", bucketName, key);
+                    var result = WrapBucketCorsResult(bucketName, await DeleteObjectAsync(bucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken));
+                    sw.Stop();
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("DELETE", "DeleteObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    return result;
+                })
                 .WithName("DeleteIntegratedS3Object");
 
             objectGroup.MapMethods("/buckets/{bucketName}/objects/{**key}", ["OPTIONS"], HandleObjectCorsPreflightAsync)
@@ -323,6 +550,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var configuredOptions = endpoints.ServiceProvider.GetService<IOptions<IntegratedS3EndpointOptions>>();
 
         return configuredOptions?.Value.Clone() ?? new IntegratedS3EndpointOptions();
+    }
+
+    private static void ValidateRequiredServices(IServiceProvider serviceProvider)
+    {
+        var backends = serviceProvider.GetService<IEnumerable<IStorageBackend>>();
+        if (backends is null || !backends.Any())
+        {
+            throw new InvalidOperationException(
+                "No IStorageBackend is registered. Call AddDiskStorage(), AddS3Storage(), or AddIntegratedS3Backend<T>() to configure a storage provider.");
+        }
     }
 
     private static RouteGroupConfiguration CreateRouteGroupConfiguration(
@@ -477,13 +714,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return;
         }
 
-        if (authorizationOptions.PolicyNames.Length > 0) {
-            group.RequireAuthorization(authorizationOptions.PolicyNames);
-            return;
-        }
-
         if (authorizationOptions.RequireAuthorization) {
             group.RequireAuthorization();
+        }
+
+        if (authorizationOptions.PolicyNames.Length > 0) {
+            group.RequireAuthorization(authorizationOptions.PolicyNames);
         }
     }
 
@@ -899,11 +1135,27 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         try {
             var result = await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor,
-                innerCancellationToken => storageService.HeadBucketAsync(bucketName, innerCancellationToken).AsTask(),
+                async innerCancellationToken => {
+                    var headResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
+                    if (!headResult.IsSuccess) {
+                        return ToErrorResult(httpContext, headResult.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                    }
+
+                    // Best-effort: add x-amz-bucket-region from GetBucketLocation
+                    try {
+                        var locationResult = await storageService.GetBucketLocationAsync(bucketName, innerCancellationToken);
+                        if (locationResult.IsSuccess && !string.IsNullOrWhiteSpace(locationResult.Value?.LocationConstraint)) {
+                            httpContext.Response.Headers[BucketRegionHeaderName] = locationResult.Value!.LocationConstraint;
+                        }
+                    }
+                    catch {
+                        // Region header is informational; don't fail HeadBucket if location lookup fails
+                    }
+
+                    return (IResult)TypedResults.Ok();
+                },
                 cancellationToken);
-            return result.IsSuccess
-                ? TypedResults.Ok()
-                : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            return result;
         }
         catch (EndpointStorageAuthorizationException exception) {
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
@@ -1009,7 +1261,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
-        if (!TryParseOptionalWriteCannedAcl(request, BuildObjectResource(bucketName, key), bucketName, key, out var cannedAcl, out var aclErrorResult)) {
+        if (!TryParseOptionalWriteObjectAcl(request, BuildObjectResource(bucketName, key), bucketName, key, out var objectAcl, out var aclErrorResult)) {
             return aclErrorResult!;
         }
 
@@ -1036,6 +1288,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             return copyTagsErrorResult!;
                         }
 
+                        if (!TryParseRequestChecksums(request, preparedBody, requireChecksumValueForDeclaredAlgorithm: false, out var copyChecksumAlgorithm, out var requestedCopyChecksums, out var copyChecksumErrorResult)) {
+                            return copyChecksumErrorResult!;
+                        }
+
+                        var (sourceCustomerEncryption, sourceCustomerEncryptionError) = TryParseCopySourceCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                        if (sourceCustomerEncryptionError is not null) {
+                            return sourceCustomerEncryptionError;
+                        }
+
+                        var (destinationCustomerEncryption, destinationCustomerEncryptionError) = TryParseCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                        if (destinationCustomerEncryptionError is not null) {
+                            return destinationCustomerEncryptionError;
+                        }
+
                         var copyResult = await storageService.CopyObjectAsync(new CopyObjectRequest
                         {
                             SourceBucketName = copySource!.BucketName,
@@ -1057,18 +1323,27 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                             Metadata = metadataDirective == CopyObjectMetadataDirective.Replace ? ParseObjectMetadataHeaders(request.Headers) : null,
                             TaggingDirective = taggingDirective,
                             Tags = taggingDirective == ObjectTaggingDirective.Replace ? copyTags : null,
-                            DestinationServerSideEncryption = copyServerSideEncryption
+                            ChecksumAlgorithm = copyChecksumAlgorithm,
+                            Checksums = requestedCopyChecksums,
+                            DestinationServerSideEncryption = copyServerSideEncryption,
+                            SourceCustomerEncryption = sourceCustomerEncryption,
+                            DestinationCustomerEncryption = destinationCustomerEncryption,
+                            StorageClass = GetOptionalHeaderValue(request.Headers[StorageClassHeaderName].ToString())
                         }, innerCancellationToken);
 
                         if (!copyResult.IsSuccess) {
-                            return ToErrorResult(httpContext, copyResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                            return ToErrorResult(
+                                httpContext,
+                                copyResult.Error,
+                                resourceOverride: BuildObjectResource(bucketName, key),
+                                explicitVersionId: copySource.VersionId);
                         }
 
-                        var aclApplyError = await ApplyRequestedObjectAclAsync(httpContext, compatibilityService, bucketName, key, cannedAcl, innerCancellationToken);
+                        var aclApplyError = await ApplyRequestedObjectAclAsync(httpContext, compatibilityService, bucketName, key, objectAcl, innerCancellationToken);
                         return aclApplyError ?? ToCopyObjectResult(httpContext, copyResult.Value!, copySource.VersionId);
                     }
 
-                    if (!TryParseRequestChecksums(request, preparedBody.TrailerHeaders, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
+                    if (!TryParseRequestChecksums(request, preparedBody, requireChecksumValueForDeclaredAlgorithm: true, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
                         return checksumErrorResult!;
                     }
 
@@ -1080,6 +1355,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                     if (!TryParseObjectServerSideEncryptionSettings(request, allowManagedRequestHeaders: true, BuildObjectResource(bucketName, key), bucketName, key, out var serverSideEncryption, out var serverSideEncryptionErrorResult)) {
                         return serverSideEncryptionErrorResult!;
+                    }
+
+                    var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                    if (customerEncryptionError is not null) {
+                        return customerEncryptionError;
+                    }
+
+                    if (serverSideEncryption is not null && customerEncryption is not null) {
+                        return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument",
+                            "Server-side encryption with a customer-provided key (SSE-C) and managed server-side encryption (SSE-S3/SSE-KMS) are mutually exclusive.",
+                            BuildObjectResource(bucketName, key), bucketName, key);
                     }
 
                     var result = await storageService.PutObjectAsync(new PutObjectRequest
@@ -1097,20 +1383,25 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Metadata = metadata,
                         Tags = tags,
                         Checksums = requestedChecksums,
-                        ServerSideEncryption = serverSideEncryption
+                        ServerSideEncryption = serverSideEncryption,
+                        CustomerEncryption = customerEncryption,
+                        StorageClass = GetOptionalHeaderValue(request.Headers[StorageClassHeaderName].ToString()),
+                        IfMatchETag = GetOptionalHeaderValue(request.Headers.IfMatch.ToString()),
+                        IfNoneMatchETag = GetOptionalHeaderValue(request.Headers.IfNoneMatch.ToString())
                     }, innerCancellationToken);
 
                     if (!result.IsSuccess) {
                         return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
                     }
 
-                    var aclError = await ApplyRequestedObjectAclAsync(httpContext, compatibilityService, bucketName, key, cannedAcl, innerCancellationToken);
+                    var aclError = await ApplyRequestedObjectAclAsync(httpContext, compatibilityService, bucketName, key, objectAcl, innerCancellationToken);
                     if (aclError is not null) {
                         return aclError;
                     }
 
                     if (result.Value is not null) {
                         ApplyObjectResultHeaders(httpContext.Response, result.Value);
+                        ApplyChecksumAlgorithmHeader(httpContext.Response, checksumAlgorithm);
                     }
 
                     return TypedResults.Ok(result.Value);
@@ -1148,20 +1439,43 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return serverSideEncryptionErrorResult!;
                 }
 
+                var versionId = ParseVersionId(request);
+
+                var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(request, BuildObjectResource(bucketName, key), bucketName, key);
+                if (customerEncryptionError is not null) {
+                    return customerEncryptionError;
+                }
+
+                var rawRange = request.Headers.Range.ToString();
+                var multipleRanges = ParseMultipleRangeHeaders(rawRange);
+
+                if (multipleRanges.Length > 1) {
+                    return new MultiRangeStreamObjectResult(
+                        storageService, bucketName, key, versionId,
+                        request.Headers.IfMatch.ToString(),
+                        request.Headers.IfNoneMatch.ToString(),
+                        headers.IfModifiedSince,
+                        headers.IfUnmodifiedSince,
+                        customerEncryption,
+                        multipleRanges,
+                        IsChecksumModeEnabled(request));
+                }
+
                 var result = await storageService.GetObjectAsync(new GetObjectRequest
                 {
                     BucketName = bucketName,
                     Key = key,
-                    VersionId = ParseVersionId(request),
-                    Range = ParseRangeHeader(request.Headers.Range.ToString()),
+                    VersionId = versionId,
+                    Range = multipleRanges.Length == 1 ? multipleRanges[0] : null,
                     IfMatchETag = request.Headers.IfMatch.ToString(),
                     IfNoneMatchETag = request.Headers.IfNoneMatch.ToString(),
                     IfModifiedSinceUtc = headers.IfModifiedSince,
-                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince
+                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince,
+                    CustomerEncryption = customerEncryption
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
-                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key), explicitVersionId: versionId);
                 }
 
                 return new StreamObjectResult(result.Value!);
@@ -1194,19 +1508,27 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return serverSideEncryptionErrorResult!;
                 }
 
+                var versionId = ParseVersionId(httpContext.Request);
+
+                var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+                if (customerEncryptionError is not null) {
+                    return customerEncryptionError;
+                }
+
                 var result = await storageService.HeadObjectAsync(new HeadObjectRequest
                 {
                     BucketName = bucketName,
                     Key = key,
-                    VersionId = ParseVersionId(httpContext.Request),
+                    VersionId = versionId,
                     IfMatchETag = httpContext.Request.Headers.IfMatch.ToString(),
                     IfNoneMatchETag = httpContext.Request.Headers.IfNoneMatch.ToString(),
                     IfModifiedSinceUtc = headers.IfModifiedSince,
-                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince
+                    IfUnmodifiedSinceUtc = headers.IfUnmodifiedSince,
+                    CustomerEncryption = customerEncryption
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
-                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key), explicitVersionId: versionId);
                 }
 
                 var objectInfo = result.Value!;
@@ -1289,6 +1611,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
+        var operation = ResolveBucketOperationName(httpContext.Request);
+        var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+
+        logger?.LogDebug("S3 bucket request: {Method} {Operation} for {BucketName}",
+            httpContext.Request.Method, operation, resolvedRequest.BucketName);
+
         if (IsMultipartRequest(httpContext.Request)
             && !endpointOptions.EnableMultipartEndpoints) {
             return CreateFeatureDisabledResult();
@@ -1298,74 +1627,139 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, validationStatusCode, validationErrorCode!, validationMessage!, resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName);
         }
 
-        return httpContext.Request.Method switch
+        IResult result;
+        try
         {
-            "GET" when httpContext.Request.Query.ContainsKey(LocationQueryParameterName) => await GetBucketLocationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await GetBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await GetBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await GetBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await ListMultipartUploadsAsync(
-                resolvedRequest.BucketName,
-                ParsePrefix(httpContext.Request),
-                ParseDelimiter(httpContext.Request),
-                ParseKeyMarker(httpContext.Request),
-                ParseUploadIdMarker(httpContext.Request),
-                httpContext,
-                requestContextAccessor,
-                storageService,
-                cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(VersionsQueryParameterName) => await ListObjectVersionsAsync(
-                resolvedRequest.BucketName,
-                ParsePrefix(httpContext.Request),
-                ParseDelimiter(httpContext.Request),
-                ParseKeyMarker(httpContext.Request),
-                ParseVersionIdMarker(httpContext.Request),
-                ParseMaxKeys(httpContext.Request),
-                httpContext,
-                requestContextAccessor,
-                storageService,
-                cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await PutBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await PutBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await PutBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await DeleteBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await DeleteBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
-            _ => httpContext.Request.Method switch
-        {
-            "GET" => IsListObjectsV2Request(httpContext.Request)
-                ? await ListObjectsV2Async(
+            result = httpContext.Request.Method switch
+            {
+                "GET" when httpContext.Request.Query.ContainsKey(LocationQueryParameterName) => await GetBucketLocationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await GetBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await GetBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await GetBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await GetBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await GetBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await GetBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(RequestPaymentQueryParameterName) => await GetBucketRequestPaymentAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AccelerateQueryParameterName) => await GetBucketAccelerateAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await GetBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await GetBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(NotificationQueryParameterName) => await GetBucketNotificationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(ObjectLockQueryParameterName) => await GetBucketObjectLockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) && !httpContext.Request.Query.ContainsKey(IdQueryParameterName) => await ListBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await GetBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await GetBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await GetBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await GetBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await ListMultipartUploadsAsync(
                     resolvedRequest.BucketName,
                     ParsePrefix(httpContext.Request),
                     ParseDelimiter(httpContext.Request),
-                    ParseStartAfter(httpContext.Request),
-                    ParseContinuationToken(httpContext.Request),
-                    ParseMaxKeys(httpContext.Request),
-                    ParseEncodingType(httpContext.Request),
-                    ParseFetchOwner(httpContext.Request),
+                    ParseKeyMarker(httpContext.Request),
+                    ParseUploadIdMarker(httpContext.Request),
                     httpContext,
                     requestContextAccessor,
                     storageService,
-                    cancellationToken)
-                : await ListObjectsV1Async(
+                    cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(VersionsQueryParameterName) => await ListObjectVersionsAsync(
                     resolvedRequest.BucketName,
                     ParsePrefix(httpContext.Request),
                     ParseDelimiter(httpContext.Request),
-                    ParseMarker(httpContext.Request),
+                    ParseKeyMarker(httpContext.Request),
+                    ParseVersionIdMarker(httpContext.Request),
                     ParseMaxKeys(httpContext.Request),
                     ParseEncodingType(httpContext.Request),
                     httpContext,
                     requestContextAccessor,
                     storageService,
                     cancellationToken),
-            "PUT" => await CreateBucketS3CompatibleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "HEAD" => await HeadBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" => await DeleteBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when httpContext.Request.Query.ContainsKey(DeleteQueryParameterName) => await DeleteObjectsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" => ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", "Unsupported bucket subresource request.", resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName),
-            _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
-        }};
+                "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutBucketAclAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await PutBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await PutBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(VersioningQueryParameterName) => await PutBucketVersioningAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await PutBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(LoggingQueryParameterName) => await PutBucketLoggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await PutBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(RequestPaymentQueryParameterName) => await PutBucketRequestPaymentAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(AccelerateQueryParameterName) => await PutBucketAccelerateAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await PutBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await PutBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(NotificationQueryParameterName) => await PutBucketNotificationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(ObjectLockQueryParameterName) => await PutBucketObjectLockAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await PutBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await PutBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await PutBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await PutBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(CorsQueryParameterName) => await DeleteBucketCorsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(PolicyQueryParameterName) => await DeleteBucketPolicyAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(EncryptionQueryParameterName) => await DeleteBucketDefaultEncryptionAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteBucketTaggingAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(WebsiteQueryParameterName) => await DeleteBucketWebsiteAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(LifecycleQueryParameterName) => await DeleteBucketLifecycleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(ReplicationQueryParameterName) => await DeleteBucketReplicationAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(AnalyticsQueryParameterName) => await DeleteBucketAnalyticsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(MetricsQueryParameterName) => await DeleteBucketMetricsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(InventoryQueryParameterName) => await DeleteBucketInventoryAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(IntelligentTieringQueryParameterName) => await DeleteBucketIntelligentTieringAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                _ => httpContext.Request.Method switch
+            {
+                "GET" => IsListObjectsV2Request(httpContext.Request)
+                    ? await ListObjectsV2Async(
+                        resolvedRequest.BucketName,
+                        ParsePrefix(httpContext.Request),
+                        ParseDelimiter(httpContext.Request),
+                        ParseStartAfter(httpContext.Request),
+                        ParseContinuationToken(httpContext.Request),
+                        ParseMaxKeys(httpContext.Request),
+                        ParseEncodingType(httpContext.Request),
+                        ParseFetchOwner(httpContext.Request),
+                        httpContext,
+                        requestContextAccessor,
+                        storageService,
+                        cancellationToken)
+                    : await ListObjectsV1Async(
+                        resolvedRequest.BucketName,
+                        ParsePrefix(httpContext.Request),
+                        ParseDelimiter(httpContext.Request),
+                        ParseMarker(httpContext.Request),
+                        ParseMaxKeys(httpContext.Request),
+                        ParseEncodingType(httpContext.Request),
+                        httpContext,
+                        requestContextAccessor,
+                        storageService,
+                        cancellationToken),
+                "PUT" => await CreateBucketS3CompatibleAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "HEAD" => await HeadBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" => await DeleteBucketAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(DeleteQueryParameterName) => await DeleteObjectsAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when IsPostObjectFormUpload(httpContext.Request) => await PostObjectAsync(resolvedRequest.BucketName, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" => ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", "Unsupported bucket subresource request.", resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName),
+                _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
+            }};
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "S3 bucket request {Operation} failed for {BucketName}",
+                operation, resolvedRequest.BucketName);
+            throw;
+        }
+
+        var statusCode = ResolveResultStatusCode(result);
+        sw.Stop();
+
+        if (statusCode >= 400)
+            logger?.LogWarning("S3 bucket request {Operation} returned {StatusCode} for {BucketName}",
+                operation, statusCode, resolvedRequest.BucketName);
+
+        IntegratedS3AspNetCoreTelemetry.RecordHttpRequest(
+            httpContext.Request.Method, operation, statusCode, sw.Elapsed.TotalMilliseconds);
+
+        return result;
     }
 
     private static async Task<IResult> GetBucketLocationAsync(
@@ -1727,6 +2121,95 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static async Task<IResult> GetBucketDefaultEncryptionAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketDefaultEncryptionAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteBucketEncryptionConfiguration(new S3BucketEncryptionConfiguration
+                    {
+                        Rules = [ToS3BucketEncryptionRule(result.Value!.Rule)]
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketDefaultEncryptionAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3BucketEncryptionConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadBucketEncryptionConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        if (!TryValidateBucketDefaultEncryptionRequest(requestBody, httpContext, bucketName, out var rule, out var errorResult)) {
+            return errorResult!;
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketDefaultEncryptionAsync(new PutBucketDefaultEncryptionRequest
+                {
+                    BucketName = bucketName,
+                    Rule = rule!
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketDefaultEncryptionAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketDefaultEncryptionAsync(new DeleteBucketDefaultEncryptionRequest
+                {
+                    BucketName = bucketName
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
     private static async Task<IResult> PutBucketVersioningAsync(
         string bucketName,
         HttpContext httpContext,
@@ -1770,6 +2253,81 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         catch (EndpointStorageAuthorizationException exception) {
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
         }
+    }
+
+    private static bool TryValidateBucketDefaultEncryptionRequest(
+        S3BucketEncryptionConfiguration requestBody,
+        HttpContext httpContext,
+        string bucketName,
+        out BucketDefaultEncryptionRule? rule,
+        out IResult? errorResult)
+    {
+        ArgumentNullException.ThrowIfNull(requestBody);
+
+        if (requestBody.Rules.Count != 1) {
+            rule = null;
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                "Bucket default encryption requests must contain exactly one 'Rule' element.",
+                BuildObjectResource(bucketName, null),
+                bucketName);
+            return false;
+        }
+
+        var requestRule = requestBody.Rules[0];
+
+        var rawAlgorithm = requestRule.DefaultEncryption.SseAlgorithm?.Trim();
+        if (!TryNormalizeServerSideEncryptionAlgorithm(rawAlgorithm ?? string.Empty, out var algorithm)) {
+            rule = null;
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status501NotImplemented,
+                "NotImplemented",
+                $"Server-side encryption algorithm '{rawAlgorithm}' is not implemented.",
+                BuildObjectResource(bucketName, null),
+                bucketName);
+            return false;
+        }
+
+        var keyIdElementWasPresent = requestRule.DefaultEncryption.KmsMasterKeyId is not null;
+        var keyId = string.IsNullOrWhiteSpace(requestRule.DefaultEncryption.KmsMasterKeyId)
+            ? null
+            : requestRule.DefaultEncryption.KmsMasterKeyId.Trim();
+
+        if (keyIdElementWasPresent && keyId is null) {
+            rule = null;
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                "The 'KMSMasterKeyID' element must not be empty when present.",
+                BuildObjectResource(bucketName, null),
+                bucketName);
+            return false;
+        }
+
+        if (algorithm == ObjectServerSideEncryptionAlgorithm.Aes256 && keyId is not null) {
+            rule = null;
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                "The 'KMSMasterKeyID' element is only supported when 'SSEAlgorithm' is 'aws:kms' or 'aws:kms:dsse'.",
+                BuildObjectResource(bucketName, null),
+                bucketName);
+            return false;
+        }
+
+        rule = new BucketDefaultEncryptionRule
+        {
+            Algorithm = algorithm,
+            KeyId = keyId,
+            BucketKeyEnabled = requestRule.BucketKeyEnabled == true
+        };
+        errorResult = null;
+        return true;
     }
 
     private static async Task<IResult> CreateBucketS3CompatibleAsync(
@@ -1822,7 +2380,13 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageService storageService,
         CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
         var key = resolvedRequest.Key!;
+        var operation = ResolveObjectOperationName(httpContext.Request);
+        var logger = httpContext.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("IntegratedS3.Endpoints");
+
+        logger?.LogDebug("S3 object request: {Method} {Operation} for {BucketName}/{ObjectKey}",
+            httpContext.Request.Method, operation, resolvedRequest.BucketName, key);
 
         if (IsMultipartRequest(httpContext.Request)) {
             if (!endpointOptions.EnableMultipartEndpoints) {
@@ -1837,24 +2401,54 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return ToErrorResult(httpContext, validationStatusCode, validationErrorCode!, validationMessage!, resolvedRequest.CanonicalResourcePath, resolvedRequest.BucketName, key);
         }
 
-        return httpContext.Request.Method switch
+        IResult result;
+        try
         {
-            "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
-            "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" when IsListMultipartUploadPartsRequest(httpContext.Request) => await ListMultipartUploadPartsAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
-            "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await InitiateMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) => await UploadMultipartPartAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "POST" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await CompleteMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await AbortMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "GET" => await GetObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
-            "PUT" => await PutObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
-            "HEAD" => await HeadObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            "DELETE" => await DeleteObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
-            _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
-        };
+            result = httpContext.Request.Method switch
+            {
+                "GET" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await GetObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await GetObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await GetObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await GetObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when httpContext.Request.Query.ContainsKey(AttributesQueryParameterName) => await GetObjectAttributesAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await ListMultipartPartsAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(AclQueryParameterName) => await PutObjectAclAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await PutObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(RetentionQueryParameterName) => await PutObjectRetentionAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when httpContext.Request.Query.ContainsKey(LegalHoldQueryParameterName) => await PutObjectLegalHoldAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when httpContext.Request.Query.ContainsKey(TaggingQueryParameterName) => await DeleteObjectTaggingAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(RestoreQueryParameterName) => await RestoreObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(SelectQueryParameterName) => await SelectObjectContentAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when httpContext.Request.Query.ContainsKey(UploadsQueryParameterName) => await InitiateMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) && TryGetCopySource(httpContext.Request, out _, out _) => await UploadPartCopyAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "PUT" when TryGetMultipartUploadId(httpContext.Request, out _, out _) && httpContext.Request.Query.ContainsKey(PartNumberQueryParameterName) => await UploadMultipartPartAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "POST" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await CompleteMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" when TryGetMultipartUploadId(httpContext.Request, out _, out _) => await AbortMultipartUploadAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "GET" => await GetObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
+                "PUT" => await PutObjectAsync(resolvedRequest.BucketName, key, httpContext, httpContext.Request, requestContextAccessor, storageService, cancellationToken),
+                "HEAD" => await HeadObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                "DELETE" => await DeleteObjectAsync(resolvedRequest.BucketName, key, httpContext, requestContextAccessor, storageService, cancellationToken),
+                _ => TypedResults.StatusCode(StatusCodes.Status405MethodNotAllowed)
+            };
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "S3 object request {Operation} failed for {BucketName}/{ObjectKey}",
+                operation, resolvedRequest.BucketName, key);
+            throw;
+        }
+
+        var statusCode = ResolveResultStatusCode(result);
+        sw.Stop();
+
+        if (statusCode >= 400)
+            logger?.LogWarning("S3 object request {Operation} returned {StatusCode} for {BucketName}/{ObjectKey}",
+                operation, statusCode, resolvedRequest.BucketName, key);
+
+        IntegratedS3AspNetCoreTelemetry.RecordHttpRequest(
+            httpContext.Request.Method, operation, statusCode, sw.Elapsed.TotalMilliseconds);
+
+        return result;
     }
 
     private static async Task<IResult> GetObjectAclAsync(
@@ -1881,14 +2475,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     },
                     innerCancellationToken);
 
-                var result = await compatibilityService.GetObjectAclAsync(bucketName, key, innerCancellationToken);
+                var result = await compatibilityService.GetObjectAclStateAsync(bucketName, key, innerCancellationToken);
                 if (!result.IsSuccess) {
                     return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
                 }
 
+                var acl = result.Value ?? throw new InvalidOperationException("Object ACL compatibility state was not returned.");
                 var descriptor = await descriptorProvider.GetServiceDescriptorAsync(innerCancellationToken);
                 return new XmlContentResult(
-                    S3XmlResponseWriter.WriteAccessControlPolicy(CreateAccessControlPolicy(result.Value, descriptor.ServiceName)),
+                    S3XmlResponseWriter.WriteAccessControlPolicy(CreateObjectAccessControlPolicy(acl, descriptor.ServiceName)),
                     StatusCodes.Status200OK,
                     XmlContentType);
             }, cancellationToken);
@@ -1905,7 +2500,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         CancellationToken cancellationToken)
     {
-        var aclResult = await TryReadAclSubresourceRequestAsync(httpContext, bucketName, key, cancellationToken);
+        var aclResult = await TryReadObjectAclSubresourceRequestAsync(httpContext, bucketName, key, cancellationToken);
         if (aclResult.ErrorResult is not null) {
             return aclResult.ErrorResult;
         }
@@ -1930,7 +2525,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 {
                     BucketName = bucketName,
                     Key = key,
-                    CannedAcl = aclResult.CannedAcl!.Value
+                    CannedAcl = aclResult.Acl!.CannedAcl,
+                    Acl = aclResult.Acl
                 }, innerCancellationToken);
 
                 return result.IsSuccess
@@ -2041,6 +2637,143 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static async Task<IResult> GetObjectRetentionAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetObjectRetentionAsync(new GetObjectRetentionRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request)
+                }, innerCancellationToken);
+
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                var retention = result.Value ?? throw new InvalidOperationException("Object retention metadata was not returned.");
+                ApplyVersionIdHeader(httpContext.Response, retention.VersionId);
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteObjectRetention(new S3ObjectRetention
+                    {
+                        Mode = ToS3RetentionMode(retention.Mode),
+                        RetainUntilDateUtc = retention.RetainUntilDateUtc
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> GetObjectLegalHoldAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetObjectLegalHoldAsync(new GetObjectLegalHoldRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request)
+                }, innerCancellationToken);
+
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                var legalHold = result.Value ?? throw new InvalidOperationException("Object legal-hold metadata was not returned.");
+                ApplyVersionIdHeader(httpContext.Response, legalHold.VersionId);
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteObjectLegalHold(new S3ObjectLegalHold
+                    {
+                        Status = ToS3LegalHoldStatus(legalHold.Status)
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> GetObjectAttributesAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var objectAttributes = ParseObjectAttributes(httpContext.Request);
+                if (objectAttributes.Count == 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument",
+                        "The x-amz-object-attributes header is required.",
+                        BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                var versionId = ParseVersionId(httpContext.Request);
+
+                var result = await storageService.GetObjectAttributesAsync(new GetObjectAttributesRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = versionId,
+                    ObjectAttributes = objectAttributes
+                }, innerCancellationToken);
+
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                var response = result.Value ?? throw new InvalidOperationException("Object attributes were not returned.");
+                ApplyVersionIdHeader(httpContext.Response, response.VersionId);
+                if (response.IsDeleteMarker) {
+                    httpContext.Response.Headers[DeleteMarkerHeaderName] = "true";
+                }
+                if (response.LastModifiedUtc.HasValue) {
+                    httpContext.Response.Headers["Last-Modified"] = response.LastModifiedUtc.Value.ToString("R");
+                }
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteGetObjectAttributesResponse(response),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static List<string> ParseObjectAttributes(HttpRequest request)
+    {
+        var headerValue = request.Headers[ObjectAttributesHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(headerValue))
+            return [];
+
+        return headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    }
+
     private static async Task<IResult> DeleteObjectTaggingAsync(
         string bucketName,
         string key,
@@ -2108,7 +2841,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
-                if (!TryParseRequestChecksums(httpContext.Request, trailerHeaders: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out _, out var checksumErrorResult)) {
+                if (!TryParseRequestChecksums(httpContext.Request, preparedBody: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out _, out var checksumErrorResult)) {
                     return checksumErrorResult!;
                 }
 
@@ -2120,6 +2853,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                 if (!TryParseObjectServerSideEncryptionSettings(httpContext.Request, allowManagedRequestHeaders: true, BuildObjectResource(bucketName, key), bucketName, key, out var serverSideEncryption, out var serverSideEncryptionErrorResult)) {
                     return serverSideEncryptionErrorResult!;
+                }
+
+                var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+                if (customerEncryptionError is not null) {
+                    return customerEncryptionError;
+                }
+
+                if (serverSideEncryption is not null && customerEncryption is not null) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument",
+                        "Server-side encryption with a customer-provided key (SSE-C) and managed server-side encryption (SSE-S3/SSE-KMS) are mutually exclusive.",
+                        BuildObjectResource(bucketName, key), bucketName, key);
                 }
 
                 var result = await storageService.InitiateMultipartUploadAsync(new InitiateMultipartUploadRequest
@@ -2135,7 +2879,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     Metadata = metadata,
                     Tags = tags,
                     ChecksumAlgorithm = checksumAlgorithm,
-                    ServerSideEncryption = serverSideEncryption
+                    ServerSideEncryption = serverSideEncryption,
+                    CustomerEncryption = customerEncryption,
+                    StorageClass = GetOptionalHeaderValue(httpContext.Request.Headers[StorageClassHeaderName].ToString())
                 }, innerCancellationToken);
 
                 if (!result.IsSuccess) {
@@ -2143,6 +2889,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 ApplyChecksumAlgorithmHeader(httpContext.Response, result.Value!.ChecksumAlgorithm);
+                ApplyServerSideEncryptionHeaders(httpContext.Response, result.Value.ServerSideEncryption);
+                EmitCustomerEncryptionResponseHeaders(httpContext.Response, result.Value.CustomerEncryption);
                 return new XmlContentResult(
                     S3XmlResponseWriter.WriteInitiateMultipartUploadResult(new S3InitiateMultipartUploadResult
                     {
@@ -2233,11 +2981,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
             var preparedBody = await PrepareRequestBodyAsync(httpContext.Request, cancellationToken);
             try {
-                if (!TryParseRequestChecksums(httpContext.Request, preparedBody.TrailerHeaders, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
+                if (!TryParseRequestChecksums(httpContext.Request, preparedBody, requireChecksumValueForDeclaredAlgorithm: true, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
                     return checksumErrorResult!;
                 }
 
                 return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                    var (customerEncryption, customerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+                    if (customerEncryptionError is not null) {
+                        return customerEncryptionError;
+                    }
+
                     var result = await storageService.UploadMultipartPartAsync(new UploadMultipartPartRequest
                     {
                         BucketName = bucketName,
@@ -2247,7 +3000,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         Content = preparedBody.Content,
                         ContentLength = preparedBody.ContentLength,
                         ChecksumAlgorithm = checksumAlgorithm,
-                        Checksums = requestedChecksums
+                        Checksums = requestedChecksums,
+                        CustomerEncryption = customerEncryption
                     }, innerCancellationToken);
 
                     if (!result.IsSuccess) {
@@ -2256,12 +3010,108 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                     httpContext.Response.Headers.ETag = QuoteETag(result.Value!.ETag);
                     ApplyChecksumHeaders(httpContext.Response, result.Value.Checksums);
+                    if (customerEncryption is not null) {
+                        httpContext.Response.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName] = customerEncryption.Algorithm;
+                        httpContext.Response.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName] = customerEncryption.KeyMd5;
+                    }
                     return TypedResults.Ok();
                 }, cancellationToken);
             }
             finally {
                 await preparedBody.DisposeAsync();
             }
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<IResult> UploadPartCopyAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetMultipartUploadId(httpContext.Request, out var uploadId, out var uploadIdError)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", uploadIdError!, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (!TryGetPartNumber(httpContext.Request, out var partNumber, out var partNumberError)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", partNumberError!, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (!TryGetCopySource(httpContext.Request, out var copySource, out var copySourceError)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", $"The '{CopySourceHeaderName}' header is required for multipart part copy requests.", BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (copySourceError is not null) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", copySourceError, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (!TryGetCopySourceRange(httpContext.Request, out var sourceRange, out var sourceRangeError)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", sourceRangeError!, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        if (!TryParseRequestChecksums(httpContext.Request, preparedBody: null, requireChecksumValueForDeclaredAlgorithm: false, out var checksumAlgorithm, out var requestedChecksums, out var checksumErrorResult)) {
+            return checksumErrorResult!;
+        }
+
+        if (!TryParseObjectServerSideEncryptionSettings(httpContext.Request, allowManagedRequestHeaders: false, BuildObjectResource(bucketName, key), bucketName, key, out _, out var serverSideEncryptionErrorResult)) {
+            return serverSideEncryptionErrorResult!;
+        }
+
+        var (sourceCustomerEncryption, sourceCustomerEncryptionError) = TryParseCopySourceCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+        if (sourceCustomerEncryptionError is not null) {
+            return sourceCustomerEncryptionError;
+        }
+
+        var (destinationCustomerEncryption, destinationCustomerEncryptionError) = TryParseCustomerEncryptionSettings(httpContext.Request, BuildObjectResource(bucketName, key), bucketName, key);
+        if (destinationCustomerEncryptionError is not null) {
+            return destinationCustomerEncryptionError;
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.UploadPartCopyAsync(new UploadPartCopyRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    UploadId = uploadId!,
+                    PartNumber = partNumber!.Value,
+                    SourceBucketName = copySource!.BucketName,
+                    SourceKey = copySource.Key,
+                    SourceVersionId = copySource.VersionId,
+                    SourceIfMatchETag = httpContext.Request.Headers[CopySourceIfMatchHeaderName].ToString(),
+                    SourceIfNoneMatchETag = httpContext.Request.Headers[CopySourceIfNoneMatchHeaderName].ToString(),
+                    SourceIfModifiedSinceUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[CopySourceIfModifiedSinceHeaderName].ToString()),
+                    SourceIfUnmodifiedSinceUtc = ParseOptionalHttpDateHeader(httpContext.Request.Headers[CopySourceIfUnmodifiedSinceHeaderName].ToString()),
+                    SourceRange = sourceRange,
+                    ChecksumAlgorithm = checksumAlgorithm,
+                    Checksums = requestedChecksums,
+                    SourceCustomerEncryption = sourceCustomerEncryption,
+                    DestinationCustomerEncryption = destinationCustomerEncryption
+                }, innerCancellationToken);
+
+                if (!result.IsSuccess) {
+                    return ToErrorResult(
+                        httpContext,
+                        result.Error,
+                        resourceOverride: BuildObjectResource(bucketName, key),
+                        explicitVersionId: copySource.VersionId);
+                }
+
+                if (destinationCustomerEncryption is not null) {
+                    httpContext.Response.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName] = destinationCustomerEncryption.Algorithm;
+                    httpContext.Response.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName] = destinationCustomerEncryption.KeyMd5;
+                }
+
+                return ToCopyPartResult(httpContext, result.Value!, copySource.VersionId);
+            }, cancellationToken);
         }
         catch (EndpointStorageAuthorizationException exception) {
             return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
@@ -2293,6 +3143,18 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         try {
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var upload = await FindMultipartUploadAsync(storageService, bucketName, key, uploadId!, innerCancellationToken);
+                if (upload is null) {
+                    return ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status404NotFound,
+                        "NoSuchUpload",
+                        "The specified multipart upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.",
+                        BuildObjectResource(bucketName, key),
+                        bucketName,
+                        key);
+                }
+
                 var result = await storageService.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
                 {
                     BucketName = bucketName,
@@ -2372,6 +3234,91 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static async Task<IResult> ListMultipartPartsAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetMultipartUploadId(httpContext.Request, out var uploadId, out var uploadIdError)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", uploadIdError!, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        try {
+            var parsedEncodingType = ParseMultipartListEncodingType(httpContext.Request);
+            var parsedPartNumberMarker = ParsePartNumberMarker(httpContext.Request);
+            var parsedMaxParts = ParseMaxParts(httpContext.Request);
+
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
+                if (!bucketResult.IsSuccess) {
+                    return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                if (parsedPartNumberMarker < 0) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "part-number-marker must be greater than or equal to 0.", BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                if (parsedMaxParts is <= 0 or > 1000) {
+                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-parts must be between 1 and 1000.", BuildObjectResource(bucketName, key), bucketName, key);
+                }
+
+                MultipartUploadInfo? upload;
+                try {
+                    upload = await FindMultipartUploadAsync(storageService, bucketName, key, uploadId!, innerCancellationToken);
+                    if (upload is null) {
+                        return ToErrorResult(
+                            httpContext,
+                            StatusCodes.Status404NotFound,
+                            "NoSuchUpload",
+                            "The specified multipart upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.",
+                            BuildObjectResource(bucketName, key),
+                            bucketName,
+                            key);
+                    }
+
+                    var fetchPageSize = parsedMaxParts == int.MaxValue
+                        ? parsedMaxParts
+                        : parsedMaxParts + 1;
+                    var parts = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
+                    {
+                        BucketName = bucketName,
+                        Key = key,
+                        UploadId = uploadId!,
+                        PartNumberMarker = parsedPartNumberMarker == 0 ? null : parsedPartNumberMarker,
+                        PageSize = fetchPageSize
+                    }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
+
+                    var response = BuildListMultipartPartsResult(
+                        bucketName,
+                        key,
+                        upload,
+                        parsedEncodingType,
+                        parsedPartNumberMarker,
+                        parsedMaxParts,
+                        parts,
+                        ResolveS3ListingIdentity(httpContext.User));
+
+                    return new XmlContentResult(S3XmlResponseWriter.WriteListPartsResult(response), StatusCodes.Status200OK, XmlContentType);
+                }
+                catch (StorageAuthorizationException exception) {
+                    return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+                catch (NotSupportedException exception) {
+                    return ToErrorResult(httpContext, StatusCodes.Status501NotImplemented, "NotImplemented", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+                }
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+        catch (ArgumentException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+    }
+
     private static async Task<IResult> ListMultipartUploadsAsync(
         string bucketName,
         string? prefix,
@@ -2384,7 +3331,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         CancellationToken cancellationToken)
     {
         try {
-            var parsedEncodingType = ParseMultipartUploadsEncodingType(httpContext.Request);
+            var parsedEncodingType = ParseMultipartListEncodingType(httpContext.Request);
             var parsedMaxUploads = ParseMaxUploads(httpContext.Request);
 
             return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
@@ -2441,87 +3388,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
         catch (ArgumentException exception) {
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, null), bucketName);
-        }
-    }
-
-    private static async Task<IResult> ListMultipartUploadPartsAsync(
-        string bucketName,
-        string key,
-        HttpContext httpContext,
-        IIntegratedS3RequestContextAccessor requestContextAccessor,
-        IStorageService storageService,
-        CancellationToken cancellationToken)
-    {
-        if (!TryGetMultipartUploadId(httpContext.Request, out var uploadId, out var uploadIdError)) {
-            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", uploadIdError!, BuildObjectResource(bucketName, key), bucketName, key);
-        }
-
-        var maxParts = ParseMaxParts(httpContext.Request);
-        var partNumberMarker = ParsePartNumberMarker(httpContext.Request);
-
-        try {
-            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
-                var bucketResult = await storageService.HeadBucketAsync(bucketName, innerCancellationToken);
-                if (!bucketResult.IsSuccess) {
-                    return ToErrorResult(httpContext, bucketResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
-                }
-
-                if (maxParts is <= 0) {
-                    return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "max-parts must be greater than zero.", BuildObjectResource(bucketName, key), bucketName, key);
-                }
-
-                try {
-                    var upload = await FindMultipartUploadAsync(bucketName, key, uploadId!, storageService, innerCancellationToken);
-                    if (upload is null) {
-                        return ToErrorResult(
-                            httpContext,
-                            StatusCodes.Status404NotFound,
-                            "NoSuchUpload",
-                            "The specified multipart upload does not exist. The upload ID might be invalid, or the multipart upload might have been aborted or completed.",
-                            BuildObjectResource(bucketName, key),
-                            bucketName,
-                            key);
-                    }
-
-                    var requestedPageSize = maxParts is null
-                        ? (int?)null
-                        : maxParts.Value == int.MaxValue
-                            ? int.MaxValue
-                            : maxParts.Value + 1;
-
-                    var parts = await storageService.ListMultipartUploadPartsAsync(new ListMultipartUploadPartsRequest
-                    {
-                        BucketName = bucketName,
-                        Key = key,
-                        UploadId = uploadId!,
-                        PartNumberMarker = partNumberMarker,
-                        PageSize = requestedPageSize
-                    }, innerCancellationToken).ToArrayAsync(innerCancellationToken);
-
-                    var response = BuildListMultipartUploadPartsResult(
-                        bucketName,
-                        key,
-                        uploadId!,
-                        partNumberMarker ?? 0,
-                        maxParts ?? 1000,
-                        upload.ChecksumAlgorithm,
-                        parts);
-
-                    return new XmlContentResult(S3XmlResponseWriter.WriteListPartsResult(response), StatusCodes.Status200OK, XmlContentType);
-                }
-                catch (StorageAuthorizationException exception) {
-                    return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
-                }
-                catch (NotSupportedException exception) {
-                    return ToErrorResult(httpContext, StatusCodes.Status501NotImplemented, "NotImplemented", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
-                }
-            }, cancellationToken);
-        }
-        catch (EndpointStorageAuthorizationException exception) {
-            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
-        }
-        catch (ArgumentException exception) {
-            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", exception.Message, BuildObjectResource(bucketName, key));
         }
     }
 
@@ -2656,6 +3522,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? keyMarker,
         string? versionIdMarker,
         int? maxKeys,
+        string? encodingType,
         HttpContext httpContext,
         IIntegratedS3RequestContextAccessor requestContextAccessor,
         IStorageService storageService,
@@ -2690,6 +3557,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                         delimiter,
                         keyMarker,
                         versionIdMarker,
+                        encodingType,
                         requestedPageSize,
                         versions);
 
@@ -2708,6 +3576,227 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static bool IsPostObjectFormUpload(HttpRequest request)
+    {
+        var contentType = request.ContentType;
+        return !string.IsNullOrWhiteSpace(contentType)
+            && contentType.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<IResult> PostObjectAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                if (!httpContext.Request.HasFormContentType) {
+                    return ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "InvalidRequest",
+                        "POST object requests must use multipart/form-data encoding.",
+                        BuildObjectResource(bucketName, null),
+                        bucketName);
+                }
+
+                var form = await httpContext.Request.ReadFormAsync(innerCancellationToken);
+                var objectKey = form["key"].ToString();
+                if (string.IsNullOrWhiteSpace(objectKey)) {
+                    return ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "InvalidArgument",
+                        "The 'key' field is required in POST object requests.",
+                        BuildObjectResource(bucketName, null),
+                        bucketName);
+                }
+
+                // Validate policy if provided.
+                var policyField = form["policy"].ToString();
+                var signatureField = form["signature"].ToString();
+                if (!string.IsNullOrWhiteSpace(policyField)) {
+                    var policyValidation = ValidatePostObjectPolicy(policyField, bucketName, objectKey, form);
+                    if (policyValidation is not null) {
+                        return policyValidation;
+                    }
+                }
+
+                // Extract file from the 'file' form field.
+                var file = form.Files.GetFile("file");
+                if (file is null || file.Length == 0) {
+                    return ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "InvalidArgument",
+                        "The 'file' field is required in POST object requests.",
+                        BuildObjectResource(bucketName, objectKey),
+                        bucketName,
+                        objectKey);
+                }
+
+                // Resolve the key: replace ${filename} placeholder if present.
+                if (objectKey.Contains("${filename}")) {
+                    objectKey = objectKey.Replace("${filename}", file.FileName ?? "upload");
+                }
+
+                var contentType = form["Content-Type"].ToString();
+                if (string.IsNullOrWhiteSpace(contentType)) {
+                    contentType = file.ContentType ?? "application/octet-stream";
+                }
+
+                var acl = form[CannedAclHeaderName].ToString();
+                var successActionStatus = 204;
+                var successActionStatusRaw = form["success_action_status"].ToString();
+                if (!string.IsNullOrWhiteSpace(successActionStatusRaw)
+                    && int.TryParse(successActionStatusRaw, out var parsedStatus)
+                    && parsedStatus is 200 or 201 or 204) {
+                    successActionStatus = parsedStatus;
+                }
+
+                var successActionRedirect = form["success_action_redirect"].ToString();
+
+                // Extract user metadata from x-amz-meta-* form fields.
+                Dictionary<string, string>? metadata = null;
+                foreach (var field in form) {
+                    if (field.Key.StartsWith(MetadataHeaderPrefix, StringComparison.OrdinalIgnoreCase)) {
+                        metadata ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        metadata[field.Key[MetadataHeaderPrefix.Length..]] = field.Value.ToString();
+                    }
+                }
+
+                await using var fileStream = file.OpenReadStream();
+                var putResult = await storageService.PutObjectAsync(new PutObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = objectKey,
+                    ContentType = contentType,
+                    Content = fileStream,
+                    ContentLength = file.Length,
+                    Metadata = metadata
+                }, innerCancellationToken);
+
+                if (!putResult.IsSuccess) {
+                    return ToErrorResult(httpContext, putResult.Error, resourceOverride: BuildObjectResource(bucketName, objectKey));
+                }
+
+                var objectInfo = putResult.Value!;
+                ApplyObjectIdentityHeaders(httpContext.Response, objectInfo);
+
+                // Handle ACL if specified.
+                if (!string.IsNullOrWhiteSpace(acl) && TryParseSupportedCannedAcl(acl, out var cannedAcl)) {
+                    var compatibilityService = httpContext.RequestServices.GetService<IStorageAuthorizationCompatibilityService>();
+                    if (compatibilityService is not null) {
+                        await compatibilityService.PutObjectAclAsync(new PutObjectAclCompatibilityRequest
+                        {
+                            BucketName = bucketName,
+                            Key = objectKey,
+                            CannedAcl = cannedAcl
+                        }, innerCancellationToken);
+                    }
+                }
+
+                // Handle success_action_redirect.
+                if (!string.IsNullOrWhiteSpace(successActionRedirect)) {
+                    var separator = successActionRedirect.Contains('?') ? "&" : "?";
+                    var redirectUrl = $"{successActionRedirect}{separator}bucket={Uri.EscapeDataString(bucketName)}&key={Uri.EscapeDataString(objectKey)}&etag={Uri.EscapeDataString(objectInfo.ETag ?? "")}";
+                    return TypedResults.Redirect(redirectUrl);
+                }
+
+                return successActionStatus switch
+                {
+                    200 => TypedResults.Ok(),
+                    201 => new XmlContentResult(
+                        S3XmlResponseWriter.WritePostObjectResult(bucketName, objectKey, objectInfo.ETag),
+                        StatusCodes.Status201Created,
+                        XmlContentType),
+                    _ => TypedResults.StatusCode(StatusCodes.Status204NoContent)
+                };
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+        catch (InvalidOperationException exception) when (exception.Message.Contains("form", StringComparison.OrdinalIgnoreCase)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidRequest", "Failed to parse form data.", BuildObjectResource(bucketName, null), bucketName);
+        }
+    }
+
+    private static IResult? ValidatePostObjectPolicy(string base64Policy, string bucketName, string objectKey, IFormCollection form)
+    {
+        try {
+            var policyBytes = Convert.FromBase64String(base64Policy);
+            using var policyDoc = JsonDocument.Parse(policyBytes);
+            var root = policyDoc.RootElement;
+
+            // Validate expiration.
+            if (root.TryGetProperty("expiration", out var expirationElement)) {
+                if (DateTimeOffset.TryParse(expirationElement.GetString(), out var expiration)
+                    && expiration < DateTimeOffset.UtcNow) {
+                    return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+                }
+            }
+
+            // Validate conditions.
+            if (root.TryGetProperty("conditions", out var conditions) && conditions.ValueKind == JsonValueKind.Array) {
+                foreach (var condition in conditions.EnumerateArray()) {
+                    if (condition.ValueKind == JsonValueKind.Object) {
+                        foreach (var property in condition.EnumerateObject()) {
+                            var fieldName = property.Name;
+                            var expectedValue = property.Value.GetString() ?? "";
+                            if (string.Equals(fieldName, "bucket", StringComparison.OrdinalIgnoreCase)) {
+                                if (!string.Equals(expectedValue, bucketName, StringComparison.Ordinal)) {
+                                    return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+                                }
+                            }
+                            else if (string.Equals(fieldName, "key", StringComparison.OrdinalIgnoreCase)) {
+                                if (!string.Equals(expectedValue, objectKey, StringComparison.Ordinal)) {
+                                    return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+                                }
+                            }
+                            else {
+                                var formValue = form[fieldName].ToString();
+                                if (!string.Equals(expectedValue, formValue, StringComparison.Ordinal)) {
+                                    return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+                                }
+                            }
+                        }
+                    }
+                    else if (condition.ValueKind == JsonValueKind.Array) {
+                        var elements = condition.EnumerateArray().ToArray();
+                        if (elements.Length == 3) {
+                            var op = elements[0].GetString() ?? "";
+                            var fieldName = (elements[1].GetString() ?? "").TrimStart('$');
+                            var bound = elements[2].GetString() ?? "";
+                            var formValue = form[fieldName].ToString();
+
+                            if (string.Equals(op, "eq", StringComparison.OrdinalIgnoreCase)) {
+                                if (!string.Equals(bound, formValue, StringComparison.Ordinal)) {
+                                    return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+                                }
+                            }
+                            else if (string.Equals(op, "starts-with", StringComparison.OrdinalIgnoreCase)) {
+                                if (!formValue.StartsWith(bound, StringComparison.Ordinal)) {
+                                    return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return null;
+        }
+        catch (FormatException) {
+            return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+        }
+        catch (JsonException) {
+            return TypedResults.StatusCode(StatusCodes.Status403Forbidden);
+        }
+    }
+
     private static async Task<IResult> DeleteObjectsAsync(
         string bucketName,
         HttpContext httpContext,
@@ -2717,7 +3806,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     {
         S3DeleteObjectsRequest deleteRequest;
         try {
-            if (!TryParseRequestChecksums(httpContext.Request, trailerHeaders: null, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
+            if (!TryParseRequestChecksums(httpContext.Request, preparedBody: null, requireChecksumValueForDeclaredAlgorithm: true, out _, out var requestedChecksums, out var checksumErrorResult)) {
                 return checksumErrorResult!;
             }
 
@@ -2756,28 +3845,31 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
                     if (result.IsSuccess || (result.Error?.Code == StorageErrorCode.ObjectNotFound && string.IsNullOrWhiteSpace(objectIdentifier.VersionId))) {
                         if (!deleteRequest.Quiet) {
+                            var deletedVersionId = result.Value?.VersionId ?? objectIdentifier.VersionId;
+                            var isDeleteMarker = result.Value?.IsDeleteMarker == true;
                             deleted.Add(new S3DeletedObjectResult
                             {
                                 Key = objectIdentifier.Key,
-                                VersionId = result.Value?.IsDeleteMarker == true ? null : result.Value?.VersionId ?? objectIdentifier.VersionId,
-                                DeleteMarker = result.Value?.IsDeleteMarker == true,
-                                DeleteMarkerVersionId = result.Value?.IsDeleteMarker == true ? result.Value.VersionId : null
+                                VersionId = isDeleteMarker && string.IsNullOrWhiteSpace(objectIdentifier.VersionId)
+                                    ? null
+                                    : deletedVersionId,
+                                DeleteMarker = isDeleteMarker,
+                                DeleteMarkerVersionId = isDeleteMarker
+                                    ? deletedVersionId
+                                    : null
                             });
                         }
 
                         continue;
                     }
 
+                    var deleteError = result.Error!;
                     errors.Add(new S3DeleteObjectError
                     {
                         Key = objectIdentifier.Key,
                         VersionId = objectIdentifier.VersionId,
-                        Code = result.Error?.Code == StorageErrorCode.ObjectNotFound && !string.IsNullOrWhiteSpace(objectIdentifier.VersionId)
-                            ? "NoSuchVersion"
-                            : ToS3ErrorCode(result.Error!.Code),
-                        Message = result.Error?.Code == StorageErrorCode.ObjectNotFound && !string.IsNullOrWhiteSpace(objectIdentifier.VersionId)
-                            ? "The specified version does not exist."
-                            : result.Error!.Message
+                        Code = ToCompatibleErrorCode(deleteError, objectIdentifier.VersionId),
+                        Message = ToCompatibleErrorMessage(deleteError, objectIdentifier.VersionId)
                     });
                 }
 
@@ -2874,7 +3966,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return new BucketCorsResult(bucketName, innerResult);
     }
 
-    private static IResult ToErrorResult(HttpContext httpContext, StorageError? error, string? resourceOverride = null)
+    private static IResult ToErrorResult(HttpContext httpContext, StorageError? error, string? resourceOverride = null, string? explicitVersionId = null)
     {
         if (error is null)
         {
@@ -2886,8 +3978,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return ToErrorResult(
             httpContext,
             error.SuggestedHttpStatusCode ?? ToStatusCode(error.Code),
-            ToS3ErrorCode(error.Code),
-            error.Message,
+            ToCompatibleErrorCode(error, explicitVersionId),
+            ToCompatibleErrorMessage(error, explicitVersionId),
             resourceOverride ?? BuildResource(error.BucketName, error.ObjectKey),
             error.BucketName,
             error.ObjectKey);
@@ -2902,6 +3994,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? bucketName = null,
         string? key = null)
     {
+        httpContext.Response.Headers["x-amz-request-id"] = httpContext.TraceIdentifier;
+        httpContext.Response.Headers["x-amz-id-2"] = httpContext.TraceIdentifier;
+
+        if (HttpMethods.IsHead(httpContext.Request.Method)) {
+            httpContext.Response.Headers[ErrorCodeHeaderName] = code;
+            httpContext.Response.Headers[ErrorMessageHeaderName] = message;
+        }
+
         return new XmlContentResult(
             S3XmlResponseWriter.WriteError(new S3ErrorResponse
             {
@@ -2914,6 +4014,26 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }),
             statusCode,
             XmlContentType);
+    }
+
+    private static string ToCompatibleErrorCode(StorageError error, string? explicitVersionId)
+    {
+        return IsExplicitMissingVersionError(error, explicitVersionId)
+            ? "NoSuchVersion"
+            : ToS3ErrorCode(error.Code);
+    }
+
+    private static string ToCompatibleErrorMessage(StorageError error, string? explicitVersionId)
+    {
+        return IsExplicitMissingVersionError(error, explicitVersionId)
+            ? NoSuchVersionMessage
+            : error.Message;
+    }
+
+    private static bool IsExplicitMissingVersionError(StorageError? error, string? explicitVersionId)
+    {
+        return error?.Code == StorageErrorCode.ObjectNotFound
+            && !string.IsNullOrWhiteSpace(explicitVersionId);
     }
 
     private static IResult ToCopyMultipartPartResult(HttpContext httpContext, MultipartUploadPart part)
@@ -2942,6 +4062,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static IResult ToCopyObjectResult(HttpContext httpContext, ObjectInfo @object, string? sourceVersionId)
     {
         ApplyObjectResultHeaders(httpContext.Response, @object);
+        ApplyChecksumAlgorithmHeader(httpContext.Response, GetResponseChecksumAlgorithm(@object.Checksums));
         if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
             httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
         }
@@ -2961,6 +4082,28 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             XmlContentType);
     }
 
+    private static IResult ToCopyPartResult(HttpContext httpContext, MultipartUploadPart part, string? sourceVersionId)
+    {
+        httpContext.Response.Headers.ETag = QuoteETag(part.ETag);
+        ApplyChecksumHeaders(httpContext.Response, part.Checksums);
+        if (!string.IsNullOrWhiteSpace(sourceVersionId)) {
+            httpContext.Response.Headers[CopySourceVersionIdHeaderName] = sourceVersionId;
+        }
+
+        return new XmlContentResult(
+            S3XmlResponseWriter.WriteCopyPartResult(new S3CopyObjectResult
+            {
+                ETag = part.ETag,
+                LastModifiedUtc = part.LastModifiedUtc,
+                ChecksumCrc32 = GetChecksumValue(part.Checksums, "crc32"),
+                ChecksumCrc32c = GetChecksumValue(part.Checksums, "crc32c"),
+                ChecksumSha1 = GetChecksumValue(part.Checksums, "sha1"),
+                ChecksumSha256 = GetChecksumValue(part.Checksums, "sha256")
+            }),
+            StatusCodes.Status200OK,
+            XmlContentType);
+    }
+
     private static int ToStatusCode(StorageErrorCode code)
     {
         return code switch
@@ -2968,6 +4111,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.ObjectNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.BucketNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.CorsConfigurationNotFound => StatusCodes.Status404NotFound,
+            StorageErrorCode.BucketEncryptionConfigurationNotFound => StatusCodes.Status404NotFound,
             StorageErrorCode.AccessDenied => StatusCodes.Status403Forbidden,
             StorageErrorCode.InvalidTag => StatusCodes.Status400BadRequest,
             StorageErrorCode.InvalidChecksum => StatusCodes.Status400BadRequest,
@@ -2993,6 +4137,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             StorageErrorCode.ObjectNotFound => "NoSuchKey",
             StorageErrorCode.BucketNotFound => "NoSuchBucket",
             StorageErrorCode.CorsConfigurationNotFound => "NoSuchCORSConfiguration",
+            StorageErrorCode.BucketEncryptionConfigurationNotFound => "ServerSideEncryptionConfigurationNotFoundError",
             StorageErrorCode.AccessDenied => "AccessDenied",
             StorageErrorCode.InvalidTag => "InvalidTag",
             StorageErrorCode.InvalidChecksum => "BadDigest",
@@ -3217,7 +4362,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : null;
     }
 
-    private static string? ParseMultipartUploadsEncodingType(HttpRequest request)
+    private static string? ParseMultipartListEncodingType(HttpRequest request)
     {
         if (!request.Query.TryGetValue(EncodingTypeQueryParameterName, out var values)) {
             return null;
@@ -3230,7 +4375,28 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         return string.Equals(encodingType, "url", StringComparison.Ordinal)
             ? "url"
-            : throw new ArgumentException("The encoding-type query parameter must be 'url' when specified for multipart upload listing.", EncodingTypeQueryParameterName);
+            : throw new ArgumentException("The encoding-type query parameter must be 'url' when specified for multipart listing operations.", EncodingTypeQueryParameterName);
+    }
+
+    private static async Task<MultipartUploadInfo?> FindMultipartUploadAsync(
+        IStorageService storageService,
+        string bucketName,
+        string key,
+        string uploadId,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var upload in storageService.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+                       {
+                           BucketName = bucketName,
+                           Prefix = key
+                       }, cancellationToken).WithCancellation(cancellationToken)) {
+            if (string.Equals(upload.Key, key, StringComparison.Ordinal)
+                && string.Equals(upload.UploadId, uploadId, StringComparison.Ordinal)) {
+                return upload;
+            }
+        }
+
+        return null;
     }
 
     private static S3ListBucketResult BuildListBucketResult(
@@ -3338,6 +4504,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string? delimiter,
         string? keyMarker,
         string? versionIdMarker,
+        string? encodingType,
         int maxKeys,
         IReadOnlyList<ObjectInfo> versions)
     {
@@ -3394,6 +4561,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             VersionIdMarker = versionIdMarker,
             NextKeyMarker = isTruncated ? page[^1].NextKeyMarker : null,
             NextVersionIdMarker = isTruncated ? page[^1].NextVersionIdMarker : null,
+            EncodingType = encodingType,
             MaxKeys = maxKeys,
             IsTruncated = isTruncated,
             Versions = page
@@ -3508,14 +4676,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         };
     }
 
-    private static S3ListPartsResult BuildListMultipartUploadPartsResult(
+    private static S3ListPartsResult BuildListMultipartPartsResult(
         string bucketName,
         string key,
-        string uploadId,
+        MultipartUploadInfo upload,
+        string? encodingType,
         int partNumberMarker,
         int maxParts,
-        string? checksumAlgorithm,
-        IReadOnlyList<MultipartUploadPart> parts)
+        IReadOnlyList<MultipartUploadPart> parts,
+        S3BucketOwner owner)
     {
         var isTruncated = parts.Count > maxParts;
         var page = isTruncated
@@ -3526,20 +4695,22 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         {
             Bucket = bucketName,
             Key = key,
-            UploadId = uploadId,
+            UploadId = upload.UploadId,
             PartNumberMarker = partNumberMarker,
             NextPartNumberMarker = isTruncated ? page[^1].PartNumber : null,
             MaxParts = maxParts,
             IsTruncated = isTruncated,
-            StorageClass = "STANDARD",
-            ChecksumAlgorithm = ToS3ChecksumAlgorithmValue(checksumAlgorithm),
-            ChecksumType = string.IsNullOrWhiteSpace(checksumAlgorithm) ? null : "COMPOSITE",
-            Parts = page.Select(part => new S3ListPartEntry
+            EncodingType = encodingType,
+            Initiator = owner,
+            Owner = owner,
+            ChecksumAlgorithm = ToS3ChecksumAlgorithmValue(upload.ChecksumAlgorithm),
+            ChecksumType = string.IsNullOrWhiteSpace(upload.ChecksumAlgorithm) ? null : "COMPOSITE",
+            Parts = page.Select(static part => new S3ListPartEntry
             {
                 PartNumber = part.PartNumber,
                 ETag = part.ETag,
-                Size = part.ContentLength,
                 LastModifiedUtc = part.LastModifiedUtc,
+                Size = part.ContentLength,
                 ChecksumCrc32 = GetChecksumValue(part.Checksums, "crc32"),
                 ChecksumCrc32c = GetChecksumValue(part.Checksums, "crc32c"),
                 ChecksumCrc64Nvme = GetChecksumValue(part.Checksums, "crc64nvme"),
@@ -3573,7 +4744,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : throw new ArgumentException("The max-uploads query parameter must be an integer.", MaxUploadsQueryParameterName);
     }
 
-    private static int? ParseMaxParts(HttpRequest request)
+    private static int ParseMaxParts(HttpRequest request)
     {
         if (!request.Query.TryGetValue(MaxPartsQueryParameterName, out var values)
             || string.IsNullOrWhiteSpace(values.ToString())) {
@@ -3585,16 +4756,16 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : throw new ArgumentException("The max-parts query parameter must be an integer.", MaxPartsQueryParameterName);
     }
 
-    private static int? ParsePartNumberMarker(HttpRequest request)
+    private static int ParsePartNumberMarker(HttpRequest request)
     {
         if (!request.Query.TryGetValue(PartNumberMarkerQueryParameterName, out var values)
             || string.IsNullOrWhiteSpace(values.ToString())) {
-            return null;
+            return 0;
         }
 
-        return int.TryParse(values.ToString(), out var parsedValue) && parsedValue >= 0
+        return int.TryParse(values.ToString(), out var parsedValue)
             ? parsedValue
-            : throw new ArgumentException("The part-number-marker query parameter must be a non-negative integer.", PartNumberMarkerQueryParameterName);
+            : throw new ArgumentException("The part-number-marker query parameter must be an integer.", PartNumberMarkerQueryParameterName);
     }
 
     private static bool TryValidateBucketRequestSubresources(HttpRequest request, out string? errorCode, out string? errorMessage, out int statusCode)
@@ -3607,6 +4778,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isBucketCorsRequest = queryKeys.SetEquals(BucketCorsQueryParameters);
         var isBucketPolicyRequest = queryKeys.SetEquals(BucketPolicyQueryParameters);
         var isBucketVersioningRequest = queryKeys.SetEquals(BucketVersioningQueryParameters);
+        var isBucketEncryptionRequest = queryKeys.SetEquals(BucketEncryptionQueryParameters);
+        var isBucketTaggingRequest = queryKeys.SetEquals(BucketTaggingQueryParameters);
+        var isBucketLoggingRequest = queryKeys.SetEquals(BucketLoggingQueryParameters);
+        var isBucketWebsiteRequest = queryKeys.SetEquals(BucketWebsiteQueryParameters);
+        var isBucketRequestPaymentRequest = queryKeys.SetEquals(BucketRequestPaymentQueryParameters);
+        var isBucketAccelerateRequest = queryKeys.SetEquals(BucketAccelerateQueryParameters);
+        var isBucketLifecycleRequest = queryKeys.SetEquals(BucketLifecycleQueryParameters);
+        var isBucketReplicationRequest = queryKeys.SetEquals(BucketReplicationQueryParameters);
+        var isBucketNotificationRequest = queryKeys.SetEquals(BucketNotificationQueryParameters);
+        var isBucketObjectLockRequest = queryKeys.SetEquals(BucketObjectLockQueryParameters);
+        var isBucketAnalyticsRequest = queryKeys.Contains(AnalyticsQueryParameterName) && queryKeys.IsSubsetOf(BucketAnalyticsQueryParameters);
+        var isBucketMetricsRequest = queryKeys.Contains(MetricsQueryParameterName) && queryKeys.IsSubsetOf(BucketMetricsQueryParameters);
+        var isBucketInventoryRequest = queryKeys.Contains(InventoryQueryParameterName) && queryKeys.IsSubsetOf(BucketInventoryQueryParameters);
         var isListObjectVersionsRequest = queryKeys.Contains(VersionsQueryParameterName) && queryKeys.IsSubsetOf(BucketVersionListingQueryParameters);
         var isListMultipartUploadsRequest = queryKeys.Contains(UploadsQueryParameterName) && queryKeys.IsSubsetOf(BucketMultipartUploadsQueryParameters);
         var isDeleteObjectsRequest = queryKeys.SetEquals(BucketDeleteQueryParameters);
@@ -3634,6 +4818,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketCorsRequest
                     || isBucketPolicyRequest
                     || isBucketVersioningRequest
+                    || isBucketEncryptionRequest
+                    || isBucketTaggingRequest
+                    || isBucketLoggingRequest
+                    || isBucketWebsiteRequest
+                    || isBucketRequestPaymentRequest
+                    || isBucketAccelerateRequest
+                    || isBucketLifecycleRequest
+                    || isBucketReplicationRequest
+                    || isBucketNotificationRequest
+                    || isBucketObjectLockRequest
+                    || isBucketAnalyticsRequest
+                    || isBucketMetricsRequest
+                    || isBucketInventoryRequest
                     || isListObjectVersionsRequest
                     || isListMultipartUploadsRequest) {
                     break;
@@ -3663,7 +4860,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     || isBucketAclRequest
                     || isBucketVersioningRequest
                     || isBucketCorsRequest
-                    || isBucketPolicyRequest) {
+                    || isBucketPolicyRequest
+                    || isBucketEncryptionRequest
+                    || isBucketTaggingRequest
+                    || isBucketLoggingRequest
+                    || isBucketWebsiteRequest
+                    || isBucketRequestPaymentRequest
+                    || isBucketAccelerateRequest
+                    || isBucketLifecycleRequest
+                    || isBucketReplicationRequest
+                    || isBucketNotificationRequest
+                    || isBucketObjectLockRequest
+                    || isBucketAnalyticsRequest
+                    || isBucketMetricsRequest
+                    || isBucketInventoryRequest) {
                     break;
                 }
 
@@ -3672,7 +4882,15 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             case "DELETE":
                 if (queryKeys.SetEquals(EmptyQueryParameters)
                     || isBucketCorsRequest
-                    || isBucketPolicyRequest) {
+                    || isBucketPolicyRequest
+                    || isBucketEncryptionRequest
+                    || isBucketTaggingRequest
+                    || isBucketWebsiteRequest
+                    || isBucketLifecycleRequest
+                    || isBucketReplicationRequest
+                    || isBucketAnalyticsRequest
+                    || isBucketMetricsRequest
+                    || isBucketInventoryRequest) {
                     break;
                 }
 
@@ -3696,17 +4914,36 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var isVersionedObjectRequest = queryKeys.SetEquals(ObjectVersionQueryParameters);
         var isAclRequest = queryKeys.SetEquals(ObjectAclQueryParameters);
         var isTaggingRequest = queryKeys.Contains(TaggingQueryParameterName) && queryKeys.IsSubsetOf(ObjectTaggingQueryParameters);
+        var isRetentionRequest = queryKeys.Contains(RetentionQueryParameterName) && queryKeys.IsSubsetOf(ObjectRetentionQueryParameters);
+        var isLegalHoldRequest = queryKeys.Contains(LegalHoldQueryParameterName) && queryKeys.IsSubsetOf(ObjectLegalHoldQueryParameters);
+        var isAttributesRequest = queryKeys.Contains(AttributesQueryParameterName) && queryKeys.IsSubsetOf(ObjectAttributesQueryParameters);
+        var isRestoreRequest = queryKeys.Contains(RestoreQueryParameterName) && queryKeys.IsSubsetOf(ObjectRestoreQueryParameters);
+        var isSelectRequest = queryKeys.Contains(SelectQueryParameterName) && queryKeys.IsSubsetOf(ObjectSelectQueryParameters);
         var isInitiateMultipartRequest = queryKeys.SetEquals(ObjectMultipartInitiateQueryParameters);
         var isUploadMultipartPartRequest = queryKeys.SetEquals(ObjectMultipartPartQueryParameters);
         var isListMultipartUploadPartsRequest = queryKeys.Contains(UploadIdQueryParameterName) && queryKeys.IsSubsetOf(ObjectMultipartListPartsQueryParameters);
         var isUploadScopedMultipartRequest = queryKeys.SetEquals(ObjectMultipartUploadQueryParameters);
+        var isListMultipartPartsRequest = queryKeys.Contains(UploadIdQueryParameterName) && queryKeys.IsSubsetOf(ObjectMultipartListPartsQueryParameters);
+
+        if (isSelectRequest
+            && request.Query.TryGetValue(SelectTypeQueryParameterName, out var selectTypeValue)
+            && !string.IsNullOrWhiteSpace(selectTypeValue.ToString())
+            && !string.Equals(selectTypeValue.ToString(), "2", StringComparison.Ordinal)) {
+            return SetValidationError(
+                "InvalidArgument",
+                "Only select-type=2 is supported for S3 Select requests.",
+                StatusCodes.Status400BadRequest,
+                out errorCode,
+                out errorMessage,
+                out statusCode);
+        }
 
         switch (request.Method) {
-            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isAclRequest || isTaggingRequest || isListMultipartUploadPartsRequest:
-            case "PUT" when isCurrentObjectRequest || isAclRequest || isTaggingRequest || isUploadMultipartPartRequest:
+            case "GET" when isCurrentObjectRequest || isVersionedObjectRequest || isAclRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest || isAttributesRequest || isListMultipartPartsRequest:
+            case "PUT" when isCurrentObjectRequest || isAclRequest || isTaggingRequest || isRetentionRequest || isLegalHoldRequest || isUploadMultipartPartRequest:
             case "HEAD" when isCurrentObjectRequest || isVersionedObjectRequest:
             case "DELETE" when isCurrentObjectRequest || isVersionedObjectRequest || isTaggingRequest || isUploadScopedMultipartRequest:
-            case "POST" when isCurrentObjectRequest || isInitiateMultipartRequest || isUploadScopedMultipartRequest:
+            case "POST" when isCurrentObjectRequest || isInitiateMultipartRequest || isUploadScopedMultipartRequest || isRestoreRequest || isSelectRequest:
                 return SetValidationSuccess(out errorCode, out errorMessage, out statusCode);
             case "GET":
             case "PUT":
@@ -3812,6 +5049,85 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
 
         return TryResolveCannedAcl(accessControlPolicy, httpContext, resource, bucketName, key, out var resolvedAcl, out var aclErrorResult)
+            ? (resolvedAcl, null)
+            : (null, aclErrorResult);
+    }
+
+    private static async Task<(ObjectAclCompatibilityState? Acl, IResult? ErrorResult)> TryReadObjectAclSubresourceRequestAsync(
+        HttpContext httpContext,
+        string bucketName,
+        string key,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(httpContext);
+
+        var request = httpContext.Request;
+        var resource = BuildObjectResource(bucketName, key);
+        var hasCannedAclHeader = request.Headers.ContainsKey(CannedAclHeaderName);
+        var hasGrantHeaders = HasAnyObjectAclGrantHeader(request);
+        var hasBody = RequestHasBody(request);
+
+        if (hasCannedAclHeader && hasGrantHeaders) {
+            return (null, ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The ACL request must not include both '{CannedAclHeaderName}' and grant headers.",
+                resource,
+                bucketName,
+                key));
+        }
+
+        if ((hasCannedAclHeader || hasGrantHeaders) && hasBody) {
+            return (null, ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                "The ACL request must not include both ACL headers and an AccessControlPolicy body.",
+                resource,
+                bucketName,
+                key));
+        }
+
+        if (hasGrantHeaders) {
+            return TryParseObjectAclGrantHeaders(request, resource, bucketName, key, out var parsedAcl, out var grantErrorResult)
+                ? (parsedAcl, null)
+                : (null, grantErrorResult);
+        }
+
+        if (hasCannedAclHeader) {
+            return TryParseCannedAclHeader(request, resource, bucketName, key, out var cannedAcl, out var errorResult)
+                ? (CreateObjectAclCompatibilityState(cannedAcl!.Value), null)
+                : (null, errorResult);
+        }
+
+        if (!hasBody) {
+            return (null, ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The ACL request must include a supported '{CannedAclHeaderName}' header, supported object ACL grant headers, or an AccessControlPolicy body.",
+                resource,
+                bucketName,
+                key));
+        }
+
+        S3AccessControlPolicy accessControlPolicy;
+        try {
+            accessControlPolicy = await S3XmlRequestReader.ReadAccessControlPolicyAsync(request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return (null, ToErrorResult(
+                httpContext,
+                StatusCodes.Status400BadRequest,
+                "MalformedACLError",
+                exception.Message,
+                resource,
+                bucketName,
+                key));
+        }
+
+        return TryResolveObjectAcl(accessControlPolicy, httpContext, resource, bucketName, key, out var resolvedAcl, out var aclErrorResult)
             ? (resolvedAcl, null)
             : (null, aclErrorResult);
     }
@@ -3963,13 +5279,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 return false;
             }
 
-            if (!string.Equals(effect, "Allow", StringComparison.Ordinal)) {
+            if (!string.Equals(effect, "Allow", StringComparison.Ordinal) &&
+                !string.Equals(effect, "Deny", StringComparison.Ordinal)) {
                 policy = null;
                 errorResult = ToErrorResult(
                     httpContext,
-                    StatusCodes.Status501NotImplemented,
-                    "NotImplemented",
-                    $"Bucket policy effect '{effect}' is not implemented.",
+                    StatusCodes.Status400BadRequest,
+                    "MalformedPolicy",
+                    $"Invalid bucket policy effect '{effect}'. Must be 'Allow' or 'Deny'.",
                     BuildObjectResource(bucketName, null),
                     bucketName);
                 return false;
@@ -4110,10 +5427,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         IStorageAuthorizationCompatibilityService compatibilityService,
         string bucketName,
         string key,
-        StorageCannedAcl? cannedAcl,
+        ObjectAclCompatibilityState? acl,
         CancellationToken cancellationToken)
     {
-        if (cannedAcl is null) {
+        if (acl is null) {
             return null;
         }
 
@@ -4121,12 +5438,59 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         {
             BucketName = bucketName,
             Key = key,
-            CannedAcl = cannedAcl.Value
+            CannedAcl = acl.CannedAcl,
+            Acl = acl
         }, cancellationToken);
 
         return aclResult.IsSuccess
             ? null
             : ToErrorResult(httpContext, aclResult.Error, resourceOverride: BuildObjectResource(bucketName, key));
+    }
+
+    private static bool TryParseOptionalWriteObjectAcl(
+        HttpRequest request,
+        string resource,
+        string bucketName,
+        string key,
+        out ObjectAclCompatibilityState? acl,
+        out IResult? errorResult)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var hasCannedAclHeader = request.Headers.ContainsKey(CannedAclHeaderName);
+        var hasGrantHeaders = HasAnyObjectAclGrantHeader(request);
+
+        if (hasCannedAclHeader && hasGrantHeaders) {
+            acl = null;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The ACL request must not include both '{CannedAclHeaderName}' and grant headers.",
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+
+        if (hasCannedAclHeader) {
+            if (!TryParseCannedAclHeader(request, resource, bucketName, key, out var cannedAcl, out errorResult)) {
+                acl = null;
+                return false;
+            }
+
+            acl = CreateObjectAclCompatibilityState(cannedAcl!.Value);
+            errorResult = null;
+            return true;
+        }
+
+        if (!hasGrantHeaders) {
+            acl = null;
+            errorResult = null;
+            return true;
+        }
+
+        return TryParseObjectAclGrantHeaders(request, resource, bucketName, key, out acl, out errorResult);
     }
 
     private static bool TryParseOptionalWriteCannedAcl(
@@ -4203,6 +5567,380 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return true;
     }
 
+    private static bool TryParseObjectAclGrantHeaders(
+        HttpRequest request,
+        string resource,
+        string bucketName,
+        string? key,
+        out ObjectAclCompatibilityState? acl,
+        out IResult? errorResult)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.Headers.ContainsKey(GrantWriteHeaderName)) {
+            acl = null;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status501NotImplemented,
+                "NotImplemented",
+                $"ACL request header '{GrantWriteHeaderName}' is not implemented.",
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+
+        List<StorageAclGrant> grants = [];
+        if (!TryAppendObjectAclGrantHeaderValues(request, GrantReadHeaderName, StorageAclPermission.Read, grants, resource, bucketName, key, out errorResult)
+            || !TryAppendObjectAclGrantHeaderValues(request, GrantReadAcpHeaderName, StorageAclPermission.ReadAcp, grants, resource, bucketName, key, out errorResult)
+            || !TryAppendObjectAclGrantHeaderValues(request, GrantWriteAcpHeaderName, StorageAclPermission.WriteAcp, grants, resource, bucketName, key, out errorResult)
+            || !TryAppendObjectAclGrantHeaderValues(request, GrantFullControlHeaderName, StorageAclPermission.FullControl, grants, resource, bucketName, key, out errorResult)) {
+            acl = null;
+            return false;
+        }
+
+        acl = new ObjectAclCompatibilityState
+        {
+            CannedAcl = ResolveObjectCannedAclFromGrants(grants),
+            AdditionalGrants = DeduplicateAclGrants(grants)
+        };
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryAppendObjectAclGrantHeaderValues(
+        HttpRequest request,
+        string headerName,
+        StorageAclPermission permission,
+        List<StorageAclGrant> grants,
+        string resource,
+        string bucketName,
+        string? key,
+        out IResult? errorResult)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(grants);
+
+        if (!request.Headers.ContainsKey(headerName)) {
+            errorResult = null;
+            return true;
+        }
+
+        var rawValue = request.Headers[headerName].ToString();
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                $"The '{headerName}' header must not be empty.",
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+
+        if (!TryParseAclGrantHeaderValue(rawValue, out var grantees)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                $"The '{headerName}' header value is not valid.",
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+
+        foreach (var grantee in grantees) {
+            if (string.Equals(grantee.Type, "id", StringComparison.OrdinalIgnoreCase)) {
+                grants.Add(new StorageAclGrant
+                {
+                    Grantee = new StorageAclGrantee
+                    {
+                        Type = StorageAclGranteeType.CanonicalUser,
+                        Id = grantee.Value
+                    },
+                    Permission = permission
+                });
+
+                continue;
+            }
+
+            if (string.Equals(grantee.Type, "uri", StringComparison.OrdinalIgnoreCase)) {
+                if (!string.Equals(grantee.Value, AllUsersGroupUri, StringComparison.Ordinal)) {
+                    errorResult = ToErrorResult(
+                        request.HttpContext,
+                        StatusCodes.Status501NotImplemented,
+                        "NotImplemented",
+                        $"ACL group '{grantee.Value}' is not implemented.",
+                        resource,
+                        bucketName,
+                        key);
+                    return false;
+                }
+
+                if (permission != StorageAclPermission.Read) {
+                    errorResult = ToErrorResult(
+                        request.HttpContext,
+                        StatusCodes.Status501NotImplemented,
+                        "NotImplemented",
+                        $"ACL permission '{ToS3AclPermission(permission)}' is not implemented for the AllUsers group.",
+                        resource,
+                        bucketName,
+                        key);
+                    return false;
+                }
+
+                grants.Add(new StorageAclGrant
+                {
+                    Grantee = new StorageAclGrantee
+                    {
+                        Type = StorageAclGranteeType.Group,
+                        Uri = AllUsersGroupUri
+                    },
+                    Permission = StorageAclPermission.Read
+                });
+
+                continue;
+            }
+
+            var granteeType = grantee.Type.Trim();
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status501NotImplemented,
+                "NotImplemented",
+                $"ACL grantee type '{granteeType}' is not implemented.",
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryParseAclGrantHeaderValue(string rawValue, out List<AclHeaderGrantee> grantees)
+    {
+        grantees = [];
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            return false;
+        }
+
+        var index = 0;
+        while (index < rawValue.Length) {
+            SkipWhitespace(rawValue, ref index);
+            if (index >= rawValue.Length) {
+                return false;
+            }
+
+            var typeStart = index;
+            while (index < rawValue.Length && rawValue[index] != '=' && rawValue[index] != ',') {
+                index++;
+            }
+
+            if (index >= rawValue.Length || rawValue[index] != '=') {
+                return false;
+            }
+
+            var type = rawValue[typeStart..index].Trim();
+            if (string.IsNullOrWhiteSpace(type)) {
+                return false;
+            }
+
+            index++;
+            SkipWhitespace(rawValue, ref index);
+            if (index >= rawValue.Length || rawValue[index] != '"') {
+                return false;
+            }
+
+            index++;
+            var valueStart = index;
+            while (index < rawValue.Length && rawValue[index] != '"') {
+                index++;
+            }
+
+            if (index >= rawValue.Length) {
+                return false;
+            }
+
+            var value = rawValue[valueStart..index].Trim();
+            if (string.IsNullOrWhiteSpace(value)) {
+                return false;
+            }
+
+            grantees.Add(new AclHeaderGrantee(type, value));
+
+            index++;
+            SkipWhitespace(rawValue, ref index);
+            if (index >= rawValue.Length) {
+                break;
+            }
+
+            if (rawValue[index] != ',') {
+                return false;
+            }
+
+            index++;
+        }
+
+        return grantees.Count > 0;
+    }
+
+    private static bool TryResolveObjectAcl(
+        S3AccessControlPolicy policy,
+        HttpContext httpContext,
+        string resource,
+        string bucketName,
+        string key,
+        out ObjectAclCompatibilityState acl,
+        out IResult? errorResult)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+
+        List<StorageAclGrant> grants = [];
+        foreach (var grant in policy.Grants) {
+            if (string.Equals(grant.Grantee.Type, CanonicalUserGranteeType, StringComparison.OrdinalIgnoreCase)) {
+                if (string.IsNullOrWhiteSpace(grant.Grantee.Id)) {
+                    acl = default!;
+                    errorResult = ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "MalformedACLError",
+                        "CanonicalUser ACL grants must include a non-empty 'ID' element.",
+                        resource,
+                        bucketName,
+                        key);
+                    return false;
+                }
+
+                if (!TryParseSupportedCanonicalUserAclPermission(grant.Permission, out var permission)) {
+                    acl = default!;
+                    errorResult = ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status501NotImplemented,
+                        "NotImplemented",
+                        $"ACL permission '{grant.Permission}' is not implemented for canonical grantees.",
+                        resource,
+                        bucketName,
+                        key);
+                    return false;
+                }
+
+                grants.Add(new StorageAclGrant
+                {
+                    Grantee = new StorageAclGrantee
+                    {
+                        Type = StorageAclGranteeType.CanonicalUser,
+                        Id = grant.Grantee.Id.Trim()
+                    },
+                    Permission = permission
+                });
+
+                continue;
+            }
+
+            if (string.Equals(grant.Grantee.Type, GroupGranteeType, StringComparison.OrdinalIgnoreCase)) {
+                if (string.IsNullOrWhiteSpace(grant.Grantee.Uri)) {
+                    acl = default!;
+                    errorResult = ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status400BadRequest,
+                        "MalformedACLError",
+                        "Group ACL grants must include a non-empty 'URI' element.",
+                        resource,
+                        bucketName,
+                        key);
+                    return false;
+                }
+
+                if (string.Equals(grant.Grantee.Uri, AllUsersGroupUri, StringComparison.Ordinal)) {
+                    if (!TryParseGroupAclPermission(grant.Permission, out var allUsersPermission)) {
+                        acl = default!;
+                        errorResult = ToErrorResult(
+                            httpContext,
+                            StatusCodes.Status501NotImplemented,
+                            "NotImplemented",
+                            $"ACL permission '{grant.Permission}' is not implemented for the AllUsers group.",
+                            resource,
+                            bucketName,
+                            key);
+                        return false;
+                    }
+
+                    grants.Add(new StorageAclGrant
+                    {
+                        Grantee = new StorageAclGrantee
+                        {
+                            Type = StorageAclGranteeType.Group,
+                            Uri = AllUsersGroupUri
+                        },
+                        Permission = allUsersPermission
+                    });
+
+                    continue;
+                }
+
+                if (string.Equals(grant.Grantee.Uri, AuthenticatedUsersGroupUri, StringComparison.Ordinal)) {
+                    if (!TryParseGroupAclPermission(grant.Permission, out var authUsersPermission)) {
+                        acl = default!;
+                        errorResult = ToErrorResult(
+                            httpContext,
+                            StatusCodes.Status501NotImplemented,
+                            "NotImplemented",
+                            $"ACL permission '{grant.Permission}' is not implemented for the AuthenticatedUsers group.",
+                            resource,
+                            bucketName,
+                            key);
+                        return false;
+                    }
+
+                    grants.Add(new StorageAclGrant
+                    {
+                        Grantee = new StorageAclGrantee
+                        {
+                            Type = StorageAclGranteeType.Group,
+                            Uri = AuthenticatedUsersGroupUri
+                        },
+                        Permission = authUsersPermission
+                    });
+
+                    continue;
+                }
+
+                acl = default!;
+                errorResult = ToErrorResult(
+                    httpContext,
+                    StatusCodes.Status501NotImplemented,
+                    "NotImplemented",
+                    $"ACL group '{grant.Grantee.Uri}' is not implemented.",
+                    resource,
+                    bucketName,
+                    key);
+                return false;
+            }
+
+            acl = default!;
+            errorResult = ToErrorResult(
+                httpContext,
+                StatusCodes.Status501NotImplemented,
+                "NotImplemented",
+                $"ACL grantee type '{grant.Grantee.Type}' is not implemented.",
+                resource,
+                bucketName,
+                key);
+            return false;
+        }
+
+        acl = new ObjectAclCompatibilityState
+        {
+            CannedAcl = ResolveObjectCannedAclFromGrants(grants),
+            AdditionalGrants = DeduplicateAclGrants(grants)
+        };
+        errorResult = null;
+        return true;
+    }
+
     private static bool TryResolveCannedAcl(
         S3AccessControlPolicy policy,
         HttpContext httpContext,
@@ -4215,6 +5953,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ArgumentNullException.ThrowIfNull(policy);
 
         var allowsPublicRead = false;
+        var allowsPublicWrite = false;
+        var allowsAuthenticatedRead = false;
         foreach (var grant in policy.Grants) {
             if (string.Equals(grant.Grantee.Type, CanonicalUserGranteeType, StringComparison.OrdinalIgnoreCase)) {
                 if (!string.Equals(grant.Permission, "FULL_CONTROL", StringComparison.OrdinalIgnoreCase)) {
@@ -4234,20 +5974,17 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             if (string.Equals(grant.Grantee.Type, GroupGranteeType, StringComparison.OrdinalIgnoreCase)) {
-                if (!string.Equals(grant.Grantee.Uri, AllUsersGroupUri, StringComparison.Ordinal)) {
-                    cannedAcl = default;
-                    errorResult = ToErrorResult(
-                        httpContext,
-                        StatusCodes.Status501NotImplemented,
-                        "NotImplemented",
-                        $"ACL group '{grant.Grantee.Uri}' is not implemented.",
-                        resource,
-                        bucketName,
-                        key);
-                    return false;
-                }
+                if (string.Equals(grant.Grantee.Uri, AllUsersGroupUri, StringComparison.Ordinal)) {
+                    if (string.Equals(grant.Permission, "READ", StringComparison.OrdinalIgnoreCase)) {
+                        allowsPublicRead = true;
+                        continue;
+                    }
 
-                if (!string.Equals(grant.Permission, "READ", StringComparison.OrdinalIgnoreCase)) {
+                    if (string.Equals(grant.Permission, "WRITE", StringComparison.OrdinalIgnoreCase)) {
+                        allowsPublicWrite = true;
+                        continue;
+                    }
+
                     cannedAcl = default;
                     errorResult = ToErrorResult(
                         httpContext,
@@ -4260,8 +5997,34 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     return false;
                 }
 
-                allowsPublicRead = true;
-                continue;
+                if (string.Equals(grant.Grantee.Uri, AuthenticatedUsersGroupUri, StringComparison.Ordinal)) {
+                    if (string.Equals(grant.Permission, "READ", StringComparison.OrdinalIgnoreCase)) {
+                        allowsAuthenticatedRead = true;
+                        continue;
+                    }
+
+                    cannedAcl = default;
+                    errorResult = ToErrorResult(
+                        httpContext,
+                        StatusCodes.Status501NotImplemented,
+                        "NotImplemented",
+                        $"ACL permission '{grant.Permission}' is not implemented for the AuthenticatedUsers group.",
+                        resource,
+                        bucketName,
+                        key);
+                    return false;
+                }
+
+                cannedAcl = default;
+                errorResult = ToErrorResult(
+                    httpContext,
+                    StatusCodes.Status501NotImplemented,
+                    "NotImplemented",
+                    $"ACL group '{grant.Grantee.Uri}' is not implemented.",
+                    resource,
+                    bucketName,
+                    key);
+                return false;
             }
 
             cannedAcl = default;
@@ -4276,7 +6039,19 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return false;
         }
 
-        cannedAcl = allowsPublicRead ? StorageCannedAcl.PublicRead : StorageCannedAcl.Private;
+        if (allowsPublicRead && allowsPublicWrite) {
+            cannedAcl = StorageCannedAcl.PublicReadWrite;
+        }
+        else if (allowsPublicRead) {
+            cannedAcl = StorageCannedAcl.PublicRead;
+        }
+        else if (allowsAuthenticatedRead) {
+            cannedAcl = StorageCannedAcl.AuthenticatedRead;
+        }
+        else {
+            cannedAcl = StorageCannedAcl.Private;
+        }
+
         errorResult = null;
         return true;
     }
@@ -4290,12 +6065,141 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             case "public-read":
                 cannedAcl = StorageCannedAcl.PublicRead;
                 return true;
+            case "public-read-write":
+                cannedAcl = StorageCannedAcl.PublicReadWrite;
+                return true;
+            case "authenticated-read":
+                cannedAcl = StorageCannedAcl.AuthenticatedRead;
+                return true;
             case "bucket-owner-full-control":
                 cannedAcl = StorageCannedAcl.BucketOwnerFullControl;
                 return true;
             default:
                 cannedAcl = default;
                 return false;
+        }
+    }
+
+    private static bool TryParseSupportedCanonicalUserAclPermission(string rawValue, out StorageAclPermission permission)
+    {
+        switch (rawValue.Trim().ToUpperInvariant()) {
+            case "READ":
+                permission = StorageAclPermission.Read;
+                return true;
+            case "READ_ACP":
+                permission = StorageAclPermission.ReadAcp;
+                return true;
+            case "WRITE_ACP":
+                permission = StorageAclPermission.WriteAcp;
+                return true;
+            case "FULL_CONTROL":
+                permission = StorageAclPermission.FullControl;
+                return true;
+            default:
+                permission = default;
+                return false;
+        }
+    }
+
+    private static ObjectAclCompatibilityState CreateObjectAclCompatibilityState(StorageCannedAcl cannedAcl)
+    {
+        return new ObjectAclCompatibilityState
+        {
+            CannedAcl = cannedAcl,
+            AdditionalGrants = []
+        };
+    }
+
+    private static bool HasAnyObjectAclGrantHeader(HttpRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return request.Headers.ContainsKey(GrantFullControlHeaderName)
+            || request.Headers.ContainsKey(GrantReadHeaderName)
+            || request.Headers.ContainsKey(GrantReadAcpHeaderName)
+            || request.Headers.ContainsKey(GrantWriteHeaderName)
+            || request.Headers.ContainsKey(GrantWriteAcpHeaderName);
+    }
+
+    private static IReadOnlyList<StorageAclGrant> DeduplicateAclGrants(IEnumerable<StorageAclGrant> grants)
+    {
+        ArgumentNullException.ThrowIfNull(grants);
+
+        List<StorageAclGrant> distinctGrants = [];
+        HashSet<StorageAclGrant> seen = [];
+        foreach (var grant in grants) {
+            if (seen.Add(grant)) {
+                distinctGrants.Add(grant);
+            }
+        }
+
+        return distinctGrants;
+    }
+
+    private static bool IsAllUsersReadGrant(StorageAclGrant grant)
+    {
+        ArgumentNullException.ThrowIfNull(grant);
+
+        return grant.Permission == StorageAclPermission.Read
+            && grant.Grantee.Type == StorageAclGranteeType.Group
+            && string.Equals(grant.Grantee.Uri, AllUsersGroupUri, StringComparison.Ordinal);
+    }
+
+    private static bool TryParseGroupAclPermission(string rawValue, out StorageAclPermission permission)
+    {
+        switch (rawValue.Trim().ToUpperInvariant()) {
+            case "READ":
+                permission = StorageAclPermission.Read;
+                return true;
+            case "WRITE":
+                permission = StorageAclPermission.Write;
+                return true;
+            case "READ_ACP":
+                permission = StorageAclPermission.ReadAcp;
+                return true;
+            case "WRITE_ACP":
+                permission = StorageAclPermission.WriteAcp;
+                return true;
+            case "FULL_CONTROL":
+                permission = StorageAclPermission.FullControl;
+                return true;
+            default:
+                permission = default;
+                return false;
+        }
+    }
+
+    private static StorageCannedAcl ResolveObjectCannedAclFromGrants(IReadOnlyList<StorageAclGrant> grants)
+    {
+        var hasAllUsersRead = grants.Any(IsAllUsersReadGrant);
+        var hasAllUsersWrite = grants.Any(static g =>
+            g.Permission == StorageAclPermission.Write
+            && g.Grantee.Type == StorageAclGranteeType.Group
+            && string.Equals(g.Grantee.Uri, AllUsersGroupUri, StringComparison.Ordinal));
+        var hasAuthenticatedRead = grants.Any(static g =>
+            g.Permission == StorageAclPermission.Read
+            && g.Grantee.Type == StorageAclGranteeType.Group
+            && string.Equals(g.Grantee.Uri, AuthenticatedUsersGroupUri, StringComparison.Ordinal));
+
+        if (hasAllUsersRead && hasAllUsersWrite) {
+            return StorageCannedAcl.PublicReadWrite;
+        }
+
+        if (hasAllUsersRead) {
+            return StorageCannedAcl.PublicRead;
+        }
+
+        if (hasAuthenticatedRead) {
+            return StorageCannedAcl.AuthenticatedRead;
+        }
+
+        return StorageCannedAcl.Private;
+    }
+
+    private static void SkipWhitespace(string value, ref int index)
+    {
+        while (index < value.Length && char.IsWhiteSpace(value[index])) {
+            index++;
         }
     }
 
@@ -4416,13 +6320,37 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
         ];
 
-        if (cannedAcl == StorageCannedAcl.PublicRead) {
+        if (cannedAcl is StorageCannedAcl.PublicRead or StorageCannedAcl.PublicReadWrite) {
             grants.Add(new S3AccessControlGrant
             {
                 Grantee = new S3AccessControlGrantee
                 {
                     Type = GroupGranteeType,
                     Uri = AllUsersGroupUri
+                },
+                Permission = "READ"
+            });
+        }
+
+        if (cannedAcl == StorageCannedAcl.PublicReadWrite) {
+            grants.Add(new S3AccessControlGrant
+            {
+                Grantee = new S3AccessControlGrantee
+                {
+                    Type = GroupGranteeType,
+                    Uri = AllUsersGroupUri
+                },
+                Permission = "WRITE"
+            });
+        }
+
+        if (cannedAcl == StorageCannedAcl.AuthenticatedRead) {
+            grants.Add(new S3AccessControlGrant
+            {
+                Grantee = new S3AccessControlGrantee
+                {
+                    Type = GroupGranteeType,
+                    Uri = AuthenticatedUsersGroupUri
                 },
                 Permission = "READ"
             });
@@ -4436,6 +6364,111 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 DisplayName = ownerDisplayName
             },
             Grants = grants
+        };
+    }
+
+    private static S3AccessControlPolicy CreateObjectAccessControlPolicy(ObjectAclCompatibilityState acl, string ownerDisplayName)
+    {
+        ArgumentNullException.ThrowIfNull(acl);
+
+        List<S3AccessControlGrant> grants =
+        [
+            new()
+            {
+                Grantee = new S3AccessControlGrantee
+                {
+                    Type = CanonicalUserGranteeType,
+                    Id = OwnerId,
+                    DisplayName = ownerDisplayName
+                },
+                Permission = "FULL_CONTROL"
+            }
+        ];
+
+        foreach (var grant in ExpandObjectAclCompatibilityGrants(acl)) {
+            if (grant.Grantee.Type == StorageAclGranteeType.CanonicalUser
+                && string.Equals(grant.Grantee.Id, OwnerId, StringComparison.Ordinal)
+                && grant.Permission == StorageAclPermission.FullControl) {
+                continue;
+            }
+
+            grants.Add(new S3AccessControlGrant
+            {
+                Grantee = new S3AccessControlGrantee
+                {
+                    Type = grant.Grantee.Type == StorageAclGranteeType.CanonicalUser ? CanonicalUserGranteeType : GroupGranteeType,
+                    Id = grant.Grantee.Id,
+                    Uri = grant.Grantee.Uri
+                },
+                Permission = ToS3AclPermission(grant.Permission)
+            });
+        }
+
+        return new S3AccessControlPolicy
+        {
+            Owner = new S3BucketOwner
+            {
+                Id = OwnerId,
+                DisplayName = ownerDisplayName
+            },
+            Grants = grants
+        };
+    }
+
+    private static IReadOnlyList<StorageAclGrant> ExpandObjectAclCompatibilityGrants(ObjectAclCompatibilityState acl)
+    {
+        List<StorageAclGrant> expandedGrants = [];
+
+        if (acl.CannedAcl is StorageCannedAcl.PublicRead or StorageCannedAcl.PublicReadWrite) {
+            expandedGrants.Add(new StorageAclGrant
+            {
+                Grantee = new StorageAclGrantee
+                {
+                    Type = StorageAclGranteeType.Group,
+                    Uri = AllUsersGroupUri
+                },
+                Permission = StorageAclPermission.Read
+            });
+        }
+
+        if (acl.CannedAcl == StorageCannedAcl.PublicReadWrite) {
+            expandedGrants.Add(new StorageAclGrant
+            {
+                Grantee = new StorageAclGrantee
+                {
+                    Type = StorageAclGranteeType.Group,
+                    Uri = AllUsersGroupUri
+                },
+                Permission = StorageAclPermission.Write
+            });
+        }
+
+        if (acl.CannedAcl == StorageCannedAcl.AuthenticatedRead) {
+            expandedGrants.Add(new StorageAclGrant
+            {
+                Grantee = new StorageAclGrantee
+                {
+                    Type = StorageAclGranteeType.Group,
+                    Uri = AuthenticatedUsersGroupUri
+                },
+                Permission = StorageAclPermission.Read
+            });
+        }
+
+        expandedGrants.AddRange(acl.AdditionalGrants);
+        return DeduplicateAclGrants(expandedGrants);
+    }
+
+    private static string ToS3AclPermission(StorageAclPermission permission)
+    {
+        return permission switch
+        {
+            StorageAclPermission.Read => "READ",
+            StorageAclPermission.Write => "WRITE",
+            StorageAclPermission.ReadAcp => "READ_ACP",
+            StorageAclPermission.WriteAcp => "WRITE_ACP",
+            StorageAclPermission.FullControl => "FULL_CONTROL",
+            _ => throw new ArgumentOutOfRangeException(nameof(permission))
         };
     }
 
@@ -4601,14 +6634,41 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         var trimmed = rangeHeader.Trim();
         if (!trimmed.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) {
-            throw new FormatException("Only single byte range requests are supported.");
+            throw new FormatException("Only byte range requests are supported.");
         }
 
         var value = trimmed[6..].Trim();
         if (value.Contains(',')) {
-            throw new FormatException("Multiple byte ranges are not supported.");
+            throw new FormatException("Multiple byte ranges are not supported in single-range mode.");
         }
 
+        return ParseSingleRangeSpec(value);
+    }
+
+    private static ObjectRange[] ParseMultipleRangeHeaders(string? rangeHeader)
+    {
+        if (string.IsNullOrWhiteSpace(rangeHeader)) {
+            return [];
+        }
+
+        var trimmed = rangeHeader.Trim();
+        if (!trimmed.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) {
+            throw new FormatException("Only byte range requests are supported.");
+        }
+
+        var value = trimmed[6..].Trim();
+        var parts = value.Split(',');
+
+        var ranges = new ObjectRange[parts.Length];
+        for (var i = 0; i < parts.Length; i++) {
+            ranges[i] = ParseSingleRangeSpec(parts[i].Trim());
+        }
+
+        return ranges;
+    }
+
+    private static ObjectRange ParseSingleRangeSpec(string value)
+    {
         var separatorIndex = value.IndexOf('-');
         if (separatorIndex < 0) {
             throw new FormatException("The Range header is malformed.");
@@ -4678,6 +6738,41 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             copySource = null;
             error = exception.Message;
             return true;
+        }
+    }
+
+    private static bool TryGetCopySourceRange(HttpRequest request, out ObjectRange? sourceRange, out string? error)
+    {
+        var rawValue = request.Headers[CopySourceRangeHeaderName].ToString();
+        if (!request.Headers.ContainsKey(CopySourceRangeHeaderName)) {
+            sourceRange = null;
+            error = null;
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            sourceRange = null;
+            error = $"The '{CopySourceRangeHeaderName}' header must not be empty.";
+            return false;
+        }
+
+        try {
+            sourceRange = ParseRangeHeader(rawValue);
+            if (sourceRange is null || sourceRange.Start is null || sourceRange.End is null) {
+                throw new FormatException($"The '{CopySourceRangeHeaderName}' header must specify both start and end byte offsets.");
+            }
+
+            if (sourceRange.End.Value < sourceRange.Start.Value) {
+                throw new FormatException($"The '{CopySourceRangeHeaderName}' header must specify an end offset greater than or equal to the start offset.");
+            }
+
+            error = null;
+            return true;
+        }
+        catch (FormatException exception) {
+            sourceRange = null;
+            error = exception.Message;
+            return false;
         }
     }
 
@@ -4760,6 +6855,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         try {
             tags = ParseTaggingHeader(rawValue);
+            var tagValidationError = ObjectTagValidation.Validate(tags);
+            if (tagValidationError is not null) {
+                tags = null;
+                errorResult = ToErrorResult(
+                    request.HttpContext,
+                    StatusCodes.Status400BadRequest,
+                    "InvalidTag",
+                    tagValidationError,
+                    resource,
+                    bucketName,
+                    key);
+                return false;
+            }
+
             errorResult = null;
             return true;
         }
@@ -4780,21 +6889,23 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static async Task<PreparedRequestBody> PrepareRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         if (!IsAwsChunkedContent(request)) {
-            return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null);
+            return new PreparedRequestBody(request.Body, request.ContentLength, tempFilePath: null, trailerHeaders: null, trailerHeaderEntries: null, finalChunkSignature: null);
         }
 
         var tempFilePath = Path.Combine(Path.GetTempPath(), $"integrateds3-aws-chunked-{Guid.NewGuid():N}.tmp");
         var trailerHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var trailerHeaderEntries = new List<KeyValuePair<string, string>>();
+        string? finalChunkSignature = null;
         try {
             await using (var tempWriteStream = new FileStream(tempFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan)) {
-                await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, cancellationToken);
+                finalChunkSignature = await CopyAwsChunkedContentToAsync(request.Body, tempWriteStream, trailerHeaders, trailerHeaderEntries, cancellationToken);
                 await tempWriteStream.FlushAsync(cancellationToken);
             }
 
             var decodedLength = TryParseDecodedContentLength(request.Headers["x-amz-decoded-content-length"].ToString());
             var tempReadStream = new FileStream(tempFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
             var contentLength = decodedLength ?? tempReadStream.Length;
-            return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath, trailerHeaders);
+            return new PreparedRequestBody(tempReadStream, contentLength, tempFilePath, trailerHeaders, trailerHeaderEntries, finalChunkSignature);
         }
         catch {
             if (File.Exists(tempFilePath)) {
@@ -4837,7 +6948,12 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             : null;
     }
 
-    private static async Task CopyAwsChunkedContentToAsync(Stream source, Stream destination, Dictionary<string, string> trailerHeaders, CancellationToken cancellationToken)
+    private static async Task<string?> CopyAwsChunkedContentToAsync(
+        Stream source,
+        Stream destination,
+        Dictionary<string, string> trailerHeaders,
+        List<KeyValuePair<string, string>> trailerHeaderEntries,
+        CancellationToken cancellationToken)
     {
         while (true) {
             var chunkHeader = await ReadLineAsync(source, cancellationToken)
@@ -4849,8 +6965,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             }
 
             if (chunkLength == 0) {
-                await ConsumeChunkTrailersAsync(source, trailerHeaders, cancellationToken);
-                return;
+                await ConsumeChunkTrailersAsync(source, trailerHeaders, trailerHeaderEntries, cancellationToken);
+                return TryGetAwsChunkSignature(chunkHeader);
             }
 
             await CopyExactBytesAsync(source, destination, chunkLength, cancellationToken);
@@ -4881,7 +6997,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private static async Task ConsumeChunkTrailersAsync(Stream source, Dictionary<string, string> trailerHeaders, CancellationToken cancellationToken)
+    private static async Task ConsumeChunkTrailersAsync(
+        Stream source,
+        Dictionary<string, string> trailerHeaders,
+        List<KeyValuePair<string, string>> trailerHeaderEntries,
+        CancellationToken cancellationToken)
     {
         while (true) {
             var trailerLine = await ReadLineAsync(source, cancellationToken)
@@ -4901,8 +7021,33 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 throw new FormatException("The aws-chunked request body contains an invalid trailer header.");
             }
 
+            trailerHeaderEntries.Add(new KeyValuePair<string, string>(trailerName, trailerValue));
             trailerHeaders[trailerName] = trailerValue;
         }
+    }
+
+    private static string? TryGetAwsChunkSignature(string chunkHeader)
+    {
+        var separatorIndex = chunkHeader.IndexOf(';');
+        if (separatorIndex < 0 || separatorIndex == chunkHeader.Length - 1) {
+            return null;
+        }
+
+        foreach (var extension in chunkHeader[(separatorIndex + 1)..].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+            var equalsIndex = extension.IndexOf('=');
+            if (equalsIndex <= 0 || equalsIndex == extension.Length - 1) {
+                continue;
+            }
+
+            if (!string.Equals(extension[..equalsIndex].Trim(), "chunk-signature", StringComparison.OrdinalIgnoreCase)) {
+                continue;
+            }
+
+            var signature = extension[(equalsIndex + 1)..].Trim();
+            return signature.Length == 0 ? null : signature;
+        }
+
+        return null;
     }
 
     private static async Task CopyExactBytesAsync(Stream source, Stream destination, long byteCount, CancellationToken cancellationToken)
@@ -4971,24 +7116,93 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return new Dictionary<string, string>(StringComparer.Ordinal);
         }
 
-        var parsedQuery = QueryHelpers.ParseQuery(rawValue.StartsWith('?')
-            ? rawValue
-            : $"?{rawValue}");
-
+        var queryValue = rawValue.StartsWith('?')
+            ? rawValue[1..]
+            : rawValue;
         var tags = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (tagKey, tagValues) in parsedQuery) {
+        foreach (var segment in queryValue.Split('&', StringSplitOptions.None)) {
+            if (segment.Length == 0) {
+                continue;
+            }
+
+            var separatorIndex = segment.IndexOf('=');
+            var tagKey = DecodeTaggingHeaderComponent(separatorIndex >= 0 ? segment[..separatorIndex] : segment);
             if (string.IsNullOrEmpty(tagKey)) {
                 throw new ArgumentException($"The '{TaggingHeaderName}' header must contain non-empty tag keys.");
             }
 
-            if (tagValues.Count > 1 || tags.ContainsKey(tagKey)) {
+            var tagValue = DecodeTaggingHeaderComponent(separatorIndex >= 0 ? segment[(separatorIndex + 1)..] : string.Empty);
+            if (!tags.TryAdd(tagKey, tagValue)) {
                 throw new ArgumentException($"The '{TaggingHeaderName}' header cannot contain duplicate tag key '{tagKey}'.");
             }
-
-            tags[tagKey] = tagValues.ToString();
         }
 
         return tags;
+    }
+
+    private static string DecodeTaggingHeaderComponent(string rawValue)
+    {
+        if (rawValue.IndexOf('%') < 0) {
+            return rawValue;
+        }
+
+        var builder = new StringBuilder(rawValue.Length);
+        var pendingBytes = new byte[rawValue.Length];
+        var pendingByteCount = 0;
+
+        for (var index = 0; index < rawValue.Length; index++) {
+            if (rawValue[index] == '%') {
+                pendingBytes[pendingByteCount++] = ParsePercentEncodedTaggingHeaderByte(rawValue, index);
+                index += 2;
+                continue;
+            }
+
+            FlushDecodedTaggingHeaderBytes(builder, pendingBytes, ref pendingByteCount);
+            builder.Append(rawValue[index]);
+        }
+
+        FlushDecodedTaggingHeaderBytes(builder, pendingBytes, ref pendingByteCount);
+        return builder.ToString();
+    }
+
+    private static byte ParsePercentEncodedTaggingHeaderByte(string rawValue, int percentIndex)
+    {
+        if (percentIndex + 2 >= rawValue.Length
+            || !TryParseHexDigit(rawValue[percentIndex + 1], out var highNibble)
+            || !TryParseHexDigit(rawValue[percentIndex + 2], out var lowNibble)) {
+            throw new ArgumentException($"The '{TaggingHeaderName}' header contains invalid percent-encoding.");
+        }
+
+        return (byte)((highNibble << 4) | lowNibble);
+    }
+
+    private static void FlushDecodedTaggingHeaderBytes(StringBuilder builder, byte[] pendingBytes, ref int pendingByteCount)
+    {
+        if (pendingByteCount == 0) {
+            return;
+        }
+
+        try {
+            builder.Append(StrictTaggingHeaderEncoding.GetString(pendingBytes, 0, pendingByteCount));
+        }
+        catch (DecoderFallbackException) {
+            throw new ArgumentException($"The '{TaggingHeaderName}' header contains invalid UTF-8.");
+        }
+
+        pendingByteCount = 0;
+    }
+
+    private static bool TryParseHexDigit(char value, out int digit)
+    {
+        digit = value switch
+        {
+            >= '0' and <= '9' => value - '0',
+            >= 'A' and <= 'F' => value - 'A' + 10,
+            >= 'a' and <= 'f' => value - 'a' + 10,
+            _ => -1
+        };
+
+        return digit >= 0;
     }
 
     private static string? ParseVersionId(HttpRequest request)
@@ -5198,17 +7412,91 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
     private static string? FindUnsupportedServerSideEncryptionHeader(HttpRequest request)
     {
         foreach (var headerName in request.Headers.Keys) {
-            if (headerName.StartsWith(CopySourceServerSideEncryptionHeaderPrefix, StringComparison.OrdinalIgnoreCase)) {
+            if (headerName.StartsWith(CopySourceServerSideEncryptionHeaderPrefix, StringComparison.OrdinalIgnoreCase)
+                && !SupportedCopySourceCustomerServerSideEncryptionRequestHeaders.Contains(headerName)) {
                 return headerName;
             }
 
             if (headerName.StartsWith(ServerSideEncryptionHeaderPrefix, StringComparison.OrdinalIgnoreCase)
-                && !SupportedManagedServerSideEncryptionRequestHeaders.Contains(headerName)) {
+                && !SupportedManagedServerSideEncryptionRequestHeaders.Contains(headerName)
+                && !SupportedCustomerServerSideEncryptionRequestHeaders.Contains(headerName)) {
                 return headerName;
             }
         }
 
         return null;
+    }
+
+    private static (ObjectCustomerEncryptionSettings? Settings, IResult? Error) TryParseCustomerEncryptionSettings(
+        HttpRequest request, string? resource = null, string? bucketName = null, string? key = null)
+    {
+        var algorithm = request.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName].FirstOrDefault();
+        if (string.IsNullOrEmpty(algorithm))
+            return (null, null);
+
+        if (!string.Equals(algorithm, "AES256", StringComparison.OrdinalIgnoreCase)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                $"The SSE customer algorithm '{algorithm}' is not supported. Only AES256 is supported.",
+                resource, bucketName, key));
+        }
+
+        var keyValue = request.Headers[ServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
+        var keyMd5 = request.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName].FirstOrDefault();
+
+        if (string.IsNullOrEmpty(keyValue) || string.IsNullOrEmpty(keyMd5)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                "SSE-C requires x-amz-server-side-encryption-customer-algorithm, x-amz-server-side-encryption-customer-key, and x-amz-server-side-encryption-customer-key-MD5 headers.",
+                resource, bucketName, key));
+        }
+
+        return (new ObjectCustomerEncryptionSettings
+        {
+            Algorithm = algorithm,
+            Key = keyValue,
+            KeyMd5 = keyMd5
+        }, null);
+    }
+
+    private static (ObjectCustomerEncryptionSettings? Settings, IResult? Error) TryParseCopySourceCustomerEncryptionSettings(
+        HttpRequest request, string? resource = null, string? bucketName = null, string? key = null)
+    {
+        var algorithm = request.Headers[CopySourceServerSideEncryptionCustomerAlgorithmHeaderName].FirstOrDefault();
+        if (string.IsNullOrEmpty(algorithm))
+            return (null, null);
+
+        if (!string.Equals(algorithm, "AES256", StringComparison.OrdinalIgnoreCase)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                $"The SSE-C copy source algorithm '{algorithm}' is not supported. Only AES256 is supported.",
+                resource, bucketName, key));
+        }
+
+        var keyValue = request.Headers[CopySourceServerSideEncryptionCustomerKeyHeaderName].FirstOrDefault();
+        var keyMd5 = request.Headers[CopySourceServerSideEncryptionCustomerKeyMd5HeaderName].FirstOrDefault();
+
+        if (string.IsNullOrEmpty(keyValue) || string.IsNullOrEmpty(keyMd5)) {
+            return (null, ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidArgument",
+                "SSE-C copy source requires x-amz-copy-source-server-side-encryption-customer-algorithm, x-amz-copy-source-server-side-encryption-customer-key, and x-amz-copy-source-server-side-encryption-customer-key-MD5 headers.",
+                resource, bucketName, key));
+        }
+
+        return (new ObjectCustomerEncryptionSettings
+        {
+            Algorithm = algorithm,
+            Key = keyValue,
+            KeyMd5 = keyMd5
+        }, null);
     }
 
     private static bool TryNormalizeServerSideEncryptionAlgorithm(string rawValue, out ObjectServerSideEncryptionAlgorithm algorithm)
@@ -5353,6 +7641,27 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         };
     }
 
+    private static S3BucketEncryptionRule ToS3BucketEncryptionRule(BucketDefaultEncryptionRule rule)
+    {
+        if (rule.Algorithm == ObjectServerSideEncryptionAlgorithm.Aes256
+            && !string.IsNullOrWhiteSpace(rule.KeyId)) {
+            throw new InvalidOperationException("AES256 bucket default encryption does not support key identifiers.");
+        }
+
+        var algorithm = ToS3ServerSideEncryptionValue(rule.Algorithm)
+            ?? throw new InvalidOperationException($"Unsupported bucket default encryption algorithm '{rule.Algorithm}'.");
+
+        return new S3BucketEncryptionRule
+        {
+            DefaultEncryption = new S3BucketEncryptionByDefault
+            {
+                SseAlgorithm = algorithm,
+                KmsMasterKeyId = string.IsNullOrWhiteSpace(rule.KeyId) ? null : rule.KeyId
+            },
+            BucketKeyEnabled = rule.BucketKeyEnabled ? true : null
+        };
+    }
+
     private static BucketCorsMethod ToBucketCorsMethod(string method)
     {
         return method switch
@@ -5381,35 +7690,68 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static bool TryParseRequestChecksums(
         HttpRequest request,
-        IReadOnlyDictionary<string, string>? trailerHeaders,
+        PreparedRequestBody? preparedBody,
         bool requireChecksumValueForDeclaredAlgorithm,
         out string? checksumAlgorithm,
         out IReadOnlyDictionary<string, string>? checksums,
         out IResult? errorResult)
     {
+        var trailerHeaders = preparedBody?.TrailerHeaders;
+
         if (!TryGetRequestChecksumAlgorithm(request, out checksumAlgorithm, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
+        if (!TryValidateAwsChunkedChecksumTrailers(request, trailerHeaders, preparedBody?.TrailerHeaderEntries, out var declaredTrailerHeaders, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
+        if (!TryValidateDeclaredChecksumTrailerHeaders(request, trailerHeaders, declaredTrailerHeaders, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
+        if (!TryValidateAwsChunkedTrailerSignature(request, preparedBody, out errorResult)) {
             checksums = null;
             return false;
         }
 
         var parsedChecksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        var checksumSha256 = GetRequestHeaderValue(request, trailerHeaders, ChecksumSha256HeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumSha256HeaderName, out var checksumSha256, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumSha256)) {
             parsedChecksums["sha256"] = checksumSha256.Trim();
         }
 
-        var checksumSha1 = GetRequestHeaderValue(request, trailerHeaders, ChecksumSha1HeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumSha1HeaderName, out var checksumSha1, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumSha1)) {
             parsedChecksums["sha1"] = checksumSha1.Trim();
         }
 
-        var checksumCrc32 = GetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32HeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32HeaderName, out var checksumCrc32, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumCrc32)) {
             parsedChecksums["crc32"] = checksumCrc32.Trim();
         }
 
-        var checksumCrc32c = GetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32cHeaderName);
+        if (!TryGetRequestHeaderValue(request, trailerHeaders, ChecksumCrc32cHeaderName, out var checksumCrc32c, out errorResult)) {
+            checksums = null;
+            return false;
+        }
+
         if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
             parsedChecksums["crc32c"] = checksumCrc32c.Trim();
         }
@@ -5477,6 +7819,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             return false;
         }
 
+        // Content-MD5 is the standard HTTP integrity header used by rclone and other S3 clients.
+        // Unlike x-amz-checksum-* headers, Content-MD5 can coexist with them, so it is added
+        // after the multiple-checksum-type validation.
+        var contentMd5 = request.Headers[HeaderNames.ContentMD5].ToString();
+        if (!string.IsNullOrWhiteSpace(contentMd5)) {
+            parsedChecksums["md5"] = contentMd5.Trim();
+        }
+
         if (parsedChecksums.Count == 0) {
             checksums = null;
             errorResult = null;
@@ -5488,20 +7838,323 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return true;
     }
 
-    private static string GetRequestHeaderValue(HttpRequest request, IReadOnlyDictionary<string, string>? trailerHeaders, string headerName)
+    private static bool TryValidateAwsChunkedChecksumTrailers(
+        HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries,
+        out HashSet<string>? declaredTrailerHeaders,
+        out IResult? errorResult)
+    {
+        if (!TryParseTrailerHeaderNames(request, out declaredTrailerHeaders, out errorResult)) {
+            return false;
+        }
+
+        var usesTrailerBackedPayloadHash = IsTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString());
+        var requiresTrailerSignature = IsSignedTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString());
+        var actualTrailerHeaderNames = trailerHeaderEntries is null
+            ? []
+            : trailerHeaderEntries
+                .Where(static trailerHeader => !string.Equals(trailerHeader.Key, AwsTrailerSignatureHeaderName, StringComparison.OrdinalIgnoreCase))
+                .Select(static trailerHeader => trailerHeader.Key)
+                .ToArray();
+        var actualChecksumTrailerHeaderNames = actualTrailerHeaderNames
+            .Where(IsChecksumHeaderName)
+            .ToArray();
+        var declaredChecksumTrailerHeaders = declaredTrailerHeaders is null
+            ? []
+            : declaredTrailerHeaders.Where(IsChecksumHeaderName).ToArray();
+        var hasDeclaredTrailers = declaredTrailerHeaders is { Count: > 0 };
+        var requiresTrailerValidation = usesTrailerBackedPayloadHash
+            || actualChecksumTrailerHeaderNames.Length > 0
+            || declaredChecksumTrailerHeaders.Length > 0;
+
+        if (!requiresTrailerValidation) {
+            errorResult = null;
+            return true;
+        }
+
+        if (!IsAwsChunkedContent(request)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{request.Headers[AwsContentSha256HeaderName].ToString().Trim()}' payload hash requires the '{HeaderNames.ContentEncoding}: aws-chunked' request header.",
+                resource: null);
+            return false;
+        }
+
+        if (!hasDeclaredTrailers) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"Missing required header for this request: {AwsTrailerHeaderName}",
+                resource: null);
+            return false;
+        }
+
+        if (requiresTrailerSignature
+            && (trailerHeaders is null
+                || !trailerHeaders.ContainsKey(AwsTrailerSignatureHeaderName))) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when a signed streaming payload hash is used.",
+                resource: null);
+            return false;
+        }
+
+        var duplicateChecksumTrailerHeader = actualChecksumTrailerHeaderNames
+            .GroupBy(static headerName => headerName, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(static group => group.Count() > 1);
+        if (duplicateChecksumTrailerHeader is not null) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked trailer header '{duplicateChecksumTrailerHeader.Key}' must not be repeated.",
+                resource: null);
+            return false;
+        }
+
+        if (usesTrailerBackedPayloadHash && actualTrailerHeaderNames.Length == 0) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the trailer headers declared by '{AwsTrailerHeaderName}'.",
+                resource: null);
+            return false;
+        }
+
+        foreach (var trailerHeaderName in actualTrailerHeaderNames) {
+            if (!usesTrailerBackedPayloadHash && !IsChecksumHeaderName(trailerHeaderName)) {
+                continue;
+            }
+
+            if (declaredTrailerHeaders!.Contains(trailerHeaderName)) {
+                continue;
+            }
+
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked trailer header '{trailerHeaderName}' must be declared in the '{AwsTrailerHeaderName}' header.",
+                resource: null);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryValidateAwsChunkedTrailerSignature(
+        HttpRequest request,
+        PreparedRequestBody? preparedBody,
+        out IResult? errorResult)
+    {
+        if (!IsSignedTrailerBackedStreamingPayloadHash(request.Headers[AwsContentSha256HeaderName].ToString())) {
+            errorResult = null;
+            return true;
+        }
+
+        if (preparedBody?.TrailerHeaders is null
+            || !preparedBody.TrailerHeaders.TryGetValue(AwsTrailerSignatureHeaderName, out var trailerSignature)
+            || string.IsNullOrWhiteSpace(trailerSignature)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the '{AwsTrailerSignatureHeaderName}' trailer header when a signed streaming payload hash is used.",
+                resource: null);
+            return false;
+        }
+
+        if (!AwsChunkedTrailerSigningContextStore.TryGet(request.HttpContext, out var signingContext)) {
+            errorResult = null;
+            return true;
+        }
+
+        var finalChunkSignature = preparedBody.FinalChunkSignature;
+        if (string.IsNullOrWhiteSpace(finalChunkSignature)) {
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The aws-chunked request body must include the zero-length chunk signature required to validate '{AwsTrailerSignatureHeaderName}'.",
+                resource: null);
+            return false;
+        }
+
+        var trailerPayload = S3SigV4Signer.BuildCanonicalStreamingTrailerHeaders(
+            preparedBody.TrailerHeaderEntries ?? Array.Empty<KeyValuePair<string, string>>());
+
+        if (signingContext.IsSigV4a) {
+            var sigV4aCredentialScope = S3SigV4aSigner.BuildCredentialScopeString(
+                signingContext.CredentialScope.DateStamp,
+                signingContext.CredentialScope.Service);
+            var sigV4aStringToSign = S3SigV4aSigner.BuildStreamingTrailerStringToSign(
+                signingContext.SignedAtUtc,
+                sigV4aCredentialScope,
+                finalChunkSignature,
+                S3SigV4Signer.ComputeSha256Hex(trailerPayload));
+            using var ecdsaKey = S3SigV4aSigner.DeriveEcdsaKey(signingContext.SecretAccessKey, signingContext.AccessKeyId!);
+            if (S3SigV4aSigner.VerifySignature(ecdsaKey, sigV4aStringToSign, trailerSignature.Trim())) {
+                errorResult = null;
+                return true;
+            }
+        }
+        else {
+            var stringToSign = S3SigV4Signer.BuildStreamingTrailerStringToSign(
+                signingContext.SignedAtUtc,
+                signingContext.CredentialScope,
+                finalChunkSignature,
+                S3SigV4Signer.ComputeSha256Hex(trailerPayload));
+            var expectedSignature = S3SigV4Signer.ComputeSignature(signingContext.SecretAccessKey, signingContext.CredentialScope, stringToSign);
+            if (FixedTimeEqualsOrdinalIgnoreCase(expectedSignature, trailerSignature.Trim())) {
+                errorResult = null;
+                return true;
+            }
+        }
+
+        errorResult = ToErrorResult(
+            request.HttpContext,
+            StatusCodes.Status403Forbidden,
+            "SignatureDoesNotMatch",
+            "The request signature we calculated does not match the signature you provided.",
+            resource: null);
+        return false;
+    }
+
+    private static bool TryValidateDeclaredChecksumTrailerHeaders(
+        HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        HashSet<string>? declaredTrailerHeaders,
+        out IResult? errorResult)
+    {
+        if (declaredTrailerHeaders is null || declaredTrailerHeaders.Count == 0) {
+            errorResult = null;
+            return true;
+        }
+
+        foreach (var declaredTrailerHeader in declaredTrailerHeaders) {
+            if (!IsChecksumHeaderName(declaredTrailerHeader)) {
+                continue;
+            }
+
+            if (trailerHeaders is not null
+                && trailerHeaders.TryGetValue(declaredTrailerHeader, out var trailerHeaderValue)
+                && !string.IsNullOrWhiteSpace(trailerHeaderValue)) {
+                continue;
+            }
+
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{AwsTrailerHeaderName}' header declared '{declaredTrailerHeader}', but the aws-chunked trailer did not include that checksum header.",
+                resource: null);
+            return false;
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryParseTrailerHeaderNames(HttpRequest request, out HashSet<string>? trailerHeaders, out IResult? errorResult)
+    {
+        var rawValue = request.Headers[AwsTrailerHeaderName].ToString();
+        if (string.IsNullOrWhiteSpace(rawValue)) {
+            trailerHeaders = null;
+            errorResult = null;
+            return true;
+        }
+
+        trailerHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var headerSegment in rawValue.Split(',')) {
+            var headerName = headerSegment.Trim();
+            if (headerName.Length == 0) {
+                errorResult = ToErrorResult(
+                    request.HttpContext,
+                    StatusCodes.Status400BadRequest,
+                    "InvalidRequest",
+                    $"The '{AwsTrailerHeaderName}' header must contain a comma-separated list of trailer header names.",
+                    resource: null);
+                trailerHeaders = null;
+                return false;
+            }
+
+            trailerHeaders.Add(headerName);
+        }
+
+        errorResult = null;
+        return true;
+    }
+
+    private static bool TryGetRequestHeaderValue(
+        HttpRequest request,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        string headerName,
+        out string value,
+        out IResult? errorResult)
     {
         var requestHeaderValue = request.Headers[headerName].ToString();
-        if (!string.IsNullOrWhiteSpace(requestHeaderValue)) {
-            return requestHeaderValue;
+        var hasRequestHeaderValue = !string.IsNullOrWhiteSpace(requestHeaderValue);
+
+        var trailerHeaderValue = string.Empty;
+        var hasTrailerHeaderValue = trailerHeaders is not null
+            && trailerHeaders.TryGetValue(headerName, out trailerHeaderValue)
+            && !string.IsNullOrWhiteSpace(trailerHeaderValue);
+
+        if (hasRequestHeaderValue && hasTrailerHeaderValue) {
+            value = string.Empty;
+            errorResult = ToErrorResult(
+                request.HttpContext,
+                StatusCodes.Status400BadRequest,
+                "InvalidRequest",
+                $"The '{headerName}' checksum cannot be sent in both the request headers and the aws-chunked trailers.",
+                resource: null);
+            return false;
         }
 
-        if (trailerHeaders is not null
-            && trailerHeaders.TryGetValue(headerName, out var trailerHeaderValue)
-            && !string.IsNullOrWhiteSpace(trailerHeaderValue)) {
-            return trailerHeaderValue;
+        if (hasRequestHeaderValue) {
+            value = requestHeaderValue.Trim();
+            errorResult = null;
+            return true;
         }
 
-        return string.Empty;
+        if (hasTrailerHeaderValue) {
+            value = trailerHeaderValue!.Trim();
+            errorResult = null;
+            return true;
+        }
+
+        value = string.Empty;
+        errorResult = null;
+        return true;
+    }
+
+    private static bool IsTrailerBackedStreamingPayloadHash(string? payloadHash)
+    {
+        return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash?.Trim(), StreamingAwsEcdsaSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash?.Trim(), StreamingUnsignedPayloadTrailer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSignedTrailerBackedStreamingPayloadHash(string? payloadHash)
+    {
+        return string.Equals(payloadHash?.Trim(), StreamingAws4HmacSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(payloadHash?.Trim(), StreamingAwsEcdsaSha256PayloadTrailer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsChecksumHeaderName(string headerName)
+    {
+        return string.Equals(headerName, ChecksumSha256HeaderName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headerName, ChecksumSha1HeaderName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headerName, ChecksumCrc32HeaderName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(headerName, ChecksumCrc32cHeaderName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetRequestChecksumAlgorithm(HttpRequest request, out string? checksumAlgorithm, out IResult? errorResult)
@@ -5869,7 +8522,24 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         ApplyVersionIdHeader(httpResponse, objectInfo.VersionId);
 
         ApplyChecksumHeaders(httpResponse, objectInfo.Checksums);
+        ApplyObjectLockHeaders(httpResponse, objectInfo);
         ApplyServerSideEncryptionHeaders(httpResponse, objectInfo.ServerSideEncryption);
+        EmitCustomerEncryptionResponseHeaders(httpResponse, objectInfo.CustomerEncryption);
+    }
+
+    private static void ApplyObjectLockHeaders(HttpResponse httpResponse, ObjectInfo objectInfo)
+    {
+        if (objectInfo.RetentionMode is { } retentionMode) {
+            httpResponse.Headers[ObjectLockModeHeaderName] = ToS3RetentionMode(retentionMode);
+        }
+
+        if (objectInfo.RetainUntilDateUtc is { } retainUntilDateUtc) {
+            httpResponse.Headers[ObjectLockRetainUntilDateHeaderName] = XmlConvert.ToString(retainUntilDateUtc.UtcDateTime, XmlDateTimeSerializationMode.Utc);
+        }
+
+        if (objectInfo.LegalHoldStatus is { } legalHoldStatus) {
+            httpResponse.Headers[ObjectLockLegalHoldHeaderName] = ToS3LegalHoldStatus(legalHoldStatus);
+        }
     }
 
     private static void ApplyVersionIdHeader(HttpResponse httpResponse, string? versionId)
@@ -5889,6 +8559,11 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         var checksumCrc32c = GetChecksumValue(checksums, "crc32c");
         if (!string.IsNullOrWhiteSpace(checksumCrc32c)) {
             httpResponse.Headers[ChecksumCrc32cHeaderName] = checksumCrc32c;
+        }
+
+        var checksumCrc64Nvme = GetChecksumValue(checksums, "crc64nvme");
+        if (!string.IsNullOrWhiteSpace(checksumCrc64Nvme)) {
+            httpResponse.Headers[ChecksumCrc64NvmeHeaderName] = checksumCrc64Nvme;
         }
 
         var checksumSha1 = GetChecksumValue(checksums, "sha1");
@@ -5915,6 +8590,23 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private static bool IsChecksumModeEnabled(HttpRequest request)
+    {
+        return string.Equals(
+            request.Headers[ChecksumModeHeaderName].ToString().Trim(),
+            "ENABLED",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void RemoveChecksumValueHeaders(HttpResponse httpResponse)
+    {
+        httpResponse.Headers.Remove(ChecksumCrc32HeaderName);
+        httpResponse.Headers.Remove(ChecksumCrc32cHeaderName);
+        httpResponse.Headers.Remove(ChecksumSha1HeaderName);
+        httpResponse.Headers.Remove(ChecksumSha256HeaderName);
+        httpResponse.Headers.Remove(ChecksumTypeHeaderName);
+    }
+
     private static void ApplyServerSideEncryptionHeaders(HttpResponse httpResponse, ObjectServerSideEncryptionInfo? serverSideEncryption)
     {
         if (serverSideEncryption is null) {
@@ -5931,6 +8623,42 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             && !string.IsNullOrWhiteSpace(serverSideEncryption.KeyId)) {
             httpResponse.Headers[ServerSideEncryptionAwsKmsKeyIdHeaderName] = serverSideEncryption.KeyId;
         }
+
+        if (serverSideEncryption.BucketKeyEnabled) {
+            httpResponse.Headers[ServerSideEncryptionBucketKeyEnabledHeaderName] = "true";
+        }
+    }
+
+    private static void EmitCustomerEncryptionResponseHeaders(HttpResponse httpResponse, ObjectCustomerEncryptionInfo? customerEncryption)
+    {
+        if (customerEncryption is null) {
+            return;
+        }
+
+        httpResponse.Headers[ServerSideEncryptionCustomerAlgorithmHeaderName] = customerEncryption.Algorithm;
+        httpResponse.Headers[ServerSideEncryptionCustomerKeyMd5HeaderName] = customerEncryption.KeyMd5;
+    }
+
+    private static string? ToS3RetentionMode(ObjectRetentionMode? mode)
+    {
+        return mode switch
+        {
+            ObjectRetentionMode.Governance => "GOVERNANCE",
+            ObjectRetentionMode.Compliance => "COMPLIANCE",
+            null => null,
+            _ => throw new InvalidOperationException($"Unsupported object retention mode '{mode}'.")
+        };
+    }
+
+    private static string? ToS3LegalHoldStatus(ObjectLegalHoldStatus? status)
+    {
+        return status switch
+        {
+            ObjectLegalHoldStatus.On => "ON",
+            ObjectLegalHoldStatus.Off => "OFF",
+            null => null,
+            _ => throw new InvalidOperationException($"Unsupported object legal-hold status '{status}'.")
+        };
     }
 
     private static string? GetChecksumValue(IReadOnlyDictionary<string, string>? checksums, string algorithm)
@@ -5968,6 +8696,36 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         return null;
     }
 
+    private static string? GetResponseChecksumAlgorithm(IReadOnlyDictionary<string, string>? checksums)
+    {
+        if (checksums is null) {
+            return null;
+        }
+
+        string? algorithm = null;
+        foreach (var checksum in checksums) {
+            if (string.IsNullOrWhiteSpace(checksum.Value)) {
+                continue;
+            }
+
+            var normalizedAlgorithm = NormalizeResponseChecksumAlgorithm(checksum.Key);
+            if (normalizedAlgorithm is null) {
+                continue;
+            }
+
+            if (algorithm is null) {
+                algorithm = normalizedAlgorithm;
+                continue;
+            }
+
+            if (!string.Equals(algorithm, normalizedAlgorithm, StringComparison.Ordinal)) {
+                return null;
+            }
+        }
+
+        return algorithm;
+    }
+
     private static bool IsCompositeChecksumValue(string? checksum)
     {
         if (string.IsNullOrWhiteSpace(checksum)) {
@@ -5981,6 +8739,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         return int.TryParse(checksum[(separatorIndex + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var partCount)
             && partCount > 0;
+    }
+
+    private static string? NormalizeResponseChecksumAlgorithm(string? checksumAlgorithm)
+    {
+        if (string.IsNullOrWhiteSpace(checksumAlgorithm)) {
+            return null;
+        }
+
+        if (string.Equals(checksumAlgorithm, "sha256", StringComparison.OrdinalIgnoreCase)) {
+            return "sha256";
+        }
+
+        if (string.Equals(checksumAlgorithm, "sha1", StringComparison.OrdinalIgnoreCase)) {
+            return "sha1";
+        }
+
+        if (string.Equals(checksumAlgorithm, "crc32", StringComparison.OrdinalIgnoreCase)) {
+            return "crc32";
+        }
+
+        if (string.Equals(checksumAlgorithm, "crc32c", StringComparison.OrdinalIgnoreCase)) {
+            return "crc32c";
+        }
+
+        if (string.Equals(checksumAlgorithm, "crc64nvme", StringComparison.OrdinalIgnoreCase)) {
+            return "crc64nvme";
+        }
+
+        return null;
     }
 
     private static string? ToS3ChecksumAlgorithmValue(string? checksumAlgorithm)
@@ -6157,6 +8944,103 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
+    private sealed class MultiRangeStreamObjectResult(
+        IStorageService storageService,
+        string bucketName,
+        string key,
+        string? versionId,
+        string? ifMatchETag,
+        string? ifNoneMatchETag,
+        DateTimeOffset? ifModifiedSinceUtc,
+        DateTimeOffset? ifUnmodifiedSinceUtc,
+        ObjectCustomerEncryptionSettings? customerEncryption,
+        ObjectRange[] ranges,
+        bool checksumModeEnabled) : IResult
+    {
+        public async Task ExecuteAsync(HttpContext httpContext)
+        {
+            ArgumentNullException.ThrowIfNull(httpContext);
+
+            var boundary = Guid.NewGuid().ToString("N");
+
+            // Fetch the first range to get object metadata and total size.
+            var firstResult = await storageService.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                VersionId = versionId,
+                Range = ranges[0],
+                IfMatchETag = ifMatchETag,
+                IfNoneMatchETag = ifNoneMatchETag,
+                IfModifiedSinceUtc = ifModifiedSinceUtc,
+                IfUnmodifiedSinceUtc = ifUnmodifiedSinceUtc,
+                CustomerEncryption = customerEncryption
+            }, httpContext.RequestAborted);
+
+            if (!firstResult.IsSuccess) {
+                httpContext.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+                return;
+            }
+
+            await using var firstResponse = firstResult.Value!;
+
+            ApplyObjectHeaders(httpContext.Response, firstResponse.Object);
+            ApplyObjectTaggingCountHeader(httpContext.Response, firstResponse.Object);
+            httpContext.Response.Headers.AcceptRanges = "bytes";
+
+            if (firstResponse.IsNotModified) {
+                httpContext.Response.StatusCode = StatusCodes.Status304NotModified;
+                return;
+            }
+
+            var totalLength = firstResponse.TotalContentLength;
+            var contentType = firstResponse.Object.ContentType ?? "application/octet-stream";
+
+            httpContext.Response.StatusCode = StatusCodes.Status206PartialContent;
+            httpContext.Response.ContentType = $"multipart/byteranges; boundary={boundary}";
+            httpContext.Response.ContentLength = null;
+
+            var body = httpContext.Response.Body;
+            var ct = httpContext.RequestAborted;
+            var encoding = Encoding.UTF8;
+
+            // Write first range part.
+            await WriteRangePartAsync(body, boundary, contentType, firstResponse.Range!, totalLength, firstResponse.Content, encoding, ct);
+
+            // Fetch and write subsequent range parts.
+            for (var i = 1; i < ranges.Length; i++) {
+                var rangeResult = await storageService.GetObjectAsync(new GetObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = versionId,
+                    Range = ranges[i],
+                    CustomerEncryption = customerEncryption
+                }, ct);
+
+                if (!rangeResult.IsSuccess) {
+                    break;
+                }
+
+                await using var rangeResponse = rangeResult.Value!;
+                await WriteRangePartAsync(body, boundary, contentType, rangeResponse.Range!, totalLength, rangeResponse.Content, encoding, ct);
+            }
+
+            // Write closing boundary.
+            await body.WriteAsync(encoding.GetBytes($"\r\n--{boundary}--\r\n"), ct);
+        }
+
+        private static async Task WriteRangePartAsync(
+            Stream body, string boundary, string contentType,
+            ObjectRange range, long totalLength, Stream content,
+            Encoding encoding, CancellationToken cancellationToken)
+        {
+            var header = $"\r\n--{boundary}\r\nContent-Type: {contentType}\r\nContent-Range: bytes {range.Start}-{range.End}/{totalLength}\r\n\r\n";
+            await body.WriteAsync(encoding.GetBytes(header), cancellationToken);
+            await content.CopyToAsync(body, cancellationToken);
+        }
+    }
+
     private sealed class EndpointStorageAuthorizationException(StorageError error) : Exception(error.Message)
     {
         public StorageError Error { get; } = error;
@@ -6174,13 +9058,35 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private sealed class PreparedRequestBody(Stream content, long? contentLength, string? tempFilePath, IReadOnlyDictionary<string, string>? trailerHeaders) : IAsyncDisposable
+    private static bool FixedTimeEqualsOrdinal(string expected, string actual)
+    {
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(expected),
+            Encoding.UTF8.GetBytes(actual));
+    }
+
+    private static bool FixedTimeEqualsOrdinalIgnoreCase(string expected, string actual)
+    {
+        return FixedTimeEqualsOrdinal(expected.ToUpperInvariant(), actual.ToUpperInvariant());
+    }
+
+    private sealed class PreparedRequestBody(
+        Stream content,
+        long? contentLength,
+        string? tempFilePath,
+        IReadOnlyDictionary<string, string>? trailerHeaders,
+        IReadOnlyList<KeyValuePair<string, string>>? trailerHeaderEntries,
+        string? finalChunkSignature) : IAsyncDisposable
     {
         public Stream Content { get; } = content;
 
         public long? ContentLength { get; } = contentLength;
 
         public IReadOnlyDictionary<string, string>? TrailerHeaders { get; } = trailerHeaders;
+
+        public IReadOnlyList<KeyValuePair<string, string>>? TrailerHeaderEntries { get; } = trailerHeaderEntries;
+
+        public string? FinalChunkSignature { get; } = finalChunkSignature;
 
         public async ValueTask DisposeAsync()
         {
@@ -6269,6 +9175,8 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string CanonicalResourcePath,
         string CanonicalPath);
 
+    private readonly record struct AclHeaderGrantee(string Type, string Value);
+
     private sealed record CopySourceReference(string BucketName, string Key, string? VersionId);
 
     private sealed record ListBucketResultEntry(ObjectInfo? Object, string? CommonPrefix, string ContinuationToken)
@@ -6317,5 +9225,1947 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             ArgumentException.ThrowIfNullOrWhiteSpace(nextKeyMarker);
             return new ListMultipartUploadsResultEntry(null, commonPrefix, nextKeyMarker, nextUploadIdMarker);
         }
+    }
+
+    // ── Bucket Tagging ──────────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketTaggingAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketTaggingAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteBucketTagging(new S3BucketTagging
+                    {
+                        TagSet = result.Value!.Tags
+                            .OrderBy(static kv => kv.Key, StringComparer.Ordinal)
+                            .Select(static kv => new S3Tag { Key = kv.Key, Value = kv.Value })
+                            .ToArray()
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketTaggingAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3BucketTagging requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadBucketTaggingAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketTaggingAsync(new PutBucketTaggingRequest
+                {
+                    BucketName = bucketName,
+                    Tags = requestBody.TagSet.ToDictionary(static tag => tag.Key, static tag => tag.Value, StringComparer.Ordinal)
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketTaggingAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketTaggingAsync(new DeleteBucketTaggingRequest
+                {
+                    BucketName = bucketName
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Logging ──────────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketLoggingAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketLoggingAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteBucketLoggingStatus(new S3BucketLoggingStatus
+                    {
+                        LoggingEnabled = config.TargetBucket is not null
+                            ? new S3LoggingEnabled { TargetBucket = config.TargetBucket, TargetPrefix = config.TargetPrefix ?? string.Empty }
+                            : null
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketLoggingAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3BucketLoggingStatus requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadBucketLoggingStatusAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketLoggingAsync(new PutBucketLoggingRequest
+                {
+                    BucketName = bucketName,
+                    TargetBucket = requestBody.LoggingEnabled?.TargetBucket,
+                    TargetPrefix = requestBody.LoggingEnabled?.TargetPrefix
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Website ──────────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketWebsiteAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketWebsiteAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteWebsiteConfiguration(new S3WebsiteConfiguration
+                    {
+                        IndexDocument = config.IndexDocumentSuffix is not null ? new S3WebsiteIndexDocument { Suffix = config.IndexDocumentSuffix } : null,
+                        ErrorDocument = config.ErrorDocumentKey is not null ? new S3WebsiteErrorDocument { Key = config.ErrorDocumentKey } : null,
+                        RedirectAllRequestsTo = config.RedirectAllRequestsTo is not null
+                            ? new S3WebsiteRedirectAllRequestsTo { HostName = config.RedirectAllRequestsTo.HostName, Protocol = config.RedirectAllRequestsTo.Protocol }
+                            : null,
+                        RoutingRules = config.RoutingRules.Select(static r => new S3WebsiteRoutingRule
+                        {
+                            Condition = r.Condition is not null ? new S3WebsiteRoutingRuleCondition { KeyPrefixEquals = r.Condition.KeyPrefixEquals, HttpErrorCodeReturnedEquals = r.Condition.HttpErrorCodeReturnedEquals } : null,
+                            Redirect = new S3WebsiteRoutingRuleRedirect
+                            {
+                                HostName = r.Redirect.HostName,
+                                Protocol = r.Redirect.Protocol,
+                                ReplaceKeyPrefixWith = r.Redirect.ReplaceKeyPrefixWith,
+                                ReplaceKeyWith = r.Redirect.ReplaceKeyWith,
+                                HttpRedirectCode = r.Redirect.HttpRedirectCode
+                            }
+                        }).ToArray()
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketWebsiteAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3WebsiteConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadWebsiteConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketWebsiteAsync(new PutBucketWebsiteRequest
+                {
+                    BucketName = bucketName,
+                    IndexDocumentSuffix = requestBody.IndexDocument?.Suffix,
+                    ErrorDocumentKey = requestBody.ErrorDocument?.Key,
+                    RedirectAllRequestsTo = requestBody.RedirectAllRequestsTo is not null
+                        ? new BucketWebsiteRedirectAllRequestsTo { HostName = requestBody.RedirectAllRequestsTo.HostName, Protocol = requestBody.RedirectAllRequestsTo.Protocol }
+                        : null,
+                    RoutingRules = requestBody.RoutingRules.Select(static r => new BucketWebsiteRoutingRule
+                    {
+                        Condition = r.Condition is not null ? new BucketWebsiteRoutingRuleCondition { KeyPrefixEquals = r.Condition.KeyPrefixEquals, HttpErrorCodeReturnedEquals = r.Condition.HttpErrorCodeReturnedEquals } : null,
+                        Redirect = new BucketWebsiteRoutingRuleRedirect
+                        {
+                            HostName = r.Redirect.HostName,
+                            Protocol = r.Redirect.Protocol,
+                            ReplaceKeyPrefixWith = r.Redirect.ReplaceKeyPrefixWith,
+                            ReplaceKeyWith = r.Redirect.ReplaceKeyWith,
+                            HttpRedirectCode = r.Redirect.HttpRedirectCode
+                        }
+                    }).ToArray()
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketWebsiteAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketWebsiteAsync(new DeleteBucketWebsiteRequest
+                {
+                    BucketName = bucketName
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Request Payment ──────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketRequestPaymentAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketRequestPaymentAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var payer = result.Value!.Payer == BucketPayer.Requester ? "Requester" : "BucketOwner";
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteRequestPaymentConfiguration(new S3RequestPaymentConfiguration
+                    {
+                        Payer = payer
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketRequestPaymentAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3RequestPaymentConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadRequestPaymentConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        var payer = requestBody.Payer switch
+        {
+            "Requester" => BucketPayer.Requester,
+            "BucketOwner" => BucketPayer.BucketOwner,
+            _ => (BucketPayer?)null
+        };
+
+        if (payer is null) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "Payer must be 'BucketOwner' or 'Requester'.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketRequestPaymentAsync(new PutBucketRequestPaymentRequest
+                {
+                    BucketName = bucketName,
+                    Payer = payer.Value
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Accelerate ───────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketAccelerateAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketAccelerateAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var status = result.Value!.Status == BucketAccelerateStatus.Enabled ? "Enabled" : "Suspended";
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteAccelerateConfiguration(new S3AccelerateConfiguration
+                    {
+                        Status = status
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketAccelerateAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3AccelerateConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadAccelerateConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        var status = requestBody.Status switch
+        {
+            "Enabled" => BucketAccelerateStatus.Enabled,
+            "Suspended" => BucketAccelerateStatus.Suspended,
+            _ => (BucketAccelerateStatus?)null
+        };
+
+        if (status is null) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "Accelerate status must be 'Enabled' or 'Suspended'.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketAccelerateAsync(new PutBucketAccelerateRequest
+                {
+                    BucketName = bucketName,
+                    Status = status.Value
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Lifecycle ────────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketLifecycleAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketLifecycleAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteLifecycleConfiguration(new S3LifecycleConfiguration
+                    {
+                        Rules = result.Value!.Rules.Select(ToS3LifecycleRule).ToArray()
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketLifecycleAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3LifecycleConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadLifecycleConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketLifecycleAsync(new PutBucketLifecycleRequest
+                {
+                    BucketName = bucketName,
+                    Rules = requestBody.Rules.Select(ToBucketLifecycleRule).ToArray()
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketLifecycleAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketLifecycleAsync(new DeleteBucketLifecycleRequest
+                {
+                    BucketName = bucketName
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Replication ──────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketReplicationAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketReplicationAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteReplicationConfiguration(new S3ReplicationConfiguration
+                    {
+                        Role = config.Role,
+                        Rules = config.Rules.Select(ToS3ReplicationRule).ToArray()
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketReplicationAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3ReplicationConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadReplicationConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketReplicationAsync(new PutBucketReplicationRequest
+                {
+                    BucketName = bucketName,
+                    Role = requestBody.Role,
+                    Rules = requestBody.Rules.Select(ToBucketReplicationRule).ToArray()
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketReplicationAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketReplicationAsync(new DeleteBucketReplicationRequest
+                {
+                    BucketName = bucketName
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Notification ─────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketNotificationAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketNotificationConfigurationAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteNotificationConfiguration(new S3NotificationConfiguration
+                    {
+                        TopicConfigurations = config.TopicConfigurations.Select(static t => new S3TopicConfiguration
+                        {
+                            Id = t.Id,
+                            Topic = t.TopicArn,
+                            Events = t.Events,
+                            Filter = ToS3NotificationFilter(t.Filter)
+                        }).ToArray(),
+                        QueueConfigurations = config.QueueConfigurations.Select(static q => new S3QueueConfiguration
+                        {
+                            Id = q.Id,
+                            Queue = q.QueueArn,
+                            Events = q.Events,
+                            Filter = ToS3NotificationFilter(q.Filter)
+                        }).ToArray(),
+                        CloudFunctionConfigurations = config.LambdaFunctionConfigurations.Select(static l => new S3CloudFunctionConfiguration
+                        {
+                            Id = l.Id,
+                            CloudFunction = l.LambdaFunctionArn,
+                            Events = l.Events,
+                            Filter = ToS3NotificationFilter(l.Filter)
+                        }).ToArray()
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketNotificationAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3NotificationConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadNotificationConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketNotificationConfigurationAsync(new PutBucketNotificationConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    TopicConfigurations = requestBody.TopicConfigurations.Select(static t => new BucketNotificationTopicConfiguration
+                    {
+                        Id = t.Id,
+                        TopicArn = t.Topic,
+                        Events = t.Events,
+                        Filter = ToBucketNotificationFilter(t.Filter)
+                    }).ToArray(),
+                    QueueConfigurations = requestBody.QueueConfigurations.Select(static q => new BucketNotificationQueueConfiguration
+                    {
+                        Id = q.Id,
+                        QueueArn = q.Queue,
+                        Events = q.Events,
+                        Filter = ToBucketNotificationFilter(q.Filter)
+                    }).ToArray(),
+                    LambdaFunctionConfigurations = requestBody.CloudFunctionConfigurations.Select(static l => new BucketNotificationLambdaConfiguration
+                    {
+                        Id = l.Id,
+                        LambdaFunctionArn = l.CloudFunction,
+                        Events = l.Events,
+                        Filter = ToBucketNotificationFilter(l.Filter)
+                    }).ToArray()
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Object Lock ──────────────────────────────────────────────────
+
+    private static async Task<IResult> GetBucketObjectLockAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetObjectLockConfigurationAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteObjectLockConfiguration(new S3ObjectLockConfiguration
+                    {
+                        ObjectLockEnabled = config.ObjectLockEnabled ? "Enabled" : null,
+                        DefaultRetention = config.DefaultRetention is not null
+                            ? new S3ObjectLockDefaultRetention
+                            {
+                                Mode = ToS3RetentionMode(config.DefaultRetention.Mode),
+                                Days = config.DefaultRetention.Days,
+                                Years = config.DefaultRetention.Years
+                            }
+                            : null
+                    }),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketObjectLockAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3ObjectLockConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadObjectLockConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        ObjectLockDefaultRetention? defaultRetention = null;
+        if (requestBody.DefaultRetention is not null) {
+            var retentionMode = requestBody.DefaultRetention.Mode switch
+            {
+                "GOVERNANCE" => ObjectRetentionMode.Governance,
+                "COMPLIANCE" => ObjectRetentionMode.Compliance,
+                _ => (ObjectRetentionMode?)null
+            };
+
+            if (retentionMode is null && requestBody.DefaultRetention.Mode is not null) {
+                return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "Object lock default retention mode must be 'GOVERNANCE' or 'COMPLIANCE'.", BuildObjectResource(bucketName, null), bucketName);
+            }
+
+            defaultRetention = new ObjectLockDefaultRetention
+            {
+                Mode = retentionMode ?? ObjectRetentionMode.Governance,
+                Days = requestBody.DefaultRetention.Days,
+                Years = requestBody.DefaultRetention.Years
+            };
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutObjectLockConfigurationAsync(new PutObjectLockConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    ObjectLockEnabled = string.Equals(requestBody.ObjectLockEnabled, "Enabled", StringComparison.OrdinalIgnoreCase),
+                    DefaultRetention = defaultRetention
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Analytics ────────────────────────────────────────────────────
+
+    private static async Task<IResult> ListBucketAnalyticsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.ListBucketAnalyticsConfigurationsAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var configs = result.Value!;
+                var s3Result = new S3ListAnalyticsConfigurationsResult
+                {
+                    AnalyticsConfigurations = configs.Select(ToS3AnalyticsConfiguration).ToList(),
+                    IsTruncated = false
+                };
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteListAnalyticsConfigurations(s3Result),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> GetBucketAnalyticsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An analytics configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketAnalyticsConfigurationAsync(bucketName, id, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteAnalyticsConfiguration(ToS3AnalyticsConfiguration(config)),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketAnalyticsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3AnalyticsConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadAnalyticsConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        if (string.IsNullOrWhiteSpace(requestBody.Id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An analytics configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketAnalyticsConfigurationAsync(new PutBucketAnalyticsConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = requestBody.Id,
+                    FilterPrefix = requestBody.FilterPrefix,
+                    FilterTags = requestBody.FilterTags?.ToDictionary(static t => t.Key, static t => t.Value, StringComparer.Ordinal),
+                    StorageClassAnalysis = requestBody.StorageClassAnalysis is not null
+                        ? new BucketAnalyticsStorageClassAnalysis
+                        {
+                            DataExport = requestBody.StorageClassAnalysis.DataExport is not null
+                                ? new BucketAnalyticsDataExport
+                                {
+                                    OutputSchemaVersion = requestBody.StorageClassAnalysis.DataExport.OutputSchemaVersion,
+                                    Destination = requestBody.StorageClassAnalysis.DataExport.Destination is not null
+                                        ? new BucketAnalyticsS3BucketDestination
+                                        {
+                                            Format = requestBody.StorageClassAnalysis.DataExport.Destination.Format,
+                                            BucketAccountId = requestBody.StorageClassAnalysis.DataExport.Destination.BucketAccountId,
+                                            Bucket = requestBody.StorageClassAnalysis.DataExport.Destination.Bucket,
+                                            Prefix = requestBody.StorageClassAnalysis.DataExport.Destination.Prefix
+                                        }
+                                        : null
+                                }
+                                : null
+                        }
+                        : null
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketAnalyticsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An analytics configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketAnalyticsConfigurationAsync(new DeleteBucketAnalyticsConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = id
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Metrics ──────────────────────────────────────────────────────
+
+    private static async Task<IResult> ListBucketMetricsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.ListBucketMetricsConfigurationsAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var configs = result.Value!;
+                var s3Result = new S3ListMetricsConfigurationsResult
+                {
+                    MetricsConfigurations = configs.Select(ToS3MetricsConfiguration).ToList(),
+                    IsTruncated = false
+                };
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteListMetricsConfigurations(s3Result),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> GetBucketMetricsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "A metrics configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketMetricsConfigurationAsync(bucketName, id, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteMetricsConfiguration(ToS3MetricsConfiguration(config)),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketMetricsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3MetricsConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadMetricsConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        if (string.IsNullOrWhiteSpace(requestBody.Id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "A metrics configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketMetricsConfigurationAsync(new PutBucketMetricsConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = requestBody.Id,
+                    Filter = requestBody.Filter is not null
+                        ? new BucketMetricsFilter
+                        {
+                            Prefix = requestBody.Filter.Prefix,
+                            AccessPointArn = requestBody.Filter.AccessPointArn,
+                            Tags = requestBody.Filter.Tags.ToDictionary(static t => t.Key, static t => t.Value, StringComparer.Ordinal)
+                        }
+                        : null
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketMetricsAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "A metrics configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketMetricsConfigurationAsync(new DeleteBucketMetricsConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = id
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Inventory ────────────────────────────────────────────────────
+
+    private static async Task<IResult> ListBucketInventoryAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.ListBucketInventoryConfigurationsAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var configs = result.Value!;
+                var s3Result = new S3ListInventoryConfigurationsResult
+                {
+                    InventoryConfigurations = configs.Select(ToS3InventoryConfiguration).ToList(),
+                    IsTruncated = false
+                };
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteListInventoryConfigurations(s3Result),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> GetBucketInventoryAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An inventory configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketInventoryConfigurationAsync(bucketName, id, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteInventoryConfiguration(ToS3InventoryConfiguration(config)),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketInventoryAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3InventoryConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadInventoryConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        if (string.IsNullOrWhiteSpace(requestBody.Id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An inventory configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketInventoryConfigurationAsync(new PutBucketInventoryConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = requestBody.Id,
+                    IsEnabled = requestBody.IsEnabled,
+                    Destination = requestBody.Destination is not null
+                        ? new BucketInventoryDestination
+                        {
+                            S3BucketDestination = requestBody.Destination.S3BucketDestination is not null
+                                ? new BucketInventoryS3BucketDestination
+                                {
+                                    Format = requestBody.Destination.S3BucketDestination.Format,
+                                    AccountId = requestBody.Destination.S3BucketDestination.AccountId,
+                                    Bucket = requestBody.Destination.S3BucketDestination.Bucket,
+                                    Prefix = requestBody.Destination.S3BucketDestination.Prefix
+                                }
+                                : null
+                        }
+                        : null,
+                    Schedule = requestBody.Schedule is not null
+                        ? new BucketInventorySchedule { Frequency = requestBody.Schedule.Frequency }
+                        : null,
+                    Filter = requestBody.Filter is not null
+                        ? new BucketInventoryFilter { Prefix = requestBody.Filter.Prefix }
+                        : null,
+                    IncludedObjectVersions = requestBody.IncludedObjectVersions,
+                    OptionalFields = requestBody.OptionalFields
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketInventoryAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An inventory configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketInventoryConfigurationAsync(new DeleteBucketInventoryConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = id
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Bucket Intelligent-Tiering ──────────────────────────────────────────
+
+    private static async Task<IResult> ListBucketIntelligentTieringAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.ListBucketIntelligentTieringConfigurationsAsync(bucketName, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var configs = result.Value!;
+                var s3Result = new S3ListIntelligentTieringConfigurationsResult
+                {
+                    IntelligentTieringConfigurations = configs.Select(ToS3IntelligentTieringConfiguration).ToList(),
+                    IsTruncated = false
+                };
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteListIntelligentTieringConfigurations(s3Result),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> GetBucketIntelligentTieringAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An intelligent-tiering configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.GetBucketIntelligentTieringConfigurationAsync(bucketName, id, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+                }
+
+                var config = result.Value!;
+                return new XmlContentResult(
+                    S3XmlResponseWriter.WriteIntelligentTieringConfiguration(ToS3IntelligentTieringConfiguration(config)),
+                    StatusCodes.Status200OK,
+                    XmlContentType);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> PutBucketIntelligentTieringAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3IntelligentTieringConfiguration requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadIntelligentTieringConfigurationAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        if (string.IsNullOrWhiteSpace(requestBody.Id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An intelligent-tiering configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutBucketIntelligentTieringConfigurationAsync(new PutBucketIntelligentTieringConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = requestBody.Id,
+                    Status = requestBody.Status,
+                    Filter = requestBody.Filter is not null
+                        ? new BucketIntelligentTieringFilter
+                        {
+                            Prefix = requestBody.Filter.Prefix,
+                            Tags = requestBody.Filter.Tags.ToDictionary(static t => t.Key, static t => t.Value, StringComparer.Ordinal)
+                        }
+                        : null,
+                    Tierings = requestBody.Tierings.Select(static t => new BucketIntelligentTiering
+                    {
+                        AccessTier = t.AccessTier,
+                        Days = t.Days
+                    }).ToArray()
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    private static async Task<IResult> DeleteBucketIntelligentTieringAsync(
+        string bucketName,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        var id = httpContext.Request.Query[IdQueryParameterName].FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(id)) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "An intelligent-tiering configuration id is required.", BuildObjectResource(bucketName, null), bucketName);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.DeleteBucketIntelligentTieringConfigurationAsync(new DeleteBucketIntelligentTieringConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Id = id
+                }, innerCancellationToken);
+
+                return result.IsSuccess
+                    ? TypedResults.NoContent()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, null));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, null));
+        }
+    }
+
+    // ── Object Retention (PUT) ──────────────────────────────────────────────
+
+    private static async Task<IResult> PutObjectRetentionAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3ObjectRetention requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadObjectRetentionAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        ObjectRetentionMode? mode = requestBody.Mode switch
+        {
+            "GOVERNANCE" => ObjectRetentionMode.Governance,
+            "COMPLIANCE" => ObjectRetentionMode.Compliance,
+            null => null,
+            _ => (ObjectRetentionMode?)null
+        };
+
+        if (requestBody.Mode is not null && mode is null) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "Object retention mode must be 'GOVERNANCE' or 'COMPLIANCE'.", BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        var bypassGovernance = string.Equals(
+            httpContext.Request.Headers["x-amz-bypass-governance-retention"].FirstOrDefault(),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutObjectRetentionAsync(new PutObjectRetentionRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request),
+                    Mode = mode,
+                    RetainUntilDateUtc = requestBody.RetainUntilDateUtc,
+                    BypassGovernanceRetention = bypassGovernance
+                }, innerCancellationToken);
+
+                if (result.IsSuccess && result.Value is not null) {
+                    ApplyVersionIdHeader(httpContext.Response, result.Value.VersionId);
+                }
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    // ── Object Legal Hold (PUT) ─────────────────────────────────────────────
+
+    private static async Task<IResult> PutObjectLegalHoldAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3ObjectLegalHold requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadObjectLegalHoldAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        var status = requestBody.Status switch
+        {
+            "ON" => ObjectLegalHoldStatus.On,
+            "OFF" => ObjectLegalHoldStatus.Off,
+            _ => (ObjectLegalHoldStatus?)null
+        };
+
+        if (status is null) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "InvalidArgument", "Legal hold status must be 'ON' or 'OFF'.", BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.PutObjectLegalHoldAsync(new PutObjectLegalHoldRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request),
+                    Status = status.Value
+                }, innerCancellationToken);
+
+                if (result.IsSuccess && result.Value is not null) {
+                    ApplyVersionIdHeader(httpContext.Response, result.Value.VersionId);
+                }
+
+                return result.IsSuccess
+                    ? TypedResults.Ok()
+                    : ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    // ── Restore Object ──────────────────────────────────────────────────────
+
+    private static async Task<IResult> RestoreObjectAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        S3RestoreRequest requestBody;
+        try {
+            requestBody = await S3XmlRequestReader.ReadRestoreRequestAsync(httpContext.Request.Body, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.RestoreObjectAsync(new RestoreObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                    VersionId = ParseVersionId(httpContext.Request),
+                    Days = requestBody.Days,
+                    GlacierTier = requestBody.GlacierJobTier
+                }, innerCancellationToken);
+
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                return result.Value!.IsAlreadyRestored
+                    ? TypedResults.Ok()
+                    : TypedResults.StatusCode(StatusCodes.Status202Accepted);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    // ── Select Object Content ───────────────────────────────────────────────
+
+    private static async Task<IResult> SelectObjectContentAsync(
+        string bucketName,
+        string key,
+        HttpContext httpContext,
+        IIntegratedS3RequestContextAccessor requestContextAccessor,
+        IStorageService storageService,
+        CancellationToken cancellationToken)
+    {
+        SelectObjectContentRequest serviceRequest;
+        try {
+            serviceRequest = await ParseSelectObjectContentRequestAsync(bucketName, key, httpContext.Request, cancellationToken);
+        }
+        catch (FormatException exception) {
+            return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, key), bucketName, key);
+        }
+
+        try {
+            return await ExecuteWithRequestContextAsync(httpContext, requestContextAccessor, async innerCancellationToken => {
+                var result = await storageService.SelectObjectContentAsync(serviceRequest, innerCancellationToken);
+                if (!result.IsSuccess) {
+                    return ToErrorResult(httpContext, result.Error, resourceOverride: BuildObjectResource(bucketName, key));
+                }
+
+                var response = result.Value!;
+                return new SelectObjectContentStreamResult(response);
+            }, cancellationToken);
+        }
+        catch (EndpointStorageAuthorizationException exception) {
+            return ToErrorResult(httpContext, exception.Error, resourceOverride: BuildObjectResource(bucketName, key));
+        }
+    }
+
+    private static async Task<SelectObjectContentRequest> ParseSelectObjectContentRequestAsync(
+        string bucketName, string key, HttpRequest request, CancellationToken cancellationToken)
+    {
+        using var reader = new StreamReader(request.Body, leaveOpen: true);
+        var xml = await reader.ReadToEndAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(xml)) {
+            throw new FormatException("The select object content request body is required.");
+        }
+
+        try {
+            var document = XDocument.Parse(xml, LoadOptions.None);
+            var root = document.Root;
+            if (root is null || !string.Equals(root.Name.LocalName, "SelectObjectContentRequest", StringComparison.Ordinal)) {
+                throw new FormatException("The select object content request body must contain a root 'SelectObjectContentRequest' element.");
+            }
+
+            var inputSerialization = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "InputSerialization", StringComparison.Ordinal));
+            var outputSerialization = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "OutputSerialization", StringComparison.Ordinal));
+
+            return new SelectObjectContentRequest
+            {
+                BucketName = bucketName,
+                Key = key,
+                Expression = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "Expression", StringComparison.Ordinal))?.Value
+                    ?? throw new FormatException("Expression element is required."),
+                ExpressionType = root.Elements().FirstOrDefault(static element => string.Equals(element.Name.LocalName, "ExpressionType", StringComparison.Ordinal))?.Value
+                    ?? throw new FormatException("ExpressionType element is required."),
+                InputSerializationJson = GetSerializationElementXml(inputSerialization, "JSON"),
+                InputSerializationCsv = GetSerializationElementXml(inputSerialization, "CSV"),
+                InputSerializationParquet = GetSerializationElementXml(inputSerialization, "Parquet"),
+                OutputSerializationJson = GetSerializationElementXml(outputSerialization, "JSON"),
+                OutputSerializationCsv = GetSerializationElementXml(outputSerialization, "CSV")
+            };
+        }
+        catch (FormatException) {
+            throw;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) {
+            throw new FormatException("The select object content request body is not valid XML.", exception);
+        }
+    }
+
+    private static string? GetSerializationElementXml(XElement? parentElement, string elementName)
+    {
+        return parentElement?.Elements().FirstOrDefault(element => string.Equals(element.Name.LocalName, elementName, StringComparison.Ordinal))
+            ?.ToString(SaveOptions.DisableFormatting);
+    }
+
+    private sealed class SelectObjectContentStreamResult : IResult
+    {
+        private readonly SelectObjectContentResponse _response;
+
+        public SelectObjectContentStreamResult(SelectObjectContentResponse response) => _response = response;
+
+        public async Task ExecuteAsync(HttpContext httpContext)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status200OK;
+            httpContext.Response.ContentType = _response.ContentType ?? "application/octet-stream";
+            await using var eventStream = _response.EventStream;
+            await eventStream.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
+        }
+    }
+
+    // ── Domain ↔ Protocol Conversion Helpers ────────────────────────────────
+
+    private static S3LifecycleRule ToS3LifecycleRule(BucketLifecycleRule rule)
+    {
+        return new S3LifecycleRule
+        {
+            Id = rule.Id,
+            FilterPrefix = rule.FilterPrefix,
+            FilterTags = rule.FilterTags?.Select(static kv => new S3LifecycleFilterTag { Key = kv.Key, Value = kv.Value }).ToArray(),
+            Status = rule.Status == BucketLifecycleRuleStatus.Enabled ? "Enabled" : "Disabled",
+            ExpirationDays = rule.ExpirationDays,
+            ExpirationDate = rule.ExpirationDate?.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture),
+            ExpiredObjectDeleteMarker = rule.ExpiredObjectDeleteMarker,
+            NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpirationDays,
+            AbortIncompleteMultipartUploadDaysAfterInitiation = rule.AbortIncompleteMultipartUploadDaysAfterInitiation,
+            Transitions = rule.Transitions.Select(static t => new S3LifecycleTransition
+            {
+                Days = t.Days,
+                Date = t.Date?.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture),
+                StorageClass = t.StorageClass
+            }).ToArray(),
+            NoncurrentVersionTransitions = rule.NoncurrentVersionTransitions.Select(static t => new S3LifecycleNoncurrentVersionTransition
+            {
+                NoncurrentDays = t.NoncurrentDays,
+                StorageClass = t.StorageClass
+            }).ToArray()
+        };
+    }
+
+    private static BucketLifecycleRule ToBucketLifecycleRule(S3LifecycleRule rule)
+    {
+        return new BucketLifecycleRule
+        {
+            Id = rule.Id,
+            FilterPrefix = rule.FilterPrefix,
+            FilterTags = rule.FilterTags?.ToDictionary(static t => t.Key, static t => t.Value, StringComparer.Ordinal),
+            Status = string.Equals(rule.Status, "Enabled", StringComparison.OrdinalIgnoreCase) ? BucketLifecycleRuleStatus.Enabled : BucketLifecycleRuleStatus.Disabled,
+            ExpirationDays = rule.ExpirationDays,
+            ExpirationDate = !string.IsNullOrEmpty(rule.ExpirationDate) ? DateTimeOffset.Parse(rule.ExpirationDate, CultureInfo.InvariantCulture) : null,
+            ExpiredObjectDeleteMarker = rule.ExpiredObjectDeleteMarker,
+            NoncurrentVersionExpirationDays = rule.NoncurrentVersionExpirationDays,
+            AbortIncompleteMultipartUploadDaysAfterInitiation = rule.AbortIncompleteMultipartUploadDaysAfterInitiation,
+            Transitions = rule.Transitions.Select(static t => new BucketLifecycleTransition
+            {
+                Days = t.Days,
+                Date = !string.IsNullOrEmpty(t.Date) ? DateTimeOffset.Parse(t.Date, CultureInfo.InvariantCulture) : null,
+                StorageClass = t.StorageClass
+            }).ToArray(),
+            NoncurrentVersionTransitions = rule.NoncurrentVersionTransitions.Select(static t => new BucketLifecycleNoncurrentVersionTransition
+            {
+                NoncurrentDays = t.NoncurrentDays,
+                StorageClass = t.StorageClass
+            }).ToArray()
+        };
+    }
+
+    private static S3ReplicationRule ToS3ReplicationRule(BucketReplicationRule rule)
+    {
+        return new S3ReplicationRule
+        {
+            Id = rule.Id,
+            Status = rule.Status == BucketReplicationRuleStatus.Enabled ? "Enabled" : "Disabled",
+            FilterPrefix = rule.FilterPrefix,
+            Destination = new S3ReplicationDestination
+            {
+                Bucket = rule.Destination.Bucket,
+                StorageClass = rule.Destination.StorageClass,
+                Account = rule.Destination.Account
+            },
+            Priority = rule.Priority,
+            DeleteMarkerReplication = rule.DeleteMarkerReplication
+        };
+    }
+
+    private static BucketReplicationRule ToBucketReplicationRule(S3ReplicationRule rule)
+    {
+        return new BucketReplicationRule
+        {
+            Id = rule.Id,
+            Status = string.Equals(rule.Status, "Enabled", StringComparison.OrdinalIgnoreCase) ? BucketReplicationRuleStatus.Enabled : BucketReplicationRuleStatus.Disabled,
+            FilterPrefix = rule.FilterPrefix,
+            Destination = new BucketReplicationDestination
+            {
+                Bucket = rule.Destination.Bucket,
+                StorageClass = rule.Destination.StorageClass,
+                Account = rule.Destination.Account
+            },
+            Priority = rule.Priority,
+            DeleteMarkerReplication = rule.DeleteMarkerReplication ?? false
+        };
+    }
+
+    private static S3NotificationFilterRuleSet? ToS3NotificationFilter(BucketNotificationFilter? filter)
+    {
+        if (filter is null) return null;
+        return new S3NotificationFilterRuleSet
+        {
+            S3KeyRules = filter.KeyFilterRules.Select(static r => new S3NotificationFilterRule
+            {
+                Name = r.Name,
+                Value = r.Value
+            }).ToArray()
+        };
+    }
+
+    private static BucketNotificationFilter? ToBucketNotificationFilter(S3NotificationFilterRuleSet? filter)
+    {
+        if (filter is null) return null;
+        return new BucketNotificationFilter
+        {
+            KeyFilterRules = filter.S3KeyRules.Select(static r => new BucketNotificationFilterRule
+            {
+                Name = r.Name,
+                Value = r.Value
+            }).ToArray()
+        };
+    }
+
+    private static S3AnalyticsConfiguration ToS3AnalyticsConfiguration(BucketAnalyticsConfiguration config)
+    {
+        return new S3AnalyticsConfiguration
+        {
+            Id = config.Id,
+            FilterPrefix = config.FilterPrefix,
+            FilterTags = config.FilterTags?.Select(static kv => new S3AnalyticsFilterTag { Key = kv.Key, Value = kv.Value }).ToArray(),
+            StorageClassAnalysis = config.StorageClassAnalysis is not null
+                ? new S3StorageClassAnalysis
+                {
+                    DataExport = config.StorageClassAnalysis.DataExport is not null
+                        ? new S3StorageClassAnalysisDataExport
+                        {
+                            OutputSchemaVersion = config.StorageClassAnalysis.DataExport.OutputSchemaVersion,
+                            Destination = config.StorageClassAnalysis.DataExport.Destination is not null
+                                ? new S3AnalyticsS3BucketDestination
+                                {
+                                    Format = config.StorageClassAnalysis.DataExport.Destination.Format,
+                                    BucketAccountId = config.StorageClassAnalysis.DataExport.Destination.BucketAccountId,
+                                    Bucket = config.StorageClassAnalysis.DataExport.Destination.Bucket,
+                                    Prefix = config.StorageClassAnalysis.DataExport.Destination.Prefix
+                                }
+                                : null
+                        }
+                        : null
+                }
+                : null
+        };
+    }
+
+    private static S3MetricsConfiguration ToS3MetricsConfiguration(BucketMetricsConfiguration config)
+    {
+        return new S3MetricsConfiguration
+        {
+            Id = config.Id,
+            Filter = config.Filter is not null
+                ? new S3MetricsFilter
+                {
+                    Prefix = config.Filter.Prefix,
+                    AccessPointArn = config.Filter.AccessPointArn,
+                    Tags = config.Filter.Tags.Select(static kv => new S3Tag { Key = kv.Key, Value = kv.Value }).ToArray()
+                }
+                : null
+        };
+    }
+
+    private static S3InventoryConfiguration ToS3InventoryConfiguration(BucketInventoryConfiguration config)
+    {
+        return new S3InventoryConfiguration
+        {
+            Id = config.Id,
+            IsEnabled = config.IsEnabled,
+            Destination = config.Destination is not null
+                ? new S3InventoryDestination
+                {
+                    S3BucketDestination = config.Destination.S3BucketDestination is not null
+                        ? new S3InventoryS3BucketDestination
+                        {
+                            Format = config.Destination.S3BucketDestination.Format,
+                            AccountId = config.Destination.S3BucketDestination.AccountId,
+                            Bucket = config.Destination.S3BucketDestination.Bucket,
+                            Prefix = config.Destination.S3BucketDestination.Prefix
+                        }
+                        : null
+                }
+                : null,
+            Schedule = config.Schedule is not null
+                ? new S3InventorySchedule { Frequency = config.Schedule.Frequency }
+                : null,
+            Filter = config.Filter is not null
+                ? new S3InventoryFilter { Prefix = config.Filter.Prefix }
+                : null,
+            IncludedObjectVersions = config.IncludedObjectVersions,
+            OptionalFields = config.OptionalFields
+        };
+    }
+
+    private static S3IntelligentTieringConfiguration ToS3IntelligentTieringConfiguration(BucketIntelligentTieringConfiguration config)
+    {
+        return new S3IntelligentTieringConfiguration
+        {
+            Id = config.Id,
+            Status = config.Status,
+            Filter = config.Filter is not null
+                ? new S3IntelligentTieringFilter
+                {
+                    Prefix = config.Filter.Prefix,
+                    Tags = config.Filter.Tags.Select(static kv => new S3Tag { Key = kv.Key, Value = kv.Value }).ToArray()
+                }
+                : null,
+            Tierings = config.Tierings.Select(static t => new S3Tiering
+            {
+                AccessTier = t.AccessTier,
+                Days = t.Days
+            }).ToArray()
+        };
+    }
+
+    private static string ResolveBucketOperationName(HttpRequest request)
+    {
+        var method = request.Method;
+        if (request.Query.ContainsKey(LocationQueryParameterName)) return $"{method}BucketLocation";
+        if (request.Query.ContainsKey(AclQueryParameterName)) return $"{method}BucketAcl";
+        if (request.Query.ContainsKey(CorsQueryParameterName)) return $"{method}BucketCors";
+        if (request.Query.ContainsKey(PolicyQueryParameterName)) return $"{method}BucketPolicy";
+        if (request.Query.ContainsKey(VersioningQueryParameterName)) return $"{method}BucketVersioning";
+        if (request.Query.ContainsKey(EncryptionQueryParameterName)) return $"{method}BucketEncryption";
+        if (request.Query.ContainsKey(TaggingQueryParameterName)) return $"{method}BucketTagging";
+        if (request.Query.ContainsKey(LoggingQueryParameterName)) return $"{method}BucketLogging";
+        if (request.Query.ContainsKey(WebsiteQueryParameterName)) return $"{method}BucketWebsite";
+        if (request.Query.ContainsKey(RequestPaymentQueryParameterName)) return $"{method}BucketRequestPayment";
+        if (request.Query.ContainsKey(AccelerateQueryParameterName)) return $"{method}BucketAccelerate";
+        if (request.Query.ContainsKey(LifecycleQueryParameterName)) return $"{method}BucketLifecycle";
+        if (request.Query.ContainsKey(ReplicationQueryParameterName)) return $"{method}BucketReplication";
+        if (request.Query.ContainsKey(NotificationQueryParameterName)) return $"{method}BucketNotification";
+        if (request.Query.ContainsKey(ObjectLockQueryParameterName)) return $"{method}BucketObjectLock";
+        if (request.Query.ContainsKey(AnalyticsQueryParameterName)) return $"{method}BucketAnalytics";
+        if (request.Query.ContainsKey(MetricsQueryParameterName)) return $"{method}BucketMetrics";
+        if (request.Query.ContainsKey(InventoryQueryParameterName)) return $"{method}BucketInventory";
+        if (request.Query.ContainsKey(IntelligentTieringQueryParameterName)) return $"{method}BucketIntelligentTiering";
+        if (request.Query.ContainsKey(UploadsQueryParameterName)) return "ListMultipartUploads";
+        if (request.Query.ContainsKey(VersionsQueryParameterName)) return "ListObjectVersions";
+        if (request.Query.ContainsKey(DeleteQueryParameterName)) return "DeleteObjects";
+
+        return method switch
+        {
+            "GET" => "ListObjects",
+            "PUT" => "CreateBucket",
+            "HEAD" => "HeadBucket",
+            "DELETE" => "DeleteBucket",
+            "POST" => "PostBucket",
+            _ => $"{method}Bucket"
+        };
+    }
+
+    private static string ResolveObjectOperationName(HttpRequest request)
+    {
+        var method = request.Method;
+        if (request.Query.ContainsKey(AclQueryParameterName)) return $"{method}ObjectAcl";
+        if (request.Query.ContainsKey(TaggingQueryParameterName)) return $"{method}ObjectTagging";
+        if (request.Query.ContainsKey(RetentionQueryParameterName)) return $"{method}ObjectRetention";
+        if (request.Query.ContainsKey(LegalHoldQueryParameterName)) return $"{method}ObjectLegalHold";
+        if (request.Query.ContainsKey(AttributesQueryParameterName)) return "GetObjectAttributes";
+        if (request.Query.ContainsKey(RestoreQueryParameterName)) return "RestoreObject";
+        if (request.Query.ContainsKey(SelectQueryParameterName)) return "SelectObjectContent";
+        if (request.Query.ContainsKey(UploadsQueryParameterName)) return "InitiateMultipartUpload";
+        if (TryGetMultipartUploadId(request, out _, out _))
+        {
+            if (request.Query.ContainsKey(PartNumberQueryParameterName))
+                return TryGetCopySource(request, out _, out _) ? "UploadPartCopy" : "UploadPart";
+            return method switch
+            {
+                "GET" => "ListParts",
+                "POST" => "CompleteMultipartUpload",
+                "DELETE" => "AbortMultipartUpload",
+                _ => $"{method}MultipartUpload"
+            };
+        }
+
+        return method switch
+        {
+            "GET" => "GetObject",
+            "PUT" => "PutObject",
+            "HEAD" => "HeadObject",
+            "DELETE" => "DeleteObject",
+            _ => $"{method}Object"
+        };
+    }
+
+    private static int ResolveResultStatusCode(IResult result)
+    {
+        return result switch
+        {
+            IStatusCodeHttpResult statusCodeResult => statusCodeResult.StatusCode ?? 200,
+            _ => 200
+        };
     }
 }

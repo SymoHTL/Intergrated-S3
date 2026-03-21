@@ -1,14 +1,18 @@
 namespace IntegratedS3.Provider.S3;
 
 /// <summary>
-/// Configures the AWS SDK-backed S3 storage provider.
+/// Configuration options for the AWS S3 (or S3-compatible) storage provider.
 /// </summary>
 public sealed class S3StorageOptions
 {
-    /// <summary>The provider name reported in service metadata.</summary>
+    /// <summary>
+    /// Logical name that identifies this provider instance. Defaults to <c>"s3-primary"</c>.
+    /// </summary>
     public string ProviderName { get; set; } = "s3-primary";
 
-    /// <summary>Whether this provider should be treated as the primary backend.</summary>
+    /// <summary>
+    /// Indicates whether this provider is the primary storage backend. Defaults to <see langword="true"/>.
+    /// </summary>
     public bool IsPrimary { get; set; } = true;
 
     /// <summary>

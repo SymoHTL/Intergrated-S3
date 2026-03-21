@@ -1,19 +1,19 @@
 namespace IntegratedS3.Abstractions.Capabilities;
 
 /// <summary>
-/// Identifies which layer owns the persisted state behind an advanced capability.
+/// Indicates which party owns and manages a particular category of state for a storage provider.
 /// </summary>
 public enum StorageSupportStateOwnership
 {
-    /// <summary>The capability does not require persisted state.</summary>
+    /// <summary>The state category is not relevant for this provider.</summary>
     NotApplicable,
 
-    /// <summary>The backing provider owns the relevant state directly.</summary>
+    /// <summary>The backend itself manages this state natively.</summary>
     BackendOwned,
 
-    /// <summary>IntegratedS3 persists and manages the relevant state.</summary>
+    /// <summary>The IntegratedS3 platform manages this state on behalf of the backend.</summary>
     PlatformManaged,
 
-    /// <summary>The relevant state is delegated to another external system or workflow.</summary>
+    /// <summary>State management is delegated to an external system.</summary>
     Delegated
 }

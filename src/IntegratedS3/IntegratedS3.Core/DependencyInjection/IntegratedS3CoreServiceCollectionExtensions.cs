@@ -7,13 +7,18 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace IntegratedS3.Core.DependencyInjection;
 
 /// <summary>
-/// Core DI registrations for orchestration, authorization, presign, and health-monitoring services.
+/// Extension methods for registering IntegratedS3 core orchestration services
+/// into an <see cref="IServiceCollection"/>.
 /// </summary>
 public static class IntegratedS3CoreServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the core service layer with default options.
+    /// Registers the IntegratedS3 core orchestration services using default
+    /// <see cref="IntegratedS3CoreOptions"/>. Services include
+    /// <see cref="IStorageService"/>, health monitoring, replication, and authorization.
     /// </summary>
+    /// <param name="services">The service collection to add services to.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddIntegratedS3Core(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -21,8 +26,13 @@ public static class IntegratedS3CoreServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers the core service layer and allows callers to configure orchestration options.
+    /// Registers the IntegratedS3 core orchestration services with the specified
+    /// configuration. Services include <see cref="IStorageService"/>, health monitoring,
+    /// replication, and authorization.
     /// </summary>
+    /// <param name="services">The service collection to add services to.</param>
+    /// <param name="configure">A delegate to configure <see cref="IntegratedS3CoreOptions"/>.</param>
+    /// <returns>The same <see cref="IServiceCollection"/> for chaining.</returns>
     public static IServiceCollection AddIntegratedS3Core(this IServiceCollection services, Action<IntegratedS3CoreOptions> configure)
     {
         ArgumentNullException.ThrowIfNull(services);

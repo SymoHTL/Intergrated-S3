@@ -1,19 +1,32 @@
 namespace IntegratedS3.Core.Options;
 
 /// <summary>
-/// Configures orchestration behavior in the core service layer.
+/// Root configuration for the IntegratedS3 core orchestration layer.
+/// Controls consistency, read routing, replication, and backend health behavior.
 /// </summary>
 public sealed class IntegratedS3CoreOptions
 {
-    /// <summary>The write-consistency strategy used across registered backends.</summary>
+    /// <summary>
+    /// Gets or sets the write-consistency mode that determines how writes are
+    /// propagated across storage backends. Defaults to
+    /// <see cref="StorageConsistencyMode.PrimaryOnly"/>.
+    /// </summary>
     public StorageConsistencyMode ConsistencyMode { get; set; } = StorageConsistencyMode.PrimaryOnly;
 
-    /// <summary>The read-routing policy used when multiple backends are available.</summary>
+    /// <summary>
+    /// Gets or sets the read-routing strategy that determines how read requests
+    /// are distributed across available backends. Defaults to
+    /// <see cref="StorageReadRoutingMode.PrimaryOnly"/>.
+    /// </summary>
     public StorageReadRoutingMode ReadRoutingMode { get; set; } = StorageReadRoutingMode.PrimaryOnly;
 
-    /// <summary>Replication and repair-backlog configuration.</summary>
+    /// <summary>
+    /// Gets or sets the options controlling multi-backend replication behavior.
+    /// </summary>
     public StorageReplicationOptions Replication { get; set; } = new();
 
-    /// <summary>Backend-health probing and evaluation configuration.</summary>
+    /// <summary>
+    /// Gets or sets the options controlling health monitoring of storage backends.
+    /// </summary>
     public StorageBackendHealthOptions BackendHealth { get; set; } = new();
 }
