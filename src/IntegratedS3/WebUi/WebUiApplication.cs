@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
 
 public static class WebUiApplication
 {
@@ -46,6 +48,36 @@ public static class WebUiApplication
         });
         builder.Services.PostConfigure<IntegratedS3EndpointConfigurationOptions>(
             options => ApplyConfiguredRoutePolicies(options, referenceHostOptions.RoutePolicies));
+
+        // OpenTelemetry: wire the IntegratedS3 activity source and meter so signals
+        // are exported to any configured OTLP collector.
+        builder.Services.AddOpenTelemetry()
+            .WithTracing(tracing =>
+            {
+                tracing
+                    .AddSource("IntegratedS3")
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation();
+
+                var otlpEndpoint = builder.Configuration["OpenTelemetry:OtlpEndpoint"];
+                if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                {
+                    tracing.AddOtlpExporter(opts => opts.Endpoint = new Uri(otlpEndpoint));
+                }
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics
+                    .AddMeter("IntegratedS3")
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation();
+
+                var otlpEndpoint = builder.Configuration["OpenTelemetry:OtlpEndpoint"];
+                if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                {
+                    metrics.AddOtlpExporter(opts => opts.Endpoint = new Uri(otlpEndpoint));
+                }
+            });
 
         if (HasConfiguredRoutePolicies(referenceHostOptions.RoutePolicies)) {
             builder.Services.AddAuthorization();
