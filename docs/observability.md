@@ -31,6 +31,8 @@ The shared `IntegratedS3` meter exposes the following metrics:
 
 - HTTP/API:
   - `integrateds3.http.authentication.failures`
+  - `integrateds3.http.bytes_received`
+  - `integrateds3.http.bytes_sent`
   - `integrateds3.http.request.count`
   - `integrateds3.http.request.duration`
 - storage orchestration:
@@ -94,6 +96,7 @@ The dashboard is designed for Prometheus-backed OpenTelemetry exports and focuse
 
 - overview stats for request rate, HTTP 5xx rate, request/storage latency, backend health, and repair backlog
 - HTTP/API throughput, latency percentiles, auth failures, and response status distribution
+- throughput panels for upload/download bytes per second and total data transferred
 - storage operation throughput, failure rate, authorization failures, and provider-kind latency
 - provider-specific disk and S3 latency/error panels
 - replication backlog, oldest outstanding age, repair latency, and backend health views

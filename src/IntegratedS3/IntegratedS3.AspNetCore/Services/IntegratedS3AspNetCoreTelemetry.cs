@@ -27,6 +27,16 @@ internal static class IntegratedS3AspNetCoreTelemetry
         unit: "ms",
         description: "Duration of HTTP requests to IntegratedS3 endpoints.");
 
+    private static readonly Counter<long> HttpBytesReceivedCounter = IntegratedS3Observability.Meter.CreateCounter<long>(
+        IntegratedS3Observability.Metrics.HttpBytesReceived,
+        unit: "By",
+        description: "Bytes received in HTTP request bodies (uploads) by IntegratedS3 endpoints.");
+
+    private static readonly Counter<long> HttpBytesSentCounter = IntegratedS3Observability.Meter.CreateCounter<long>(
+        IntegratedS3Observability.Metrics.HttpBytesSent,
+        unit: "By",
+        description: "Bytes sent in HTTP response bodies (downloads) by IntegratedS3 endpoints.");
+
     public static string GetOrCreateCorrelationId(HttpContext httpContext)
     {
         ArgumentNullException.ThrowIfNull(httpContext);
@@ -118,6 +128,18 @@ internal static class IntegratedS3AspNetCoreTelemetry
         };
         HttpRequestCounter.Add(1, tags);
         HttpRequestDuration.Record(elapsedMs, tags);
+    }
+
+    public static void RecordHttpBytesReceived(string operation, long bytes)
+    {
+        if (bytes <= 0) return;
+        HttpBytesReceivedCounter.Add(bytes, new TagList { { IntegratedS3Observability.Tags.Operation, operation } });
+    }
+
+    public static void RecordHttpBytesSent(string operation, long bytes)
+    {
+        if (bytes <= 0) return;
+        HttpBytesSentCounter.Add(bytes, new TagList { { IntegratedS3Observability.Tags.Operation, operation } });
     }
 
     public static void MarkSuccess(Activity? activity, string authType)

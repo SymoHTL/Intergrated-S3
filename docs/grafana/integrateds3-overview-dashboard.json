@@ -19,9 +19,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": null,
   "links": [],
-  "liveNow": false,
   "panels": [
     {
       "collapsed": false,
@@ -39,21 +37,22 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "HTTP requests per second from integrateds3.http.request.count.",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
-          }
+          },
+          "unit": "reqps"
         },
         "overrides": []
       },
@@ -69,6 +68,7 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -76,16 +76,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum(\n  rate({__name__=~\"^integrateds3_http_request_count(?:_request)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n) or vector(0)",
+          "expr": "sum(\n  rate(integrateds3_http_request_count_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n) or vector(0)",
           "instant": false,
           "legendFormat": "",
           "range": true,
@@ -98,18 +101,18 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "HTTP 5xx responses per second from integrateds3.http.request.count.",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "yellow",
@@ -120,7 +123,8 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "reqps"
         },
         "overrides": []
       },
@@ -136,6 +140,7 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -143,16 +148,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum(\n  rate({__name__=~\"^integrateds3_http_request_count(?:_request)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", http_response_status_code=~\"5..\"}[$__rate_interval])\n) or vector(0)",
+          "expr": "sum(\n  rate(integrateds3_http_request_count_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", http_response_status_code=~\"5..\"}[5m])\n) or vector(0)",
           "instant": false,
           "legendFormat": "",
           "range": true,
@@ -165,21 +173,22 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile request latency from integrateds3.http.request.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
-          }
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -195,6 +204,7 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -202,16 +212,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le) (\n    rate({__name__=~\"^integrateds3_http_request_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n  )\n) or vector(0)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le) (\n    rate(integrateds3_http_request_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n  )\n) or vector(0)",
           "instant": false,
           "legendFormat": "",
           "range": true,
@@ -224,21 +237,22 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile storage latency from integrateds3.storage.operation.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               }
             ]
-          }
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -254,6 +268,7 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -261,16 +276,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le) (\n    rate({__name__=~\"^integrateds3_storage_operation_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\"}[$__rate_interval])\n  )\n) or vector(0)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le) (\n    rate(integrateds3_storage_operation_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\"}[5m])\n  )\n) or vector(0)",
           "instant": false,
           "legendFormat": "",
           "range": true,
@@ -283,25 +301,26 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Unique providers currently reporting unhealthy backend health status.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -317,6 +336,7 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -324,16 +344,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "count(\n  max by (integrateds3_provider) (\n    {__name__=~\"^integrateds3_backend_health_status(?:_state)?$\", job=~\"$job\", instance=~\"$instance\"} == 0\n  )\n) or vector(0)",
+          "expr": "count(\n  max by (integrateds3_provider) (\n    integrateds3_backend_health_status{job=~\"$job\", instance=~\"$instance\"} == 0\n  )\n) or vector(0)",
           "instant": false,
           "legendFormat": "",
           "range": true,
@@ -346,18 +369,18 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Current outstanding replica repair backlog from integrateds3.replication.backlog.size.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "yellow",
@@ -368,7 +391,8 @@
                 "value": 100
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -384,6 +408,7 @@
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -391,16 +416,19 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum(\n  {__name__=~\"^integrateds3_replication_backlog_size(?:_entry|_entries)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_replica_backend=~\"$replica_backend\"}\n) or vector(0)",
+          "expr": "sum(\n  integrateds3_replication_backlog_size{job=~\"$job\", instance=~\"$instance\", integrateds3_replica_backend=~\"$replica_backend\"}\n) or vector(0)",
           "instant": false,
           "legendFormat": "",
           "range": true,
@@ -426,20 +454,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Throughput by IntegratedS3 operation from integrateds3.http.request.count.",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
         },
         "overrides": []
       },
@@ -452,23 +523,26 @@
       "id": 9,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_operation) (\n  rate({__name__=~\"^integrateds3_http_request_count(?:_request)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_operation) (\n  rate(integrateds3_http_request_count_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}}",
           "range": true,
@@ -481,20 +555,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "p50 / p95 / p99 request duration percentiles from integrateds3.http.request.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -507,23 +624,26 @@
       "id": 10,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.50,\n  sum by (le) (\n    rate({__name__=~\"^integrateds3_http_request_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.50,\n  sum by (le) (\n    rate(integrateds3_http_request_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "p50",
           "range": true,
@@ -532,10 +652,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le) (\n    rate({__name__=~\"^integrateds3_http_request_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le) (\n    rate(integrateds3_http_request_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "p95",
           "range": true,
@@ -544,10 +664,10 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.99,\n  sum by (le) (\n    rate({__name__=~\"^integrateds3_http_request_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.99,\n  sum by (le) (\n    rate(integrateds3_http_request_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "p99",
           "range": true,
@@ -560,20 +680,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Authentication failure rate from integrateds3.http.authentication.failures.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -586,23 +749,26 @@
       "id": 11,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_auth_type, integrateds3_auth_stage) (\n  rate({__name__=~\"^integrateds3_http_authentication_failures(?:_failure)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_auth_type, integrateds3_auth_stage) (\n  rate(integrateds3_http_authentication_failures_total{job=~\"$job\", instance=~\"$instance\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_auth_type}} / {{integrateds3_auth_stage}}",
           "range": true,
@@ -615,24 +781,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "HTTP response rate by status code from integrateds3.http.request.count.",
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
-              "mode": "normal",
-              "group": "A"
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
-          }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
         },
         "overrides": []
       },
@@ -645,23 +850,26 @@
       "id": 12,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (http_response_status_code) (\n  rate({__name__=~\"^integrateds3_http_request_count(?:_request)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n)",
+          "expr": "sum by (http_response_status_code) (\n  rate(integrateds3_http_request_count_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{http_response_status_code}}",
           "range": true,
@@ -672,12 +880,420 @@
       "type": "timeseries"
     },
     {
-      "collapsed": false,
+      "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 23
+      },
+      "id": 33,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "dfgq7hzmnf0n4c"
+          },
+          "description": "Total HTTP throughput from integrateds3.http.bytes_received and integrateds3.http.bytes_sent.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 24
+          },
+          "id": 34,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.4.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "dfgq7hzmnf0n4c"
+              },
+              "editorMode": "code",
+              "expr": "rate(integrateds3_http_bytes_received(_total|_By)?{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])",
+              "instant": false,
+              "legendFormat": "Received",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "dfgq7hzmnf0n4c"
+              },
+              "editorMode": "code",
+              "expr": "rate(integrateds3_http_bytes_sent(_total|_By)?{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])",
+              "instant": false,
+              "legendFormat": "Sent",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Total Throughput (bytes/sec)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "dfgq7hzmnf0n4c"
+          },
+          "description": "Upload throughput by operation from integrateds3.http.bytes_received.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 6,
+            "y": 24
+          },
+          "id": 35,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.4.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "dfgq7hzmnf0n4c"
+              },
+              "editorMode": "code",
+              "expr": "rate(integrateds3_http_bytes_received(_total|_By)?{job=~\"$job\",instance=~\"$instance\",integrateds3_operation=~\"$operation\"}[$__rate_interval])",
+              "instant": false,
+              "legendFormat": "{{integrateds3_operation}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Upload Throughput by Operation",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "dfgq7hzmnf0n4c"
+          },
+          "description": "Download throughput by operation from integrateds3.http.bytes_sent.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "never",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "normal"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 12,
+            "y": 24
+          },
+          "id": 36,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "pluginVersion": "12.4.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "dfgq7hzmnf0n4c"
+              },
+              "editorMode": "code",
+              "expr": "rate(integrateds3_http_bytes_sent(_total|_By)?{job=~\"$job\",instance=~\"$instance\",integrateds3_operation=~\"$operation\"}[$__rate_interval])",
+              "instant": false,
+              "legendFormat": "{{integrateds3_operation}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Download Throughput by Operation",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "dfgq7hzmnf0n4c"
+          },
+          "description": "Total bytes transferred over the selected time range.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "continuous-GrYlRd"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  }
+                ]
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
+            "y": 24
+          },
+          "id": 37,
+          "options": {
+            "colorMode": "background_solid",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showPercentChange": false,
+            "textMode": "auto",
+            "wideLayout": true
+          },
+          "pluginVersion": "12.4.1",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "dfgq7hzmnf0n4c"
+              },
+              "editorMode": "code",
+              "expr": "sum(increase(integrateds3_http_bytes_received(_total|_By)?{job=~\"$job\",instance=~\"$instance\"}[$__range]))",
+              "instant": true,
+              "legendFormat": "Received",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "dfgq7hzmnf0n4c"
+              },
+              "editorMode": "code",
+              "expr": "sum(increase(integrateds3_http_bytes_sent(_total|_By)?{job=~\"$job\",instance=~\"$instance\"}[$__range]))",
+              "instant": true,
+              "legendFormat": "Sent",
+              "range": false,
+              "refId": "B"
+            }
+          ],
+          "title": "Total Data Transferred",
+          "type": "stat"
+        }
+      ],
+      "title": "Throughput",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
       },
       "id": 13,
       "panels": [],
@@ -687,20 +1303,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Operation throughput from integrateds3.storage.operation.count.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -708,28 +1367,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 25
       },
       "id": 14,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_operation, integrateds3_result) (\n  rate({__name__=~\"^integrateds3_storage_operation_count(?:_operation)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_operation, integrateds3_result) (\n  rate(integrateds3_storage_operation_count_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}} / {{integrateds3_result}}",
           "range": true,
@@ -742,20 +1404,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile latency by provider kind from integrateds3.storage.operation.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -763,28 +1468,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 25
       },
       "id": 15,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_provider_kind) (\n    rate({__name__=~\"^integrateds3_storage_operation_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_provider_kind) (\n    rate(integrateds3_storage_operation_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_provider_kind}}",
           "range": true,
@@ -797,20 +1505,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Failure rate by storage error code from integrateds3.storage.operation.count.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -818,28 +1569,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 33
       },
       "id": 16,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_error_code) (\n  rate({__name__=~\"^integrateds3_storage_operation_count(?:_operation)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\", integrateds3_result=\"failure\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_error_code) (\n  rate(integrateds3_storage_operation_count_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_provider_kind=~\"$provider_kind\", integrateds3_result=\"failure\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_error_code}}",
           "range": true,
@@ -852,20 +1606,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Authorization failure rate from integrateds3.storage.authorization.failures.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -873,28 +1670,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 33
       },
       "id": 17,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_operation, integrateds3_error_code) (\n  rate({__name__=~\"^integrateds3_storage_authorization_failures(?:_failure)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_operation, integrateds3_error_code) (\n  rate(integrateds3_storage_authorization_failures_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}} / {{integrateds3_error_code}}",
           "range": true,
@@ -910,7 +1710,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 41
       },
       "id": 18,
       "panels": [],
@@ -920,20 +1720,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile disk-provider latency from integrateds3.disk.operation.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -941,28 +1784,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 42
       },
       "id": 19,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_operation) (\n    rate({__name__=~\"^integrateds3_disk_operation_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_operation) (\n    rate(integrateds3_disk_operation_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}}",
           "range": true,
@@ -975,20 +1821,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Disk provider error rate from integrateds3.disk.operation.errors.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -996,28 +1885,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 42
       },
       "id": 20,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_operation, integrateds3_error_code) (\n  rate({__name__=~\"^integrateds3_disk_operation_errors(?:_error)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_operation, integrateds3_error_code) (\n  rate(integrateds3_disk_operation_errors_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}} / {{integrateds3_error_code}}",
           "range": true,
@@ -1030,20 +1922,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile S3-provider latency from integrateds3.s3.operation.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -1051,28 +1986,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 49
+        "y": 50
       },
       "id": 21,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_operation) (\n    rate({__name__=~\"^integrateds3_s3_operation_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_operation) (\n    rate(integrateds3_s3_operation_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}}",
           "range": true,
@@ -1085,20 +2023,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "S3 provider error rate from integrateds3.s3.operation.errors.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -1106,28 +2087,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 49
+        "y": 50
       },
       "id": 22,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_operation, integrateds3_error_code) (\n  rate({__name__=~\"^integrateds3_s3_operation_errors(?:_error)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_operation, integrateds3_error_code) (\n  rate(integrateds3_s3_operation_errors_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}} / {{integrateds3_error_code}}",
           "range": true,
@@ -1143,7 +2127,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 58
       },
       "id": 23,
       "panels": [],
@@ -1153,24 +2137,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Outstanding replica repair backlog from integrateds3.replication.backlog.size.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
-              "mode": "normal",
-              "group": "A"
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
-          }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -1178,28 +2201,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 59
       },
       "id": 24,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_replica_backend, integrateds3_repair_status) (\n  {__name__=~\"^integrateds3_replication_backlog_size(?:_entry|_entries)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_replica_backend=~\"$replica_backend\"}\n)",
+          "expr": "sum by (integrateds3_replica_backend, integrateds3_repair_status) (\n  integrateds3_replication_backlog_size{job=~\"$job\", instance=~\"$instance\", integrateds3_replica_backend=~\"$replica_backend\"}\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_replica_backend}} / {{integrateds3_repair_status}}",
           "range": true,
@@ -1212,20 +2238,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Oldest outstanding backlog age from integrateds3.replication.backlog.oldest_age.",
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
         },
         "overrides": []
       },
@@ -1233,28 +2302,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 59
       },
       "id": 25,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "max by (integrateds3_replica_backend) (\n  {__name__=~\"^integrateds3_replication_backlog_oldest_age(?:_s|_seconds)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_replica_backend=~\"$replica_backend\"}\n)",
+          "expr": "max by (integrateds3_replica_backend) (\n  integrateds3_replication_backlog_oldest_age{job=~\"$job\", instance=~\"$instance\", integrateds3_replica_backend=~\"$replica_backend\"}\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_replica_backend}}",
           "range": true,
@@ -1267,20 +2339,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile repair duration from integrateds3.replication.repair.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -1288,28 +2403,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 67
       },
       "id": 26,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_replica_backend) (\n    rate({__name__=~\"^integrateds3_replication_repair_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_replica_backend=~\"$replica_backend\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_replica_backend) (\n    rate(integrateds3_replication_repair_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\", integrateds3_replica_backend=~\"$replica_backend\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_replica_backend}}",
           "range": true,
@@ -1322,36 +2440,35 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Minimum observed backend health state across the selected instances. Values: 1=healthy, 0=unhealthy, -1=unknown.",
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "min": -1,
-          "max": 1,
           "mappings": [
             {
-              "type": "value",
               "options": {
-                "-1": {
-                  "text": "Unknown"
-                },
                 "0": {
                   "text": "Unhealthy"
                 },
                 "1": {
                   "text": "Healthy"
+                },
+                "-1": {
+                  "text": "Unknown"
                 }
-              }
+              },
+              "type": "value"
             }
           ],
+          "max": 1,
+          "min": -1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "orange",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -1362,7 +2479,8 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -1370,11 +2488,21 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 67
       },
       "id": 27,
       "options": {
         "displayMode": "gradient",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "auto",
         "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
@@ -1383,16 +2511,19 @@
           "fields": "",
           "values": false
         },
-        "showUnfilled": true
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "min by (integrateds3_provider) (\n  {__name__=~\"^integrateds3_backend_health_status(?:_state)?$\", job=~\"$job\", instance=~\"$instance\"}\n)",
+          "expr": "min by (integrateds3_provider) (\n  integrateds3_backend_health_status{job=~\"$job\", instance=~\"$instance\"}\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_provider}}",
           "range": true,
@@ -1408,7 +2539,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 74
+        "y": 75
       },
       "id": 28,
       "panels": [],
@@ -1418,20 +2549,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "95th percentile duration from integrateds3.maintenance.job.duration.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ms"
         },
         "overrides": []
       },
@@ -1439,28 +2613,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 76
       },
       "id": 29,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_job_name) (\n    rate({__name__=~\"^integrateds3_maintenance_job_duration(?:_ms|_milliseconds)?_bucket$\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])\n  )\n)",
+          "expr": "histogram_quantile(\n  0.95,\n  sum by (le, integrateds3_job_name) (\n    rate(integrateds3_maintenance_job_duration_milliseconds_bucket{job=~\"$job\", instance=~\"$instance\"}[5m])\n  )\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_job_name}}",
           "range": true,
@@ -1473,20 +2650,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Failure rate from integrateds3.maintenance.job.failures.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -1494,28 +2714,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 75
+        "y": 76
       },
       "id": 30,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_job_name) (\n  rate({__name__=~\"^integrateds3_maintenance_job_failures(?:_failure)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_job_name) (\n  rate(integrateds3_maintenance_job_failures_total{job=~\"$job\", instance=~\"$instance\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_job_name}}",
           "range": true,
@@ -1528,20 +2751,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "XML protocol parse error rate from integrateds3.protocol.xml.parse_errors.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -1549,28 +2815,31 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 84
       },
       "id": 31,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_operation) (\n  rate({__name__=~\"^integrateds3_protocol_xml_parse_errors(?:_error)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_operation) (\n  rate(integrateds3_protocol_xml_parse_errors_total{job=~\"$job\", instance=~\"$instance\", integrateds3_operation=~\"$operation\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_operation}}",
           "range": true,
@@ -1583,20 +2852,63 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${datasource}"
+        "uid": "dfgq7hzmnf0n4c"
       },
       "description": "Signature verification error rate from integrateds3.protocol.signature.errors.",
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
-          }
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -1604,28 +2916,31 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 83
+        "y": 84
       },
       "id": 32,
       "options": {
         "legend": {
+          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "12.4.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "dfgq7hzmnf0n4c"
           },
           "editorMode": "code",
-          "expr": "sum by (integrateds3_signature_type) (\n  rate({__name__=~\"^integrateds3_protocol_signature_errors(?:_error)?(?:_total)?$\", job=~\"$job\", instance=~\"$instance\"}[$__rate_interval])\n)",
+          "expr": "sum by (integrateds3_signature_type) (\n  rate(integrateds3_protocol_signature_errors_total{job=~\"$job\", instance=~\"$instance\"}[5m])\n)",
           "instant": false,
           "legendFormat": "{{integrateds3_signature_type}}",
           "range": true,
@@ -1636,9 +2951,9 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "30s",
-  "schemaVersion": 39,
-  "style": "dark",
+  "preload": false,
+  "refresh": "10s",
+  "schemaVersion": 42,
   "tags": [
     "integrateds3",
     "prometheus",
@@ -1648,11 +2963,9 @@
     "list": [
       {
         "current": {
-          "selected": false,
-          "text": "Prometheus",
-          "value": "Prometheus"
+          "text": "prometheus",
+          "value": "dfgq7hzmnf0n4c"
         },
-        "hide": 0,
         "label": "Prometheus datasource",
         "name": "datasource",
         "options": [],
@@ -1664,16 +2977,14 @@
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
           "text": "All",
           "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${datasource}"
+          "uid": "dfgq7hzmnf0n4c"
         },
         "definition": "label_values({__name__=~\"^integrateds3_.*$\"}, job)",
-        "hide": 0,
         "includeAll": true,
         "label": "job",
         "multi": true,
@@ -1682,22 +2993,21 @@
         "query": "label_values({__name__=~\"^integrateds3_.*$\"}, job)",
         "refresh": 1,
         "regex": "",
+        "regexApplyTo": "value",
         "sort": 1,
         "type": "query"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
           "text": "All",
           "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${datasource}"
+          "uid": "dfgq7hzmnf0n4c"
         },
         "definition": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\"}, instance)",
-        "hide": 0,
         "includeAll": true,
         "label": "instance",
         "multi": true,
@@ -1706,22 +3016,21 @@
         "query": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\"}, instance)",
         "refresh": 1,
         "regex": "",
+        "regexApplyTo": "value",
         "sort": 1,
         "type": "query"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
           "text": "All",
           "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${datasource}"
+          "uid": "dfgq7hzmnf0n4c"
         },
         "definition": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\", instance=~\"$instance\"}, integrateds3_operation)",
-        "hide": 0,
         "includeAll": true,
         "label": "operation",
         "multi": true,
@@ -1730,22 +3039,21 @@
         "query": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\", instance=~\"$instance\"}, integrateds3_operation)",
         "refresh": 1,
         "regex": "",
+        "regexApplyTo": "value",
         "sort": 1,
         "type": "query"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
           "text": "All",
           "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${datasource}"
+          "uid": "dfgq7hzmnf0n4c"
         },
         "definition": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\", instance=~\"$instance\"}, integrateds3_provider_kind)",
-        "hide": 0,
         "includeAll": true,
         "label": "provider kind",
         "multi": true,
@@ -1754,22 +3062,21 @@
         "query": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\", instance=~\"$instance\"}, integrateds3_provider_kind)",
         "refresh": 1,
         "regex": "",
+        "regexApplyTo": "value",
         "sort": 1,
         "type": "query"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
           "text": "All",
           "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
-          "uid": "${datasource}"
+          "uid": "dfgq7hzmnf0n4c"
         },
         "definition": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\", instance=~\"$instance\"}, integrateds3_replica_backend)",
-        "hide": 0,
         "includeAll": true,
         "label": "replica backend",
         "multi": true,
@@ -1778,13 +3085,14 @@
         "query": "label_values({__name__=~\"^integrateds3_.*$\", job=~\"$job\", instance=~\"$instance\"}, integrateds3_replica_backend)",
         "refresh": 1,
         "regex": "",
+        "regexApplyTo": "value",
         "sort": 1,
         "type": "query"
       }
     ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-30m",
     "to": "now"
   },
   "timepicker": {
@@ -1799,7 +3107,7 @@
   },
   "timezone": "browser",
   "title": "IntegratedS3 Overview",
-  "uid": "integrateds3-overview",
-  "version": 1,
+  "uid": "2694d613-fdcd-4930-9b46-d11f3c95666e",
+  "version": 6,
   "weekStart": ""
 }

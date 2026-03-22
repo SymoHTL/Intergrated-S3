@@ -491,6 +491,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                     var result = WrapBucketCorsResult(bucketName, await PutObjectAsync(bucketName, key, httpContext, request, requestContextAccessor, storageService, cancellationToken));
                     sw.Stop();
                     IntegratedS3AspNetCoreTelemetry.RecordHttpRequest("PUT", "PutObject", ResolveResultStatusCode(result), sw.Elapsed.TotalMilliseconds);
+                    IntegratedS3AspNetCoreTelemetry.RecordHttpBytesReceived("PutObject", httpContext.Request.ContentLength ?? 0);
                     return result;
                 })
                 .WithName("PutIntegratedS3Object");
@@ -2447,6 +2448,9 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
         IntegratedS3AspNetCoreTelemetry.RecordHttpRequest(
             httpContext.Request.Method, operation, statusCode, sw.Elapsed.TotalMilliseconds);
+
+        if (httpContext.Request.ContentLength is > 0)
+            IntegratedS3AspNetCoreTelemetry.RecordHttpBytesReceived(operation, httpContext.Request.ContentLength.Value);
 
         return result;
     }
@@ -8943,6 +8947,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 httpContext.Response.StatusCode = StatusCodes.Status200OK;
             }
 
+            IntegratedS3AspNetCoreTelemetry.RecordHttpBytesSent("GetObject", response.Object.ContentLength);
             await response.Content.CopyToAsync(httpContext.Response.Body, httpContext.RequestAborted);
         }
     }
@@ -9006,8 +9011,10 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             var body = httpContext.Response.Body;
             var ct = httpContext.RequestAborted;
             var encoding = Encoding.UTF8;
+            long totalBytesSent = 0;
 
             // Write first range part.
+            totalBytesSent += firstResponse.Range!.End.GetValueOrDefault() - firstResponse.Range!.Start.GetValueOrDefault() + 1;
             await WriteRangePartAsync(body, boundary, contentType, firstResponse.Range!, totalLength, firstResponse.Content, encoding, ct);
 
             // Fetch and write subsequent range parts.
@@ -9026,11 +9033,14 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
                 }
 
                 await using var rangeResponse = rangeResult.Value!;
+                totalBytesSent += rangeResponse.Range!.End.GetValueOrDefault() - rangeResponse.Range!.Start.GetValueOrDefault() + 1;
                 await WriteRangePartAsync(body, boundary, contentType, rangeResponse.Range!, totalLength, rangeResponse.Content, encoding, ct);
             }
 
             // Write closing boundary.
             await body.WriteAsync(encoding.GetBytes($"\r\n--{boundary}--\r\n"), ct);
+
+            IntegratedS3AspNetCoreTelemetry.RecordHttpBytesSent("GetObject", totalBytesSent);
         }
 
         private static async Task WriteRangePartAsync(

@@ -79,6 +79,12 @@ public static class IntegratedS3Observability
 
         /// <summary>Histogram of HTTP request durations.</summary>
         public const string HttpRequestDuration = "integrateds3.http.request.duration";
+
+        /// <summary>Counter of bytes received in HTTP request bodies (uploads).</summary>
+        public const string HttpBytesReceived = "integrateds3.http.bytes_received";
+
+        /// <summary>Counter of bytes sent in HTTP response bodies (downloads).</summary>
+        public const string HttpBytesSent = "integrateds3.http.bytes_sent";
     }
 
     /// <summary>

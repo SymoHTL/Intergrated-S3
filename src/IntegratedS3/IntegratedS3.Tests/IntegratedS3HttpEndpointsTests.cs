@@ -10419,6 +10419,46 @@ public sealed class IntegratedS3HttpEndpointsTests : IClassFixture<WebUiApplicat
         return validValue[..^1] + (validValue[^1] == '0' ? '1' : '0');
     }
 
+    [Fact]
+    public async Task PutObject_RecordsBytesReceivedMetric()
+    {
+        using var observability = new TestObservabilityCollector();
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/throughput-rx-bucket", content: null);
+
+        var content = new ByteArrayContent(new byte[1024]);
+        content.Headers.ContentLength = 1024;
+        await client.PutAsync("/integrated-s3/buckets/throughput-rx-bucket/objects/test-key", content);
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.HttpBytesReceived, StringComparison.Ordinal)
+            && measurement.Value >= 1024
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Operation, out var op)
+            && string.Equals(op, "PutObject", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetObject_RecordsBytesSentMetric()
+    {
+        using var observability = new TestObservabilityCollector();
+        using var client = await _factory.CreateClientAsync();
+
+        await client.PutAsync("/integrated-s3/buckets/throughput-tx-bucket", content: null);
+        var content = new ByteArrayContent(new byte[2048]);
+        content.Headers.ContentLength = 2048;
+        await client.PutAsync("/integrated-s3/buckets/throughput-tx-bucket/objects/test-key", content);
+
+        var response = await client.GetAsync("/integrated-s3/buckets/throughput-tx-bucket/objects/test-key");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Contains(observability.Measurements, measurement =>
+            string.Equals(measurement.InstrumentName, IntegratedS3Observability.Metrics.HttpBytesSent, StringComparison.Ordinal)
+            && measurement.Value == 2048
+            && measurement.Tags.TryGetValue(IntegratedS3Observability.Tags.Operation, out var op)
+            && string.Equals(op, "GetObject", StringComparison.Ordinal));
+    }
+
     private static Uri CreateUri(string pathAndQuery, string host)
     {
         return new Uri($"http://{host}{pathAndQuery}", UriKind.Absolute);
