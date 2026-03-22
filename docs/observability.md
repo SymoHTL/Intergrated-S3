@@ -29,16 +29,33 @@ IntegratedS3 emits activities from the shared `IntegratedS3` activity source for
 
 The shared `IntegratedS3` meter exposes the following metrics:
 
-- `integrateds3.http.authentication.failures`
-- `integrateds3.storage.authorization.failures`
-- `integrateds3.storage.operation.count`
-- `integrateds3.storage.operation.duration`
-- `integrateds3.replication.repair.duration`
-- `integrateds3.replication.backlog.size`
-- `integrateds3.replication.backlog.oldest_age`
-- `integrateds3.backend.health.status`
+- HTTP/API:
+  - `integrateds3.http.authentication.failures`
+  - `integrateds3.http.request.count`
+  - `integrateds3.http.request.duration`
+- storage orchestration:
+  - `integrateds3.storage.authorization.failures`
+  - `integrateds3.storage.operation.count`
+  - `integrateds3.storage.operation.duration`
+- replication and backend health:
+  - `integrateds3.replication.repair.duration`
+  - `integrateds3.replication.backlog.size`
+  - `integrateds3.replication.backlog.oldest_age`
+  - `integrateds3.backend.health.status`
+- maintenance and protocol:
+  - `integrateds3.maintenance.job.duration`
+  - `integrateds3.maintenance.job.failures`
+  - `integrateds3.protocol.xml.parse_errors`
+  - `integrateds3.protocol.signature.errors`
+- provider-specific internals:
+  - `integrateds3.disk.operation.duration`
+  - `integrateds3.disk.operation.errors`
+  - `integrateds3.s3.operation.duration`
+  - `integrateds3.s3.operation.errors`
 
-Provider, primary-provider, replica-backend, repair-status, operation, result, auth-type, error-code, request-id, and correlation-id tags are attached where they are meaningful for the emitted signal.
+Provider, provider-kind, primary-provider, replica-backend, repair-origin, repair-status, operation, result, auth-stage, auth-type, error-code, request-id, and correlation-id tags are attached where they are meaningful for the emitted signal. HTTP metrics also include the normalized request-method and response-status-code tags exported by the chosen telemetry pipeline.
+
+Most latency histograms use milliseconds, backlog age uses seconds, and backend health reports `1` for healthy, `0` for unhealthy, and `-1` for unknown.
 
 ## Correlation IDs
 
@@ -67,7 +84,29 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(metrics => metrics.AddMeter(IntegratedS3Observability.MeterName));
 ```
 
-Choose exporters, processors, and sampling policies at the host level. IntegratedS3 intentionally emits the signals, but does not hardcode a collector or backend choice.
+Choose exporters, processors, and sampling policies at the host level. IntegratedS3 intentionally emits the signals, but does not hardcode a collector or backend choice. The sample `WebUi` host also layers `AddAspNetCoreInstrumentation()` and `AddHttpClientInstrumentation()` on top so standard ASP.NET Core metrics and traces are exported alongside the IntegratedS3-specific signals.
+
+## Grafana dashboard
+
+IntegratedS3 now ships a ready-to-import Grafana dashboard at `docs\grafana\integrateds3-overview-dashboard.json`.
+
+The dashboard is designed for Prometheus-backed OpenTelemetry exports and focuses on the custom IntegratedS3 signals:
+
+- overview stats for request rate, HTTP 5xx rate, request/storage latency, backend health, and repair backlog
+- HTTP/API throughput, latency percentiles, auth failures, and response status distribution
+- storage operation throughput, failure rate, authorization failures, and provider-kind latency
+- provider-specific disk and S3 latency/error panels
+- replication backlog, oldest outstanding age, repair latency, and backend health views
+- maintenance job latency/failures plus protocol XML/signature error panels
+
+Import flow:
+
+1. Export the `IntegratedS3` meter to Prometheus directly or through an OpenTelemetry Collector.
+2. Ensure Prometheus scraping adds the usual `job` and `instance` labels.
+3. In Grafana, import `docs\grafana\integrateds3-overview-dashboard.json` and select your Prometheus datasource.
+4. Use the built-in dashboard variables to filter by job, instance, operation, provider kind, and replica backend.
+
+The dashboard queries intentionally use regex-based PromQL selectors so they tolerate common OpenTelemetry-to-Prometheus normalization differences, including dots becoming underscores, optional `_total` counter suffixes, and histogram/gauge unit suffixes such as `_milliseconds` and `_seconds`. If your telemetry pipeline applies a non-standard translation strategy, adjust the metric name regexes after import.
 
 ## Current limitation
 
