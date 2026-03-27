@@ -23,8 +23,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         var buckets = dbContext.Set<BucketCatalogRecord>();
         var record = await buckets.SingleOrDefaultAsync(
@@ -35,14 +34,20 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             record = new BucketCatalogRecord
             {
                 ProviderName = providerName,
-                BucketName = bucket.Name
+                BucketName = bucket.Name,
+                CreatedAtUtc = bucket.CreatedAtUtc,
+                VersioningEnabled = bucket.VersioningEnabled,
+                LastSyncedAtUtc = DateTimeOffset.UtcNow
             };
             buckets.Add(record);
         }
+        else {
+            record.CreatedAtUtc = bucket.CreatedAtUtc;
+            record.VersioningEnabled = bucket.VersioningEnabled;
+            record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
+            dbContext.Update(record);
+        }
 
-        record.CreatedAtUtc = bucket.CreatedAtUtc;
-        record.VersioningEnabled = bucket.VersioningEnabled;
-        record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -51,8 +56,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         await dbContext.Set<ObjectCatalogRecord>()
             .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName)
@@ -68,10 +72,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
-        var query = dbContext.Set<BucketCatalogRecord>().AsNoTracking().AsQueryable();
+        var query = dbContext.Set<BucketCatalogRecord>().AsQueryable();
         if (!string.IsNullOrWhiteSpace(providerName)) {
             query = query.Where(bucket => bucket.ProviderName == providerName);
         }
@@ -95,8 +98,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         var buckets = dbContext.Set<BucketCatalogRecord>();
         var objects = dbContext.Set<ObjectCatalogRecord>();
@@ -118,6 +120,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         }
         else {
             bucketRecord.LastSyncedAtUtc = DateTimeOffset.UtcNow;
+            dbContext.Update(bucketRecord);
         }
 
         if (@object.IsLatest) {
@@ -137,15 +140,13 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
                 && existing.VersionId == @object.VersionId,
             cancellationToken);
 
-        if (record is null) {
-            record = new ObjectCatalogRecord
-            {
-                ProviderName = providerName,
-                BucketName = @object.BucketName,
-                Key = @object.Key
-            };
-            objects.Add(record);
-        }
+        var isNewObject = record is null;
+        record ??= new ObjectCatalogRecord
+        {
+            ProviderName = providerName,
+            BucketName = @object.BucketName,
+            Key = @object.Key
+        };
 
         record.VersionId = @object.VersionId;
         record.IsLatest = @object.IsLatest;
@@ -169,6 +170,11 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         record.ServerSideEncryptionKeyId = @object.ServerSideEncryption?.KeyId;
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
+        if (isNewObject)
+            objects.Add(record);
+        else
+            dbContext.Update(record);
+
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -177,8 +183,7 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         var query = dbContext.Set<ObjectCatalogRecord>()
             .Where(existing => existing.ProviderName == providerName && existing.BucketName == bucketName && existing.Key == key);
@@ -195,10 +200,9 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
-        var query = dbContext.Set<ObjectCatalogRecord>().AsNoTracking().AsQueryable();
+        var query = dbContext.Set<ObjectCatalogRecord>().AsQueryable();
         if (!string.IsNullOrWhiteSpace(providerName)) {
             query = query.Where(@object => @object.ProviderName == providerName);
         }
@@ -266,14 +270,21 @@ internal sealed class EntityFrameworkStorageCatalogStore<TDbContext>(
             }
 
             await using var scope = serviceProvider.CreateAsyncScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-            ValidateModel(dbContext);
+            var dbContext = ResolveDbContext(scope);
             await dbContext.Database.EnsureCreatedAsync(cancellationToken);
             _initialized = true;
         }
         finally {
             _initializationLock.Release();
         }
+    }
+
+    private TDbContext ResolveDbContext(IServiceScope scope)
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
+        dbContext.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+        ValidateModel(dbContext);
+        return dbContext;
     }
 
     private static void ValidateModel(TDbContext dbContext)

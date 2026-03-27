@@ -8,6 +8,9 @@ namespace IntegratedS3.Core.Services;
 
 internal sealed class InMemoryStorageReplicaRepairBacklog : IStorageReplicaRepairBacklog
 {
+    /// <summary>Maximum number of entries before oldest failed/completed entries are evicted.</summary>
+    internal const int MaxCapacity = 10_000;
+
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<InMemoryStorageReplicaRepairBacklog> _logger;
     private readonly ConcurrentDictionary<string, StorageReplicaRepairEntry> _entries = new(StringComparer.Ordinal);
@@ -44,6 +47,8 @@ internal sealed class InMemoryStorageReplicaRepairBacklog : IStorageReplicaRepai
             entry.ReplicaBackendName,
             entry.Origin,
             entry.Status);
+
+        EvictIfOverCapacity();
         return ValueTask.CompletedTask;
     }
 
@@ -170,6 +175,31 @@ internal sealed class InMemoryStorageReplicaRepairBacklog : IStorageReplicaRepai
             var updated = update(existing);
             if (_entries.TryUpdate(repairId, updated, existing)) {
                 return;
+            }
+        }
+    }
+
+    private void EvictIfOverCapacity()
+    {
+        if (_entries.Count <= MaxCapacity) {
+            return;
+        }
+
+        // Evict oldest failed entries first, then oldest pending entries.
+        var evictionCandidates = _entries.Values
+            .Where(static entry => entry.Status is StorageReplicaRepairStatus.Failed or StorageReplicaRepairStatus.Pending)
+            .OrderBy(static entry => entry.Status == StorageReplicaRepairStatus.Failed ? 0 : 1)
+            .ThenBy(static entry => entry.CreatedAtUtc)
+            .Take(_entries.Count - MaxCapacity)
+            .ToArray();
+
+        foreach (var candidate in evictionCandidates) {
+            if (_entries.TryRemove(candidate.Id, out _)) {
+                _logger.LogWarning(
+                    "Evicted replica repair {RepairId} for {ReplicaBackend} due to backlog capacity limit ({MaxCapacity}).",
+                    candidate.Id,
+                    candidate.ReplicaBackendName,
+                    MaxCapacity);
             }
         }
     }

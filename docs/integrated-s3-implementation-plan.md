@@ -1874,3 +1874,27 @@ The following provider-level features were implemented in a single pass:
 4. **sse-remaining** — `ObjectServerSideEncryptionInfo` now includes a `BucketKeyEnabled` property. The S3 provider populates it from AWS SDK responses on GET, HEAD, PUT, COPY, InitiateMultipart, and CompleteMultipart. The endpoint layer emits the `x-amz-server-side-encryption-bucket-key-enabled` response header when the flag is set.
 
 5. **crc64nvme** — CRC64NVME is now recognized as a valid checksum algorithm throughout the disk provider pipeline (`TryNormalizeChecksumAlgorithm`, `ValidateRequestedChecksums`, multipart upload initiation). Since no .NET CRC64NVME implementation is available, the disk provider accepts client-provided CRC64NVME values as pass-through without server-side validation. The endpoint layer emits the `x-amz-checksum-crc64nvme` response header. The S3 provider already had full CRC64NVME support via the AWS SDK.
+
+### Memory optimization pass (completed)
+
+Systematic memory optimization targeting unbounded growth, per-request buffering, and GC pressure. Build: 0 errors. Tests: 968 passing.
+
+**Unbounded singleton collection caps:**
+- `InMemoryStorageReplicaRepairBacklog` — added `MaxCapacity` (10,000) with eviction of oldest failed/pending entries when full
+- `InMemoryStorageAuthorizationCompatibilityService` — added `MaxObjectAclEntries` (100,000) with eviction of default-ACL entries first
+
+**XML request parsing — streaming:**
+- `S3XmlRequestReader` — replaced all 23 `ReadToEndAsync` + `XDocument.Parse` double-buffering patterns with `XDocument.LoadAsync(stream)`, eliminating the intermediate string allocation
+
+**XML response writing — StringBuilder capacity:**
+- `S3XmlResponseWriter` — added initial capacity hints to all 38 `new StringBuilder()` calls (256/512/4096 depending on expected response size), reducing reallocation overhead
+
+**Endpoint layer buffering:**
+- `DeleteObjectsAsync` — eliminated double-buffer (`ReadRequestBodyBytesAsync` → `byte[]` → `MemoryStream` re-wrap) by using a single `MemoryStream` with `TryGetBuffer` for checksum validation, then seeking back for XML parsing; removed dead `ReadRequestBodyBytesAsync` method
+- `NormalizeJson` — replaced `stream.ToArray()` + `UTF8.GetString` with `stream.GetBuffer()` zero-copy read
+- `ReadLineAsync` (AWS chunked) — replaced per-line `MemoryStream` allocation with `ArrayPool<byte>` reuse to reduce GC pressure on chunked uploads
+
+**Entity Framework Core:**
+- `EntityFrameworkStorageMultipartStateStore.ListMultipartUploadStatesAsync` — moved prefix filtering from client-side to server-side `Where(existing => existing.Key.StartsWith(prefix))` to reduce data transfer
+- `EntityFrameworkStorageCatalogStore` / `EntityFrameworkStorageMultipartStateStore` — added `ChangeTracker.Clear()` after `SaveChangesAsync` in `UpsertBucketAsync`, `UpsertObjectAsync`, and `UpsertMultipartUploadStateAsync` to release tracked entities
+- `IntegratedS3CatalogModelBuilderExtensions.MapIntegratedS3Catalog` — added `HasMaxLength` constraints to all string columns across all three entity types (BucketCatalogRecord, ObjectCatalogRecord, MultipartUploadCatalogRecord), preventing `nvarchar(max)` column generation

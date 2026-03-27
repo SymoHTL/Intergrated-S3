@@ -21,8 +21,8 @@ public static class IntegratedS3CatalogModelBuilderExtensions
         modelBuilder.Entity<BucketCatalogRecord>(entity => {
             entity.ToTable("IntegratedS3Buckets");
             entity.HasKey(static bucket => bucket.Id);
-            entity.Property(static bucket => bucket.ProviderName).IsRequired();
-            entity.Property(static bucket => bucket.BucketName).IsRequired();
+            entity.Property(static bucket => bucket.ProviderName).IsRequired().HasMaxLength(256);
+            entity.Property(static bucket => bucket.BucketName).IsRequired().HasMaxLength(63);
             entity.HasIndex(static bucket => new { bucket.ProviderName, bucket.BucketName }).IsUnique();
             entity.HasMany(static bucket => bucket.Objects)
                 .WithOne()
@@ -34,9 +34,20 @@ public static class IntegratedS3CatalogModelBuilderExtensions
         modelBuilder.Entity<ObjectCatalogRecord>(entity => {
             entity.ToTable("IntegratedS3Objects");
             entity.HasKey(static @object => @object.Id);
-            entity.Property(static @object => @object.ProviderName).IsRequired();
-            entity.Property(static @object => @object.BucketName).IsRequired();
-            entity.Property(static @object => @object.Key).IsRequired();
+            entity.Property(static @object => @object.ProviderName).IsRequired().HasMaxLength(256);
+            entity.Property(static @object => @object.BucketName).IsRequired().HasMaxLength(63);
+            entity.Property(static @object => @object.Key).IsRequired().HasMaxLength(1024);
+            entity.Property(static @object => @object.VersionId).HasMaxLength(128);
+            entity.Property(static @object => @object.ContentType).HasMaxLength(256);
+            entity.Property(static @object => @object.CacheControl).HasMaxLength(256);
+            entity.Property(static @object => @object.ContentDisposition).HasMaxLength(512);
+            entity.Property(static @object => @object.ContentEncoding).HasMaxLength(128);
+            entity.Property(static @object => @object.ContentLanguage).HasMaxLength(128);
+            entity.Property(static @object => @object.ETag).HasMaxLength(128);
+            entity.Property(static @object => @object.MetadataJson).HasMaxLength(32_768);
+            entity.Property(static @object => @object.TagsJson).HasMaxLength(32_768);
+            entity.Property(static @object => @object.ChecksumsJson).HasMaxLength(4096);
+            entity.Property(static @object => @object.ServerSideEncryptionKeyId).HasMaxLength(512);
             entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.VersionId }).IsUnique();
             entity.HasIndex(static @object => new { @object.ProviderName, @object.BucketName, @object.Key, @object.IsLatest });
         });
@@ -44,10 +55,18 @@ public static class IntegratedS3CatalogModelBuilderExtensions
         modelBuilder.Entity<MultipartUploadCatalogRecord>(entity => {
             entity.ToTable("IntegratedS3MultipartUploads");
             entity.HasKey(static upload => upload.Id);
-            entity.Property(static upload => upload.ProviderName).IsRequired();
-            entity.Property(static upload => upload.BucketName).IsRequired();
-            entity.Property(static upload => upload.Key).IsRequired();
-            entity.Property(static upload => upload.UploadId).IsRequired();
+            entity.Property(static upload => upload.ProviderName).IsRequired().HasMaxLength(256);
+            entity.Property(static upload => upload.BucketName).IsRequired().HasMaxLength(63);
+            entity.Property(static upload => upload.Key).IsRequired().HasMaxLength(1024);
+            entity.Property(static upload => upload.UploadId).IsRequired().HasMaxLength(128);
+            entity.Property(static upload => upload.ContentType).HasMaxLength(256);
+            entity.Property(static upload => upload.CacheControl).HasMaxLength(256);
+            entity.Property(static upload => upload.ContentDisposition).HasMaxLength(512);
+            entity.Property(static upload => upload.ContentEncoding).HasMaxLength(128);
+            entity.Property(static upload => upload.ContentLanguage).HasMaxLength(128);
+            entity.Property(static upload => upload.MetadataJson).HasMaxLength(32_768);
+            entity.Property(static upload => upload.TagsJson).HasMaxLength(32_768);
+            entity.Property(static upload => upload.ChecksumAlgorithm).HasMaxLength(32);
             entity.HasIndex(static upload => new { upload.ProviderName, upload.BucketName, upload.Key, upload.UploadId }).IsUnique();
         });
 

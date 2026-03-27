@@ -8,6 +8,9 @@ namespace IntegratedS3.Core.Services;
 internal sealed class InMemoryStorageAuthorizationCompatibilityService(OrchestratedStorageService storageService)
     : IStorageAuthorizationCompatibilityService
 {
+    /// <summary>Maximum number of per-object ACL entries before oldest entries are evicted.</summary>
+    internal const int MaxObjectAclEntries = 100_000;
+
     private readonly ConcurrentDictionary<string, BucketCompatibilityState> _bucketStates = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<ObjectCompatibilityKey, ObjectAclCompatibilityState> _objectAcls = new();
 
@@ -44,6 +47,7 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
         cancellationToken.ThrowIfCancellationRequested();
 
         _objectAcls[new ObjectCompatibilityKey(bucketName, key)] = CreateObjectAclState(StorageCannedAcl.Private);
+        EvictObjectAclsIfOverCapacity();
         return ValueTask.CompletedTask;
     }
 
@@ -122,6 +126,7 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
         }
 
         _objectAcls[new ObjectCompatibilityKey(request.BucketName, request.Key)] = request.Acl ?? CreateObjectAclState(request.CannedAcl);
+        EvictObjectAclsIfOverCapacity();
         return StorageResult.Success();
     }
 
@@ -264,5 +269,34 @@ internal sealed class InMemoryStorageAuthorizationCompatibilityService(Orchestra
             CannedAcl = cannedAcl,
             AdditionalGrants = []
         };
+    }
+
+    private void EvictObjectAclsIfOverCapacity()
+    {
+        var excess = _objectAcls.Count - MaxObjectAclEntries;
+        if (excess <= 0) {
+            return;
+        }
+
+        // Evict entries with default Private ACL first (they are equivalent to missing entries).
+        // Take a snapshot of keys to avoid modifying the dictionary while enumerating.
+        var candidates = _objectAcls
+            .Where(static kv => kv.Value.CannedAcl == StorageCannedAcl.Private
+                && (kv.Value.AdditionalGrants is null || kv.Value.AdditionalGrants.Count == 0))
+            .Select(static kv => kv.Key)
+            .Take(excess)
+            .ToArray();
+
+        foreach (var key in candidates) {
+            _objectAcls.TryRemove(key, out _);
+        }
+
+        // If still over capacity, evict remaining entries arbitrarily.
+        var remaining = _objectAcls.Count - MaxObjectAclEntries;
+        if (remaining > 0) {
+            foreach (var key in _objectAcls.Keys.Take(remaining).ToArray()) {
+                _objectAcls.TryRemove(key, out _);
+            }
+        }
     }
 }

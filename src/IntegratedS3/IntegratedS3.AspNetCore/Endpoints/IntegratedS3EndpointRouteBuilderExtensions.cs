@@ -3817,14 +3817,20 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
             var contentMd5 = httpContext.Request.Headers[ContentMd5HeaderName].ToString();
             await using var preparedBody = await PrepareRequestBodyAsync(httpContext.Request, cancellationToken);
-            var requestBody = await ReadRequestBodyBytesAsync(preparedBody.Content, cancellationToken);
 
-            if (!TryValidateDeleteObjectsRequestIntegrity(httpContext, bucketName, contentMd5, requestedChecksums, requestBody, out var integrityErrorResult)) {
+            using var requestBodyBuffer = new MemoryStream();
+            await preparedBody.Content.CopyToAsync(requestBodyBuffer, cancellationToken);
+
+            if (!requestBodyBuffer.TryGetBuffer(out var requestBodySegment)) {
+                requestBodySegment = new ArraySegment<byte>(requestBodyBuffer.ToArray());
+            }
+
+            if (!TryValidateDeleteObjectsRequestIntegrity(httpContext, bucketName, contentMd5, requestedChecksums, requestBodySegment.AsSpan(), out var integrityErrorResult)) {
                 return integrityErrorResult!;
             }
 
-            using var requestBodyStream = new MemoryStream(requestBody, writable: false);
-            deleteRequest = await S3XmlRequestReader.ReadDeleteObjectsRequestAsync(requestBodyStream, cancellationToken);
+            requestBodyBuffer.Position = 0;
+            deleteRequest = await S3XmlRequestReader.ReadDeleteObjectsRequestAsync(requestBodyBuffer, cancellationToken);
         }
         catch (FormatException exception) {
             return ToErrorResult(httpContext, StatusCodes.Status400BadRequest, "MalformedXML", exception.Message, BuildObjectResource(bucketName, null), bucketName);
@@ -6275,7 +6281,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
             document.RootElement.WriteTo(writer);
         }
 
-        return Encoding.UTF8.GetString(stream.ToArray());
+        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
     }
 
     private static string? FindUnsupportedAclGrantHeader(HttpRequest request)
@@ -6923,15 +6929,6 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         }
     }
 
-    private static async Task<byte[]> ReadRequestBodyBytesAsync(Stream content, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(content);
-
-        using var buffer = new MemoryStream();
-        await content.CopyToAsync(buffer, cancellationToken);
-        return buffer.ToArray();
-    }
-
     private static bool IsAwsChunkedContent(HttpRequest request)
     {
         if (!request.Headers.TryGetValue(HeaderNames.ContentEncoding, out var contentEncodingValues)) {
@@ -6983,24 +6980,37 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
 
     private static async Task<string?> ReadLineAsync(Stream source, CancellationToken cancellationToken)
     {
-        using var buffer = new MemoryStream();
+        var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(512);
+        var position = 0;
 
-        while (true) {
-            var nextByte = await ReadSingleByteAsync(source, cancellationToken);
-            if (nextByte < 0) {
-                return buffer.Length == 0 ? null : throw new FormatException("The aws-chunked request body contains an incomplete line.");
-            }
-
-            if (nextByte == '\r') {
-                var lineFeed = await ReadSingleByteAsync(source, cancellationToken);
-                if (lineFeed != '\n') {
-                    throw new FormatException("The aws-chunked request body contains an invalid line terminator.");
+        try {
+            while (true) {
+                var nextByte = await ReadSingleByteAsync(source, cancellationToken);
+                if (nextByte < 0) {
+                    return position == 0 ? null : throw new FormatException("The aws-chunked request body contains an incomplete line.");
                 }
 
-                return Encoding.ASCII.GetString(buffer.ToArray());
-            }
+                if (nextByte == '\r') {
+                    var lineFeed = await ReadSingleByteAsync(source, cancellationToken);
+                    if (lineFeed != '\n') {
+                        throw new FormatException("The aws-chunked request body contains an invalid line terminator.");
+                    }
 
-            buffer.WriteByte((byte)nextByte);
+                    return Encoding.ASCII.GetString(buffer, 0, position);
+                }
+
+                if (position >= buffer.Length) {
+                    var larger = System.Buffers.ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+                    Buffer.BlockCopy(buffer, 0, larger, 0, position);
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                    buffer = larger;
+                }
+
+                buffer[position++] = (byte)nextByte;
+            }
+        }
+        finally {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
@@ -8204,7 +8214,7 @@ public static class IntegratedS3EndpointRouteBuilderExtensions
         string bucketName,
         string? contentMd5,
         IReadOnlyDictionary<string, string>? requestedChecksums,
-        byte[] requestBody,
+        ReadOnlySpan<byte> requestBody,
         out IResult? errorResult)
     {
         if (string.IsNullOrWhiteSpace(contentMd5) && (requestedChecksums is null || requestedChecksums.Count == 0)) {

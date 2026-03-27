@@ -31,11 +31,9 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         var record = await dbContext.Set<MultipartUploadCatalogRecord>()
-            .AsNoTracking()
             .SingleOrDefaultAsync(existing =>
                 existing.ProviderName == providerName
                 && existing.BucketName == bucketName
@@ -59,18 +57,23 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
-        var records = await dbContext.Set<MultipartUploadCatalogRecord>()
-            .AsNoTracking()
+        var query = dbContext.Set<MultipartUploadCatalogRecord>()
             .Where(existing =>
                 existing.ProviderName == providerName
-                && existing.BucketName == bucketName)
-            .ToListAsync(cancellationToken);
+                && existing.BucketName == bucketName);
+
+        if (!string.IsNullOrWhiteSpace(prefix)) {
+            query = query.Where(existing => existing.Key.StartsWith(prefix));
+        }
+
+        // Ordering remains client-side for portability (SQLite does not support
+        // DateTimeOffset in ORDER BY). Server-side filtering above still eliminates
+        // the bulk of unnecessary data transfer.
+        var records = await query.ToListAsync(cancellationToken);
 
         foreach (var record in records
-                     .Where(existing => string.IsNullOrWhiteSpace(prefix) || existing.Key.StartsWith(prefix, StringComparison.Ordinal))
                      .OrderBy(existing => existing.Key, StringComparer.Ordinal)
                      .ThenBy(existing => existing.InitiatedAtUtc)
                      .ThenBy(existing => existing.UploadId, StringComparer.Ordinal)) {
@@ -87,8 +90,7 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         var states = dbContext.Set<MultipartUploadCatalogRecord>();
         var record = await states.SingleOrDefaultAsync(existing =>
@@ -98,16 +100,14 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             && existing.UploadId == state.UploadId,
             cancellationToken);
 
-        if (record is null) {
-            record = new MultipartUploadCatalogRecord
-            {
-                ProviderName = providerName,
-                BucketName = state.BucketName,
-                Key = state.Key,
-                UploadId = state.UploadId
-            };
-            states.Add(record);
-        }
+        var isNew = record is null;
+        record ??= new MultipartUploadCatalogRecord
+        {
+            ProviderName = providerName,
+            BucketName = state.BucketName,
+            Key = state.Key,
+            UploadId = state.UploadId
+        };
 
         record.InitiatedAtUtc = state.InitiatedAtUtc;
         record.ContentType = state.ContentType;
@@ -120,6 +120,11 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         record.MetadataJson = state.Metadata is null ? null : JsonSerializer.Serialize(state.Metadata);
         record.TagsJson = state.Tags is null ? null : JsonSerializer.Serialize(state.Tags);
         record.LastSyncedAtUtc = DateTimeOffset.UtcNow;
+
+        if (isNew)
+            states.Add(record);
+        else
+            dbContext.Update(record);
 
         await dbContext.SaveChangesAsync(cancellationToken);
     }
@@ -134,8 +139,7 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
         await EnsureInitializedAsync(cancellationToken);
 
         await using var scope = serviceProvider.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-        ValidateModel(dbContext);
+        var dbContext = ResolveDbContext(scope);
 
         await dbContext.Set<MultipartUploadCatalogRecord>()
             .Where(existing => existing.ProviderName == providerName
@@ -159,14 +163,21 @@ internal sealed class EntityFrameworkStorageMultipartStateStore<TDbContext>(
             }
 
             await using var scope = serviceProvider.CreateAsyncScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
-            ValidateModel(dbContext);
+            var dbContext = ResolveDbContext(scope);
             await dbContext.Database.EnsureCreatedAsync(cancellationToken);
             _initialized = true;
         }
         finally {
             _initializationLock.Release();
         }
+    }
+
+    private TDbContext ResolveDbContext(IServiceScope scope)
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<TDbContext>();
+        dbContext.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+        ValidateModel(dbContext);
+        return dbContext;
     }
 
     private static void ValidateModel(TDbContext dbContext)
