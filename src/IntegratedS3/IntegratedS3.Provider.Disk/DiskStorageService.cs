@@ -1723,15 +1723,12 @@ internal sealed class DiskStorageService(
         }
 
         var versions = await GetOrderedObjectVersionsAsync(request.BucketName, request.Prefix, cancellationToken);
+        var startIndex = FindVersionMarkerIndex(versions, request.KeyMarker, request.VersionIdMarker) + 1;
         var yielded = 0;
-        foreach (var version in versions) {
+        for (var i = startIndex; i < versions.Count; i++) {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsVersionAfterMarker(version, request.KeyMarker, request.VersionIdMarker)) {
-                continue;
-            }
-
-            yield return version;
+            yield return versions[i];
             yielded++;
             if (request.PageSize is not null && yielded >= request.PageSize.Value) {
                 yield break;
@@ -4185,23 +4182,37 @@ internal sealed class DiskStorageService(
         return results;
     }
 
-    private static bool IsVersionAfterMarker(ObjectInfo version, string? keyMarker, string? versionIdMarker)
+    /// <summary>
+    /// Returns the index of the marker item in the sorted version list,
+    /// or -1 when no marker is specified or the marker is not found.
+    /// Pagination starts from (returned index + 1).
+    /// </summary>
+    private static int FindVersionMarkerIndex(IReadOnlyList<ObjectInfo> versions, string? keyMarker, string? versionIdMarker)
     {
         if (string.IsNullOrWhiteSpace(keyMarker)) {
-            return true;
+            return -1;
         }
 
-        var keyComparison = StringComparer.Ordinal.Compare(version.Key, NormalizeKey(keyMarker));
-        if (keyComparison > 0) {
-            return true;
+        var normalizedKey = NormalizeKey(keyMarker);
+        for (var i = 0; i < versions.Count; i++) {
+            if (string.Equals(versions[i].Key, normalizedKey, StringComparison.Ordinal)
+                && string.Equals(versions[i].VersionId, versionIdMarker, StringComparison.Ordinal)) {
+                return i;
+            }
         }
 
-        if (keyComparison < 0) {
-            return false;
+        // Marker not found — fall back to comparison-based skip so pages
+        // degrade gracefully when a version is removed between requests.
+        for (var i = versions.Count - 1; i >= 0; i--) {
+            var keyComparison = StringComparer.Ordinal.Compare(versions[i].Key, normalizedKey);
+            if (keyComparison < 0 || (keyComparison == 0
+                && !string.IsNullOrWhiteSpace(versionIdMarker)
+                && StringComparer.Ordinal.Compare(versions[i].VersionId, versionIdMarker) >= 0)) {
+                return i;
+            }
         }
 
-        return !string.IsNullOrWhiteSpace(versionIdMarker)
-               && StringComparer.Ordinal.Compare(version.VersionId, versionIdMarker) < 0;
+        return -1;
     }
 
     private static bool IsMultipartUploadAfterMarker(MultipartUploadInfo upload, string? keyMarker, string? uploadIdMarker)
