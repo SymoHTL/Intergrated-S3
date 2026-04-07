@@ -109,21 +109,12 @@ jobs:
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
-          dotnet nuget push "./artifacts/packages/*.nupkg" \
-            --api-key "$NUGET_API_KEY" \
-            --source https://api.nuget.org/v3/index.json \
-            --skip-duplicate
-
-      - name: Push symbols to NuGet.org
-        if: inputs.push-to-nuget == true && inputs.dry-run == false
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
-        run: |
-          dotnet nuget push "./artifacts/packages/*.snupkg" \
-            --api-key "$NUGET_API_KEY" \
-            --source https://api.nuget.org/v3/index.json \
-            --skip-duplicate
-        continue-on-error: true
+          for pkg in ./artifacts/packages/*.nupkg; do
+            dotnet nuget push "$pkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
 
       - name: Publish summary
         run: |
